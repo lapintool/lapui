@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Lapui change subscriptions</title>
+<style>
+  :root { color: #1f2937; background: #edf1f6; font-family: Arial, sans-serif; }
+  body { margin: 0; padding: 24px; }
+  main { max-width: 820px; margin: 0 auto; padding: 24px; background: white; border-radius: 12px; }
+  h1 { margin: 0 0 12px; font-size: 28px; }
+  p { line-height: 1.45; }
+  button { cursor: pointer; padding: 10px 16px; margin: 4px 8px 4px 0; border: 0; border-radius: 6px; background: #3458d4; color: white; font-size: 15px; }
+  #pause { background: #526174; }
+  #counter { font-size: 34px; font-weight: bold; margin: 18px 0 8px; }
+  #cursor { font-size: 12px; color: #526174; overflow-wrap: anywhere; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 14px; background: #f3f5f8; font-size: 13px; line-height: 1.5; }
+</style></head><body><main>
+<h1>Shared state and resumable changes</h1>
+<p>The UI follows Rust state through a bounded change feed. The window and local client can both increase the same counter.</p>
+<p id="counter" role="status">Count: 0</p>
+<p id="version" role="status">State version: 0</p>
+<button id="increment">Increase count</button><button id="pause">Pause updates</button><button id="resume">Resume updates</button>
+<p id="status" role="status">Connecting</p>
+<p id="cursor" role="status">No cursor yet</p>
+<pre id="events" role="log">Waiting for changes.</pre>
+<script>
+  const byId=id=>document.getElementById(id);
+  let state=null, version=0, cursor=null, running=false, generation=0;
+  const recent=[];
+  const log=message=>{recent.push(message);if(recent.length>10)recent.shift();byId('events').textContent=recent.join('\n');};
+  const render=()=>{byId('counter').textContent='Count: '+state.count;byId('version').textContent='State version: '+version;};
+  async function follow(token) {
+    try {
+      while(running && token===generation) {
+        const page=await lapui.changes.subscribe({scope:'application',cursor,waitMs:1000,limit:64});
+        if(!running || token!==generation) return;
+        if(page.baseline) {
+          state=page.baseline.observation.state;version=page.baseline.observation.version;render();
+          log(page.resyncRequired?'Resynchronized: '+page.resyncReason:'Initial snapshot loaded');
+        }
+        let refresh=false;
+        for(const record of page.records) {
+          const data=record.data;
+          if(record.kind==='state_changed') {
+            if(data.requiresSnapshot || data.baseVersion!==version) {refresh=true;break;}
+            if(data.delta.kind==='replace') state=data.delta.value;
+            else {
+              for(const key of data.delta.remove)delete state[key];
+              for(const key of Object.keys(data.delta.set))Object.defineProperty(state,key,{value:data.delta.set[key],writable:true,enumerable:true,configurable:true});
+            }
+            version=data.version;render();
+          }
+          log('#'+record.sequence+' '+record.kind+(data.action?' '+data.action:''));
+        }
+        cursor=refresh?null:page.cursor;
+        byId('cursor').textContent='Cursor: '+(cursor || 'refresh required');
+        byId('status').textContent='Following shared state';
+      }
+    } catch(error) {
+      if(token!==generation) return;
+      running=false;byId('status').textContent=error.code+': '+error.message;
+    }
+  }
+  const resume=()=>{if(running)return;running=true;follow(++generation);};
+  byId('pause').onclick=()=>{running=false;generation++;byId('status').textContent='Paused; the last acknowledged cursor is retained';};
+  byId('resume').onclick=resume;
+  byId('increment').onclick=()=>lapui.invoke('counter.increment').catch(error=>byId('status').textContent=error.message);
+  resume();
+</script></main></body></html>

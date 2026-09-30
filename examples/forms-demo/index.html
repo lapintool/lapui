@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Lapui form interaction</title>
+  <style>
+    html,body{margin:0;min-height:100%;background:#eef2f6;color:#172334;font-family:sans-serif;font-size:16px}
+    main{box-sizing:border-box;max-width:880px;margin:0 auto;padding:28px}
+    h1{margin:0 0 12px;font-size:28px}p{line-height:1.5}
+    section,form,fieldset{box-sizing:border-box;background:white;border:1px solid #c9d2dd;border-radius:8px;margin:16px 0;padding:16px}
+    fieldset[disabled]{background:#e5e9ef}legend{padding:0 8px;font-weight:bold}
+    label{display:block;margin:10px 0;line-height:1.6}input[type=text]{padding:8px;width:240px;max-width:100%;border:1px solid #a6b4c6;border-radius:4px}
+    button{padding:10px 18px;background:#2459c4;color:white;border:0;border-radius:6px;cursor:pointer;font-size:16px}
+    .status{padding:12px;background:#e4ecfc;border-radius:6px;overflow-wrap:anywhere}
+  </style>
+</head>
+<body><main>
+  <h1>Form interaction</h1>
+  <p>Use Tab, Space, Enter and radio arrow keys, or the structured control client.</p>
+  <section>
+    <label><input id="agree" type="checkbox"> Agree to the local setting</label>
+    <p id="agree-state" class="status" role="status">Agreement: false</p>
+  </section>
+  <form id="first-form">
+    <strong>First form — choice</strong>
+    <label><input id="first-a" type="radio" name="choice" value="A" checked> First A</label>
+    <label><input id="first-b" type="radio" name="choice" value="B"> First B</label>
+    <p id="first-state" role="status">First choice: A</p>
+  </form>
+  <form id="second-form">
+    <strong>Second form — same name, independent group</strong>
+    <label><input id="second-a" type="radio" name="choice" value="A" checked> Second A</label>
+    <label><input id="second-b" type="radio" name="choice" value="B"> Second B</label>
+    <p id="second-state" role="status">Second choice: A</p>
+  </form>
+  <fieldset id="locked-fields" disabled>
+    <legend><label><input id="unlock" type="checkbox"> Enable this fieldset</label></legend>
+    <label for="draft">Editable draft</label><input id="draft" type="text" value="Initial draft">
+  </fieldset>
+  <section>
+    <label for="readonly">Read-only value</label><input id="readonly" type="text" readonly value="Preserved value">
+    <p><button id="counter" type="button">Invoke Rust counter</button></p>
+    <p id="counter-state" class="status" role="status">Counter: 0</p>
+  </section>
+  <script>
+    const byId=id=>document.getElementById(id);
+    byId('agree').onchange=()=>byId('agree-state').textContent='Agreement: '+byId('agree').checked;
+    for(const prefix of ['first','second']) for(const suffix of ['a','b']) {
+      const input=byId(prefix+'-'+suffix);
+      input.onchange=()=>byId(prefix+'-state').textContent=(prefix==='first'?'First':'Second')+' choice: '+input.value;
+    }
+    byId('unlock').onchange=()=>byId('locked-fields').disabled=!byId('unlock').checked;
+    const render=observation=>byId('counter-state').textContent='Counter: '+observation.count;
+    render(lapui.observe());
+    byId('counter').onclick=()=>lapui.invoke('counter.increment').then(render).catch(error=>byId('counter-state').textContent=error.message);
+  </script>
+</main></body>
+</html>

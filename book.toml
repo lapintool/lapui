@@ -1,0 +1,12 @@
+[book]
+title = "Lapui Guide"
+description = "Documentation for the Lapui desktop UI runtime prototype"
+language = "en"
+src = "guide"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/lapintool/lapui"

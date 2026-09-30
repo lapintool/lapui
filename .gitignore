@@ -1,0 +1,18 @@
+/target/
+/book/
+**/node_modules/
+# Local design plans and measurements are not part of the public repository.
+/docs/
+/.codex/
+/.agents/
+/.ssh/
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*.key
+*.log
+.DS_Store
+Thumbs.db

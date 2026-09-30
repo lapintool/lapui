@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Lapui P0</title>
+  <style>
+    html, body { width: 100%; min-height: 100%; margin: 0; }
+    body { font-family: sans-serif; background: white; color: #172033; cursor: default; }
+    main { box-sizing: border-box; width: 100%; min-height: 100vh; background: white; padding: 28px; cursor: default; }
+    h1 { font-size: 28px; margin: 0 0 14px; }
+    p { line-height: 1.5; }
+    #count { font-size: 40px; font-weight: 700; height: 52px; line-height: 52px; margin: 18px 0; font-variant-numeric: tabular-nums; }
+    button { background: #3458d4; color: white; border: 0; border-radius: 8px; padding: 12px 20px; font-size: 16px; cursor: pointer; user-select: none; }
+    input { display: block; box-sizing: border-box; width: min(100%, 320px); margin: 16px 0; padding: 10px 12px; border: 1px solid #bdc6d8; border-radius: 6px; font: inherit; cursor: text; }
+    #status { font-size: 14px; line-height: 24px; min-height: 24px; color: #4b5875; }
+  </style>
+</head>
+<body>
+  <main id="surface">
+    <h1>Lapui P0</h1>
+    <p>Blitz 渲染 HTML/CSS，QuickJS 处理事件，Rust 执行共享动作。</p>
+    <div id="count" role="status">0</div>
+    <button id="increment" type="button">增加计数</button>
+    <label for="name-input">表单填写演示</label>
+    <input id="name-input" type="text" value="Lapui" aria-label="表单填写演示">
+    <p id="status">状态版本 0</p>
+  </main>
+</body>
+</html>

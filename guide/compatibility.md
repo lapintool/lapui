@@ -1,0 +1,26 @@
+# Compatibility matrix
+
+Lapui targets local application interfaces. “Pass” means a capability has a focused Rust integration test or an included runnable example; it does not imply browser-wide conformance. Versions and scenarios are intentionally narrow while the runtime is evolving.
+
+| Area | Verified in this repository | Not covered yet |
+| --- | --- | --- |
+| HTML and CSS | Blitz parses pages and computes layout/styles; Parley complex-script line breaking is enabled and tested with narrow Chinese text; local CSS, image, and font resources load under the app-root boundary | Browser navigation, complete HTML form behavior, full CSS compatibility |
+| JavaScript | QuickJS-ng runs ordered classic scripts, local ES module graphs and an optional bundle; static/dynamic imports, re-exports, cycles, module identity, `import.meta.url`, asynchronous top-level await, function-based timers, budgeted/resumed microtasks, cooperative callback deadlines, heap caps and suspension/reload recovery are tested | Bare package imports, import maps/attributes, remote modules, browser-complete `async`/`defer`, frame scheduling, complete browser timer semantics and full Web APIs |
+| DOM | Dynamic element/text/comment nodes, fragments, cloning, HTML5 `innerHTML`, tree reads/mutations, attributes, classList, inline CSS, selectors, document identity/ownerDocument, capture/target/bubble listeners, once/passive, listener objects/removal, propagation stops, focus and keyboard fields/default cancellation | Native DocumentFragment, live collections, import/adopt, full namespaces/serialization, AbortSignal listener removal, full event/default-action conformance |
+| DOM lifecycle | Weak canonical wrappers, wrapper-owned listeners, retained detached subtree reinsertion, unreachable listener-cycle/native subtree collection, 1,000 create/remove cycles and 50 layout/remove cycles, stale-handle rejection after slot reuse, manual/watched reload with reference invalidation | Long-run memory and GC pause-time profiling, broader native-resource churn |
+| Framework | Included Vue 3.5.43 and React/React DOM 19.2.0 + esbuild bundles mount and pass input, list add/remove and conditional-content tests; React tests effects, delegated events and a Rust action through the AI control channel | Ecosystem-wide framework support, portals, SSR/hydration, component libraries |
+| Local resources | Relative GET resources, classic scripts and module graphs stay within the selected application directory; canonical paths prevent escapes and preserve module identity; per-resource size is bounded; manual/native-watched full document reload and source-read failure recovery | State-preserving HMR, streaming reads, full MIME policy |
+| Network | Absolute HTTP(S), explicit HTTP-base-relative and app-root-relative fetch with buffered text/JSON, single-consumption/clone responses, basic iterable Headers, AbortController/timeout cancellation of queued and active requests, bounded reactor/concurrency/input/body size; local-server tests for HTTP, SSE, and WebSocket | Streaming/binary fetch bodies, full header guards, cookie/cache semantics, full protocol and lifecycle conformance |
+| AI interaction | Registered Rust read/write/job actions, scoped retirement, paginated discovery and parameterized availability checks, enforced schema subset, transactional JSON state, request deduplication and version checks, bounded operation progress/wait/cancel, fixture entity pagination/versions and human-draft conflict UI, finite action traces, scoped application change pages with consistent baselines and cursor/resync recovery, bounded concurrent TCP clients, UI-thread controls and diagnostics, document-scoped references and timeout outcomes | Durable recovery, general entity projections, DOM/control change streams, renderer frame traces, rich accessible tree, external MCP adapter |
+| Forms and AI controls | Framework option-value writes and default values, semantic checkbox/radio roles and current state, text fill, explicit checked updates with input/change events, form/tree-scoped radio exclusivity, shared native/AI/JS checkbox/radio click defaults and cancel rollback, implicit/explicit labels, disabled-fieldset/readonly gating, Space/Enter activation and radio arrow navigation, disabled-control rejection, programmatic focus and focus state in snapshots, Tab/Shift+Tab traversal | Full submit/reset/constraint validation and dirty-checkedness rules, positive tabindex/radio tab-stop policy, rich widget behavior, physical IME and a complete accessibility tree |
+| Window/input | Viewport resize and basic pointer cursor behavior have automated layout coverage; Tab traversal, synthetic focus/blur, keyboard event cancellation and IME commit are tested | Platform-by-platform physical input, native keyboard shortcuts, IME candidate positioning and long-run profiling |
+
+Re-run the core checks from the repository root:
+
+```powershell
+cargo test --locked
+cargo test --locked vue3_runtime_dom_bundle_renders_and_patches_the_blitz_tree
+mdbook build
+```
+
+The Vue demonstration instructions are in [Getting started](getting-started.md#run-the-vue-3-example). This matrix records focused verified behavior, not browser-wide conformance.

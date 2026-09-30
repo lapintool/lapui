@@ -1,0 +1,15 @@
+{
+  "name": "lapui-react-demo",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "esbuild app.js --bundle --format=iife --target=es2020 --define:process.env.NODE_ENV=\"'production'\" --outfile=dist/app.js"
+  },
+  "dependencies": {
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
+}

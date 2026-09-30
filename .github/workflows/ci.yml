@@ -1,0 +1,54 @@
+name: Build and regression
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  runtime:
+    name: Runtime (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Linux font prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev libfontconfig1-dev fonts-noto-cjk
+      - name: Install fixed Rust toolchain
+        run: rustup toolchain install 1.91.1 --profile minimal --component clippy,rustfmt
+      - name: Check formatting
+        run: cargo +1.91.1 fmt --all --check
+      - name: Default runtime regressions
+        run: cargo +1.91.1 test --locked -- --test-threads=2
+      - name: Minimal-feature regressions
+        run: cargo +1.91.1 test --locked --no-default-features -- --test-threads=2
+      - name: Strict lint
+        run: cargo +1.91.1 clippy --locked --all-targets -- -D warnings
+      - name: Link the executable
+        run: cargo +1.91.1 build --locked --bins
+      - name: Paint embedded tool without a window
+        run: cargo +1.91.1 run --locked -- --demo files --snapshot target/ci-files.png
+  documentation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install fixed documentation tool
+        run: cargo install mdbook --version 0.4.52 --locked
+      - name: Build the guide
+        run: mdbook build

@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Lapui file tool</title>
+<style>
+html, body { margin:0; width:100%; height:100%; font-family:system-ui; color:#17233b; background:#f5f7fb; cursor:default; }
+main { padding:24px; display:flex; flex-direction:column; gap:16px; }
+h1 { font-size:24px; margin:0; } p { margin:0; }
+.workspace { display:flex; gap:20px; } aside { width:260px; flex-shrink:0; } section { flex:1; min-width:0; }
+input { box-sizing:border-box; width:100%; padding:10px; border:1px solid #bdc7d8; border-radius:6px; background:white; cursor:text; }
+button { padding:10px 14px; border:1px solid #bdc7d8; border-radius:6px; background:white; cursor:pointer; }
+button:disabled { cursor:default; color:#7e8798; } .file { display:block; width:100%; text-align:left; margin-top:8px; }
+.panel { padding:20px; background:white; border:1px solid #dfe4ed; border-radius:10px; }
+.row { display:flex; gap:8px; margin-top:12px; } .hint { color:#65738b; font-size:14px; } #rename-status { margin-top:12px; }
+#settings { margin-top:12px; padding:16px; border:1px solid #dfe4ed; background:white; } #scan-status { margin-top:12px; }
+</style></head><body><main>
+<h1>Lapui 本地工具</h1><p class="hint">内存示例目录：演示扫描任务、人机共用动作和版本冲突，不修改磁盘文件。</p>
+<div class="workspace"><aside class="panel"><label for="search">搜索文件</label><input id="search" placeholder="支持中文搜索"><div id="file-list"></div></aside>
+<section class="panel"><p id="selected" role="status"></p><p id="entity-version" class="hint" role="status"></p>
+<label for="rename">文件名</label><input id="rename"><div class="row"><button id="save">保存名称</button><button id="refresh">重新读取</button></div>
+<p id="rename-status" role="status">就绪</p><div class="row"><button id="scan">扫描示例目录</button><button id="cancel" disabled>取消扫描</button><button id="settings-toggle">设置</button></div>
+<p id="scan-status" role="status">尚未扫描</p><div id="settings" style="display:none"><p>此示例共享 Rust 动作注册表。查询不会增加状态版本；后台扫描返回快照结果。</p><button id="settings-close">关闭设置</button></div>
+</section></div><p id="app-version" class="hint" role="status"></p>
+</main></body></html>
