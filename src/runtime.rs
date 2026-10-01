@@ -6585,6 +6585,12 @@ mod tests {
         );
         let snapshot = control_request(&mut doc, json!({"method":"controls"})).unwrap();
         let epoch = snapshot["documentEpoch"].clone();
+        let page_baseline = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"limit":64}),
+        )
+        .unwrap();
+        let page_cursor = page_baseline["cursor"].clone();
         let reference = |id: &str| {
             snapshot["controls"]
                 .as_array()
@@ -6611,6 +6617,20 @@ mod tests {
             json!({"method":"activate", "documentEpoch":epoch, "ref":reference("react-add")}),
         )
         .unwrap();
+        let page_delta = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"cursor":page_cursor,"limit":64}),
+        )
+        .unwrap();
+        assert!(page_delta["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| {
+                record["type"] == "property"
+                    && record["propertyName"] == "value"
+                    && record["target"] == reference("react-input")
+            }));
         for _ in 0..100 {
             doc.poll(None);
             if text(&doc, "react-list").contains("中文任务") {
@@ -7197,7 +7217,7 @@ mod tests {
         let (mut doc, _) = LapuiDocument::new_with_source(
             ActionRegistry::default(),
             None,
-            "<html><body><main id='app'><p id='status'>ready</p><input id='field'></main></body></html>",
+            "<html><body><main id='app'><p id='status'>ready</p><input id='field'><input id='check' type='checkbox'></main></body></html>",
             "",
         )
         .unwrap();
@@ -7271,6 +7291,43 @@ mod tests {
         let records_json = Value::Array(records.clone()).to_string();
         assert!(!records_json.contains("never-export-this-value"));
         assert!(!records_json.contains("updated private text"));
+
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>(
+                    "const field=document.getElementById('field'),check=document.getElementById('check'); field.value='private form value'; field.value='private form value'; check.checked=true; check.checked=true;",
+                )
+            })
+            .unwrap();
+        let properties = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"cursor":cursor,"limit":8}),
+        )
+        .unwrap();
+        assert_eq!(
+            properties["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|record| {
+                    record["type"] == "property" && record["propertyName"] == "value"
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            properties["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|record| {
+                    record["type"] == "property" && record["propertyName"] == "checked"
+                })
+                .count(),
+            1
+        );
+        assert!(!properties.to_string().contains("private form value"));
+        cursor = properties["cursor"].as_str().unwrap().to_owned();
 
         let controls = control_request(&mut doc, json!({"method":"controls"})).unwrap();
         let control_ref = controls["controls"]
@@ -8571,7 +8628,7 @@ mod tests {
     fn vue3_runtime_dom_bundle_renders_and_patches_the_blitz_tree() {
         let app_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/vue-demo");
         let html = include_str!("../examples/vue-demo/index.html");
-        let (doc, _) = LapuiDocument::new_with_local_source(
+        let (mut doc, _) = LapuiDocument::new_with_local_source(
             ActionRegistry::default(),
             None,
             html,
@@ -8605,6 +8662,14 @@ mod tests {
                     && control["checked"] == false
             }));
 
+        let epoch = doc.inner().id() as u64;
+        let page_baseline = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"limit":64}),
+        )
+        .unwrap();
+        let page_cursor = page_baseline["cursor"].clone();
+
         let filled = doc
             .js_context
             .with(|ctx| ctx.eval::<bool, _>("lapui.fill('task-input', '写 Vue 集成回归')"))
@@ -8618,6 +8683,26 @@ mod tests {
         assert!(activated);
         drain_jobs(&doc.js_runtime, &doc.script_budget).unwrap();
         assert!(text(&doc, "app").contains("写 Vue 集成回归"));
+        let page_delta = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"cursor":page_cursor,"limit":64}),
+        )
+        .unwrap();
+        assert!(page_delta["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| {
+                record["type"] == "property"
+                    && record["propertyName"] == "value"
+                    && record["target"]
+                        == controls["controls"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|control| control["id"] == "task-input")
+                            .unwrap()["ref"]
+            }));
 
         let checked = doc
             .js_context

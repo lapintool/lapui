@@ -77,6 +77,7 @@
         type:data.type,
         target:data.target.__ref || '',
         ...(data.attributeName ? {attributeName:data.attributeName} : {}),
+        ...(data.propertyName ? {propertyName:data.propertyName} : {}),
         ...(data.controlEvent ? {controlEvent:data.controlEvent} : {}),
         addedCount:added.length,
         added:added.slice(0,pageChangeNodeLimit).map(node=>node.__ref || ''),
@@ -343,6 +344,10 @@
       sequenceExhausted:pageChangeSequenceExhausted,
       records:selected
     });
+  };
+  globalThis.__lapui_record_page_change = (target, propertyName) => {
+    if (!target || !['value','checked'].includes(propertyName)) return;
+    recordPageChange({type:'property', propertyName, target});
   };
   for (const type of ['input','change']) {
     document.addEventListener(type, event => {

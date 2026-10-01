@@ -382,7 +382,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        description = "Read a bounded, value-free journal of DOM attribute, text, and child-list changes. Continue with the returned cursor and current documentEpoch; on resyncRequired, take a fresh page_observe snapshot before continuing. Native Rust DOM mutations are not included."
+        description = "Read a bounded, value-free journal of DOM attribute, text, child-list, form value/checked property, and input/change events. Continue with the returned cursor and current documentEpoch; on resyncRequired, take a fresh page_observe snapshot before continuing. Native Rust DOM mutations are not included."
     )]
     async fn page_changes(
         &self,

@@ -76,10 +76,11 @@ The current bridge reports attribute/style changes, child insertion/removal/move
 Each document allows at most 128 observers, 1,024 observed targets and 4,096 queued records across observers. Excess records are dropped with one `mutation-observer` diagnostic per document. Disconnected subtrees are not observed for subsequent edits, attribute namespaces and transient-subtree delivery are unsupported, and mutations performed directly by native Rust code do not enter this JS observer stream. This subset is useful for app-owned component updates; it is not full MutationObserver conformance or a replacement for the external MCP application/business change feed.
 
 The external MCP adapter also exposes `page_changes`, a value-free, bounded
-256-entry cursor journal over the same bridge mutation hooks plus `input` and
-`change` events. It records canonical node references and change kinds, not
-attribute values, control values, or text. A stale cursor returns
+256-entry cursor journal over the same bridge mutation hooks plus `input`,
+`change`, and programmatic form `value`/`checked` property writes. It records
+canonical node references and change kinds, not attribute values, control
+values, or text. A stale cursor returns
 `resyncRequired`; take a fresh semantic page snapshot and resume at the returned
 cursor. Like the JavaScript observer subset, it cannot see direct native Rust DOM
-mutations or report a form-property assignment that emits no `input`/`change`
-event. It is separate from the Rust application/operation `changes` feed.
+mutations or other IDL property assignments outside the tracked form fields and
+events. It is separate from the Rust application/operation `changes` feed.

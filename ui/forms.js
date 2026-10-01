@@ -11,6 +11,11 @@
   const textTypes=new Set(['text','search','tel','url','email','password','number']);
   const knownTypes=new Set([...textTypes,'hidden','checkbox','radio','button','submit','reset','image','file','date','month','week','time','datetime-local','range','color']);
   const associated=target=>target instanceof Element && ['INPUT','BUTTON','TEXTAREA','SELECT','FIELDSET','OUTPUT','OBJECT'].includes(target.tagName);
+  const reportControlProperty=(target,property,previous)=>{
+    if(!associated(target))return;
+    const current=property==='checked'?Boolean(target.checked):String(target.value??'');
+    if(current!==previous)globalThis.__lapui_record_page_change?.(target,property);
+  };
   const valueMode=target=>target.tagName==='TEXTAREA'||target.tagName==='INPUT'&&textTypes.has(target.type);
   const state=target=>{let value=states.get(target);if(!value){value={dirty:false,checkedDirty:false,user:false,custom:''};states.set(target,value);}return value;};
   const numberPattern=/^-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
@@ -53,21 +58,27 @@
   },set(value){
     if(this.tagName==='SELECT'){
       if(this.multiple)throw new DOMException('Multiple select is unsupported','NotSupportedError');
+      const previous=String(this.value??'');
       const desired=String(value),options=selectOptions(this),option=options.find(item=>item.value===desired);
       if(!option)throw new DOMException('Unmatched select value is unsupported','NotSupportedError');
       setSelected(this,option);
-      __lapui_set_value(this.__ref,desired);return;
+      __lapui_set_value(this.__ref,desired);reportControlProperty(this,'value',previous);return;
     }
     if(this.tagName==='OPTION'){this.setAttribute('value',String(value));return;}
     if(this.tagName==='BUTTON'){this.setAttribute('value',String(value));return;}
-    if(!valueMode(this)){oldValue.set.call(this,value);return;}
+    if(!valueMode(this)){
+      const previous=String(this.value??'');
+      oldValue.set.call(this,value);reportControlProperty(this,'value',previous);return;
+    }
+    const previous=String(this.value??'');
     const own=state(this);own.dirty=true;own.user=false;
     __lapui_set_value(this.__ref,sanitize(this,value));
+    reportControlProperty(this,'value',previous);
   }});
   Object.defineProperty(proto,'defaultValue',{configurable:true,get(){return defaults(this);},set(value){
     if(this.tagName==='TEXTAREA')this.textContent=String(value);else this.setAttribute('value',String(value));
   }});
-  Object.defineProperty(proto,'checked',{configurable:true,get:oldChecked.get,set(value){state(this).checkedDirty=true;oldChecked.set.call(this,value);}});
+  Object.defineProperty(proto,'checked',{configurable:true,get:oldChecked.get,set(value){const previous=Boolean(oldChecked.get.call(this));state(this).checkedDirty=true;oldChecked.set.call(this,value);reportControlProperty(this,'checked',previous);}});
   Object.defineProperty(proto,'defaultChecked',{configurable:true,get(){return this.hasAttribute('checked');},set(value){if(value)this.setAttribute('checked','');else this.removeAttribute('checked');}});
   function changeAttribute(target,name,operation){
     name=String(name).toLowerCase();const own=state(target);
