@@ -1827,7 +1827,8 @@ impl LapuiDocument {
                                         && element.attr(LocalName::from("href")).is_some())
                                     || element.attr(LocalName::from("tabindex")).is_some();
                             let enabled = crate::forms::enabled(&doc, node_id);
-                            if !focusable || !enabled {
+                            let hidden = crate::geometry::is_hidden(&doc, node_id);
+                            if !focusable || !enabled || hidden {
                                 return false;
                             }
                             doc.set_focus_to(node_id)
@@ -8223,7 +8224,7 @@ mod tests {
 
     #[test]
     fn dom_focus_api_tracks_active_element_and_dispatches_focus_events() {
-        let html = r#"<!doctype html><html><body><input id="first"><input id="second"><input id="disabled" disabled><div id="plain"></div></body></html>"#;
+        let html = r#"<!doctype html><html><body><input id="first"><input id="second"><input id="disabled" disabled><input id="hidden-attr" hidden><input id="aria-hidden" aria-hidden="true"><div id="plain"></div></body></html>"#;
         let (doc, _) =
             LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
         let result = doc.js_context.with(|ctx| {
@@ -8249,6 +8250,9 @@ mod tests {
                   if (document.activeElement !== document.body) throw new Error('non-focusable element received focus');
                   document.getElementById('disabled').focus();
                   if (document.activeElement !== document.body || lapui.focus('disabled')) throw new Error('disabled control received focus');
+                  for (const id of ['hidden-attr', 'aria-hidden']) {
+                    if (lapui.focus(id)) throw new Error(`${id} AI focus succeeded`);
+                  }
                   const detached = document.createElement('input');
                   detached.focus();
                   if (document.activeElement !== document.body) throw new Error('detached control received focus');
