@@ -3,7 +3,7 @@
 [简体中文](README.zh-CN.md) · [Documentation](guide/README.md)
 
 Lapui is an experimental desktop UI runtime written in Rust. It combines Blitz for HTML/CSS rendering with QuickJS-ng for JavaScript, aiming to support local interfaces without bundling Chromium or requiring a system WebView.
-**Status: early prototype; P1–P3 acceptance remains in progress.** The current build demonstrates a single window, a limited dynamic DOM and form subset, capture/bubble listeners, local modules and timers, semantic controls and diagnostics, asynchronous Rust actions, HTTP/WebSocket/SSE, and runnable Vue 3 and React DOM examples. It is not a general-purpose browser or production-ready framework runtime.
+**Status: temporary, unfinished development preview.** P1–P3 acceptance remains in progress, behavior and APIs may change, and this build is not intended for production use. The current build demonstrates a single window, a limited dynamic DOM and form subset, capture/bubble listeners, local modules and timers, semantic controls and diagnostics, asynchronous Rust actions, HTTP/WebSocket/SSE, and runnable Vue 3 and React DOM examples. It is not a general-purpose browser or production-ready framework runtime.
 
 ## Try the prototype
 

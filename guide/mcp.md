@@ -81,7 +81,10 @@ returns canonical document-scoped node references, attribute/property names and
 bounded added/removed node references, but never attribute values, control
 values, or text. If its cursor has fallen behind retained
 history, `resyncRequired` asks the client to take a fresh `page_observe` snapshot
-and continue from the returned cursor. This journal does not include DOM edits
+and continue from the returned cursor. A successful `page_control.fill` or
+`page_control.check` also records changed form properties, including affected
+radio-group members. Entries contain only the property name and node reference,
+never the submitted value. This journal does not include DOM edits
 performed directly by native Rust code and is not the application-state
 `changes` feed. Other IDL property assignments without one of these tracked
 form properties or an `input`/`change` event are not journal entries.

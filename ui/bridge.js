@@ -1055,7 +1055,11 @@
         if (target.multiple) return false;
         target.value = String(value);
       }
-      else if (!__lapui_set_value(reference, String(value))) return false;
+      else {
+        const result = __lapui_set_value(reference, String(value));
+        if (result < 0) return false;
+        if (result > 0) __lapui_record_page_change?.(target, 'value');
+      }
       const path = __lapui_event_path(reference);
       __lapui_dispatch('input', reference, path);
       __lapui_dispatch('change', reference, path);
@@ -1064,8 +1068,16 @@
     check(reference, checked = true) {
       reference = String(reference);
       if (typeof checked !== 'boolean') return false;
-      if (!__lapui_exists(reference) || !__lapui_is_enabled(reference)) return false;
+      const target = getElement(reference);
+      if (!target || !__lapui_is_enabled(reference)) return false;
+      const affected = target.type === 'radio'
+        ? __lapui_radio_group(reference).split('\n').filter(Boolean).map(getElement).filter(Boolean)
+        : [target];
+      const previousChecked = affected.map(element => [element, Boolean(element.checked)]);
       if (!__lapui_set_checked(reference, checked)) return false;
+      for (const [element, previous] of previousChecked) {
+        if (Boolean(element.checked) !== previous) __lapui_record_page_change?.(element, 'checked');
+      }
       const path = __lapui_event_path(reference);
       __lapui_dispatch('input', reference, path);
       __lapui_dispatch('change', reference, path);

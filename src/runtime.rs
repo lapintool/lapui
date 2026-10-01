@@ -2069,12 +2069,20 @@ impl LapuiDocument {
                     "__lapui_set_value",
                     Func::from({
                         let dom = dom.clone();
-                        move |reference: String, value: String| -> bool {
+                        move |reference: String, value: String| -> i32 {
                             let mut doc = dom.borrow_mut();
                             let Some(id) = resolve_node_ref(&doc, &reference) else {
-                                return false;
+                                return -1;
                             };
-                            crate::forms::set_value(&mut doc,id,&value)
+                            let before = crate::forms::value(&doc, id);
+                            if !crate::forms::set_value(&mut doc, id, &value) {
+                                return -1;
+                            }
+                            if crate::forms::value(&doc, id) != before {
+                                1
+                            } else {
+                                0
+                            }
                         }
                     }),
                 )?;
@@ -7452,7 +7460,7 @@ mod tests {
         let (mut doc, _) = LapuiDocument::new_with_source(
             ActionRegistry::default(),
             None,
-            "<html><body><main id='app'><p id='status'>ready</p><input id='field'><input id='check' type='checkbox'></main></body></html>",
+            "<html><body><main id='app'><p id='status'>ready</p><input id='field' value='initial'><input id='check' type='checkbox'><input id='radio-a' type='radio' name='choice' checked><input id='radio-b' type='radio' name='choice'></main></body></html>",
             "",
         )
         .unwrap();
@@ -7595,6 +7603,47 @@ mod tests {
             .unwrap()
             .iter()
             .any(|record| { record["type"] == "control" && record["controlEvent"] == "input" }));
+        assert!(control_events["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| {
+                record["type"] == "property"
+                    && record["propertyName"] == "value"
+                    && record["target"] == control_ref
+            }));
+        assert!(!control_events.to_string().contains("changed"));
+        let radio_ref = |id: &str| {
+            controls["controls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|control| control["id"] == id)
+                .unwrap()["ref"]
+                .clone()
+        };
+        control_request(
+            &mut doc,
+            json!({"method":"check","documentEpoch":epoch,"ref":radio_ref("radio-b"),"checked":true}),
+        )
+        .unwrap();
+        let radio_changes = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"cursor":control_events["cursor"],"limit":8}),
+        )
+        .unwrap();
+        for id in ["radio-a", "radio-b"] {
+            assert!(radio_changes["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| {
+                    record["type"] == "property"
+                        && record["propertyName"] == "checked"
+                        && record["target"] == radio_ref(id)
+                }));
+        }
+        assert!(!radio_changes.to_string().contains("changed"));
 
         doc.js_context
             .with(|ctx| {
