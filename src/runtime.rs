@@ -1539,6 +1539,7 @@ impl LapuiDocument {
             wake_document(&control_waker, &control_proxy, doc_id);
         });
         let page_change_notifier = controller.page_change_notifier();
+        let page_change_trace = debug_trace.clone();
         let timer_waker = waker.clone();
         let timer_proxy = proxy.clone();
         let timers = Timers::new(move || wake_document(&timer_waker, &timer_proxy, doc_id));
@@ -1574,9 +1575,23 @@ impl LapuiDocument {
             .with(|ctx| -> rquickjs::Result<()> {
                 let globals = ctx.globals();
                 let page_change_notifications = page_change_notifier.clone();
+                let page_change_trace = page_change_trace.clone();
                 globals.set(
                     "__lapui_notify_page_change",
-                    Func::from(move || page_change_notifications.notify()),
+                    Func::from(move |revision: u64| -> u64 {
+                        page_change_notifications.notify();
+                        if revision == 0 {
+                            0
+                        } else {
+                            page_change_trace
+                                .instant(
+                                    "page_change",
+                                    json!({"documentRevision":revision}),
+                                    true,
+                                )
+                                .unwrap_or(0)
+                        }
+                    }),
                 )?;
                 let frame_clock = frames.clone();
                 globals.set("__lapui_now", Func::from(move || frame_clock.borrow().now()))?;
@@ -7236,6 +7251,11 @@ mod tests {
         .unwrap();
         assert_eq!(baseline["latestSequence"], 0);
         let baseline_cursor = baseline["cursor"].as_str().unwrap().to_owned();
+        control_request(
+            &mut doc,
+            json!({"method":"debugTrace.configure","documentEpoch":epoch,"enabled":true}),
+        )
+        .unwrap();
 
         doc.js_context
             .with(|ctx| {
@@ -7278,6 +7298,9 @@ mod tests {
             .iter()
             .any(|record| record["type"] == "characterData"));
         assert!(records.iter().any(|record| record["type"] == "childList"));
+        assert!(records
+            .iter()
+            .any(|record| { record["debugTraceSequence"].as_u64().is_some() }));
         assert!(records.iter().all(|record| record["target"]
             .as_str()
             .is_some_and(|reference| reference.starts_with(&format!("node:{epoch}:")))));

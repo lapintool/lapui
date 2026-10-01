@@ -72,7 +72,7 @@
     if (!data.target) return;
     if (pageChangeSequence < Number.MAX_SAFE_INTEGER) {
       const added = data.addedNodes || [], removed = data.removedNodes || [];
-      pageChanges.push({
+      const record = {
         sequence:++pageChangeSequence,
         type:data.type,
         target:data.target.__ref || '',
@@ -84,12 +84,15 @@
         removedCount:removed.length,
         removed:removed.slice(0,pageChangeNodeLimit).map(node=>node.__ref || ''),
         nodesTruncated:added.length>pageChangeNodeLimit || removed.length>pageChangeNodeLimit
-      });
+      };
+      const traceSequence = globalThis.__lapui_notify_page_change?.(record.sequence);
+      if (Number.isSafeInteger(traceSequence) && traceSequence > 0) record.debugTraceSequence = traceSequence;
+      pageChanges.push(record);
       if (pageChanges.length > pageChangeCapacity) pageChanges.shift();
     } else {
       pageChangeSequenceExhausted = true;
+      globalThis.__lapui_notify_page_change?.(0);
     }
-    globalThis.__lapui_notify_page_change?.();
   }
 
   function enqueue(data) {

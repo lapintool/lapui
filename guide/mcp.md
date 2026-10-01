@@ -83,6 +83,8 @@ and continue from the returned cursor. This journal does not include DOM edits
 performed directly by native Rust code and is not the application-state
 `changes` feed. Other IDL property assignments without one of these tracked
 form properties or an `input`/`change` event are not journal entries.
+With `--debug-trace`, each record also carries a `debugTraceSequence` that can
+be passed to `page_wait_for_render` to wait for a causally linked renderer frame.
 `page_wait_for_changes` accepts a cursor returned by `page_changes` and waits
 for a batch, resynchronization requirement, document reload, or bounded timeout.
 It shares the four-active-wait limit and four-second maximum with the other
@@ -97,7 +99,7 @@ semantic type. The wait is bounded to four seconds and shares a four-wait
 concurrency limit with render waits. It observes control state only, without
 claiming a frame was painted.
 `page_wait_for_render` requires `--debug-trace` and the `debugTraceSequence`
-returned by a successful `page_control` mutation. It waits for the causally
+returned by a successful `page_control` mutation or a `page_changes` record. It waits for the causally
 linked frame and resolved layout to return from the renderer, with a maximum
 four-second timeout and at most four concurrent waits. The result does not
 confirm physical presentation by the native window or operating system.

@@ -182,10 +182,12 @@ pub fn wait_for_render_with(
             .iter()
             .find(|record| record["sequence"] == root_sequence)
         {
-            if root["kind"] != "control" || root["phase"] != "start" {
+            let is_control_root = root["kind"] == "control" && root["phase"] == "start";
+            let is_page_change_root = root["kind"] == "page_change" && root["phase"] == "instant";
+            if !is_control_root && !is_page_change_root {
                 return Err(ActionError::new(
                     "invalid_request",
-                    "afterSequence must identify a control mutation trace root",
+                    "afterSequence must identify a control or page-change trace root",
                 ));
             }
             saw_root = true;

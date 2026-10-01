@@ -592,7 +592,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        description = "Wait for the renderer to return from the frame causally linked to a page_control mutation. Requires --debug-trace and the debugTraceSequence returned by that mutation; this does not confirm physical screen presentation."
+        description = "Wait for the renderer to return from the frame causally linked to a page_control mutation or a page_changes record. Requires --debug-trace and a debugTraceSequence returned by the mutation or journal record; this does not confirm physical screen presentation."
     )]
     async fn page_wait_for_render(
         &self,

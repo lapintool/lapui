@@ -990,6 +990,31 @@ mod tests {
     }
 
     #[test]
+    fn wait_for_render_accepts_a_page_change_revision_root() {
+        let request = json!({"method":"waitForRender","documentEpoch":7,"afterSequence":10,
+            "timeoutMs":100,"waitId":"page-change-render-test"});
+        let result = wait_for_render_with(
+            &request,
+            |command, _| {
+                assert_eq!(command["afterSequence"], 9);
+                Ok(json!({"documentEpoch":7,"enabled":true,"session":4,"resyncRequired":false,
+                    "nextSequence":15,"latestSequence":15,"records":[
+                        {"sequence":10,"kind":"page_change","phase":"instant","parentSequence":null,"data":{"documentRevision":12}},
+                        {"sequence":11,"kind":"frame","phase":"start","parentSequence":null,"data":{"causes":[10]}},
+                        {"sequence":12,"kind":"layout","phase":"start","parentSequence":11,"data":{}},
+                        {"sequence":13,"kind":"layout","phase":"end","parentSequence":12,"data":{"outcome":"resolved"}},
+                        {"sequence":14,"kind":"frame","phase":"end","parentSequence":11,"data":{"outcome":"renderer_returned"}}
+                    ]}))
+            },
+            || false,
+        )
+        .unwrap();
+        assert_eq!(result["status"], "rendered");
+        assert_eq!(result["rootSequence"], 10);
+        assert_eq!(result["physicalPresentation"], "unknown");
+    }
+
+    #[test]
     fn tcp_action_discovery_availability_and_scope_retirement_use_shared_registry() {
         use lapui::action_catalog::ActionOptions;
         let actions = lapui::demo::files().unwrap();
