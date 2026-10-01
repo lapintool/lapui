@@ -89,6 +89,7 @@
     } else {
       pageChangeSequenceExhausted = true;
     }
+    globalThis.__lapui_notify_page_change?.();
   }
 
   function enqueue(data) {

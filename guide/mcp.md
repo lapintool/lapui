@@ -86,9 +86,9 @@ form properties or an `input`/`change` event are not journal entries.
 for a batch, resynchronization requirement, document reload, or bounded timeout.
 It shares the four-active-wait limit and four-second maximum with the other
 page waits. A returned batch is still only a semantic change journal; it does
-not imply that layout or rendering has completed. The adapter currently checks
-the journal on a short interval, so callers should prefer this wait over
-repeated external tool polling but should not treat it as a native push stream.
+not imply that layout or rendering has completed. A document-local
+notification wakes the waiter when the bridge appends a journal record; this is
+not a native DOM mutation stream or renderer notification.
 `page_wait_for_control` requires exactly one `id` or current `ref`, and exactly
 one `equals` or `contains` condition. Supported fields are `value`, `checked`,
 `focused`, `enabled`, `name`, and `role`; values are checked against their

@@ -582,6 +582,7 @@ pub struct LapuiDocument {
 
 impl Drop for LapuiDocument {
     fn drop(&mut self) {
+        self.controller.page_change_notifier().close();
         self.lifetime.cancel();
         self.frames.borrow_mut().stop();
         self.action_scopes.clear();
@@ -1537,6 +1538,7 @@ impl LapuiDocument {
         let (controller, control_requests) = control::channel(move || {
             wake_document(&control_waker, &control_proxy, doc_id);
         });
+        let page_change_notifier = controller.page_change_notifier();
         let timer_waker = waker.clone();
         let timer_proxy = proxy.clone();
         let timers = Timers::new(move || wake_document(&timer_waker, &timer_proxy, doc_id));
@@ -1571,6 +1573,11 @@ impl LapuiDocument {
         js_context
             .with(|ctx| -> rquickjs::Result<()> {
                 let globals = ctx.globals();
+                let page_change_notifications = page_change_notifier.clone();
+                globals.set(
+                    "__lapui_notify_page_change",
+                    Func::from(move || page_change_notifications.notify()),
+                )?;
                 let frame_clock = frames.clone();
                 globals.set("__lapui_now", Func::from(move || frame_clock.borrow().now()))?;
                 globals.set("__lapui_time_origin", frames.borrow().time_origin)?;

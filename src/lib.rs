@@ -16,7 +16,7 @@ mod lifecycle;
 pub mod mcp;
 pub mod mcp_bridge;
 pub mod operation;
-pub mod page_change_wait;
+pub(crate) mod page_change_wait;
 pub mod reload;
 pub mod render_wait;
 pub mod runtime;

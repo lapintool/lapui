@@ -1,13 +1,15 @@
-use crate::action::ActionError;
+use crate::{action::ActionError, control::PageChangeNotifier};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
 const MAX_WAIT: Duration = Duration::from_secs(4);
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
-
 pub fn wait_for_page_changes_with(
     request: &Value,
-    mut read_changes: impl FnMut(&str, u64, Duration) -> Result<Value, ActionError>,
+    mut read_changes: impl FnMut(
+        &str,
+        u64,
+        Duration,
+    ) -> Result<(Value, PageChangeNotifier, u64), ActionError>,
 ) -> Result<Value, ActionError> {
     let invalid = |message: &str| ActionError::new("invalid_request", message);
     let epoch = request
@@ -48,7 +50,7 @@ pub fn wait_for_page_changes_with(
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let request_timeout = Duration::from_secs(1).min(remaining.max(Duration::from_millis(50)));
-        let page = read_changes(cursor, limit, request_timeout)?;
+        let (page, notifier, generation) = read_changes(cursor, limit, request_timeout)?;
         if page.get("documentEpoch").and_then(Value::as_u64) != Some(epoch) {
             return Err(ActionError::new(
                 "stale_document",
@@ -72,9 +74,9 @@ pub fn wait_for_page_changes_with(
         if now >= deadline {
             return Ok(with_status(page, "timed_out"));
         }
-        std::thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(now)));
-        // Keep the cursor fixed so changes accumulated during the wait are
-        // returned together and bounded by the normal page size.
+        // Capture the generation before reading the page so a change between
+        // the query and the wait cannot be lost.
+        notifier.wait_after(generation, deadline.saturating_duration_since(now));
     }
 }
 
@@ -97,30 +99,42 @@ mod tests {
     #[test]
     fn returns_changes_resync_timeout_and_rejects_epoch_changes() {
         let calls = AtomicUsize::new(0);
+        let notifier = PageChangeNotifier::default();
         let changed = wait_for_page_changes_with(&request(100), |cursor, limit, _| {
             assert_eq!(cursor, "page:7:3");
             assert_eq!(limit, 8);
+            let generation = notifier.generation();
             let call = calls.fetch_add(1, Ordering::SeqCst);
-            Ok(json!({"documentEpoch":7,"records":if call == 0 {vec![]} else {vec![json!({"sequence":4})]},"resyncRequired":false,"sequenceExhausted":false}))
+            if call == 0 {
+                // Force the notification into the query-to-wait gap. The
+                // captured generation must make the next wait return at once.
+                notifier.notify();
+            }
+            let page = json!({"documentEpoch":7,"records":if call == 0 {vec![]} else {vec![json!({"sequence":4})]},"resyncRequired":false,"sequenceExhausted":false});
+            Ok((page, notifier.clone(), generation))
         })
         .unwrap();
         assert_eq!(changed["status"], "changed");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
 
         let resync = wait_for_page_changes_with(&request(0), |_, _, _| {
-            Ok(json!({"documentEpoch":7,"records":[],"resyncRequired":true,"sequenceExhausted":false}))
+            Ok((json!({"documentEpoch":7,"records":[],"resyncRequired":true,"sequenceExhausted":false}), PageChangeNotifier::default(), 0))
         })
         .unwrap();
         assert_eq!(resync["status"], "resync_required");
 
         let timeout = wait_for_page_changes_with(&request(0), |_, _, _| {
-            Ok(json!({"documentEpoch":7,"records":[],"resyncRequired":false,"sequenceExhausted":false}))
+            Ok((json!({"documentEpoch":7,"records":[],"resyncRequired":false,"sequenceExhausted":false}), PageChangeNotifier::default(), 0))
         })
         .unwrap();
         assert_eq!(timeout["status"], "timed_out");
 
         let stale = wait_for_page_changes_with(&request(0), |_, _, _| {
-            Ok(json!({"documentEpoch":8,"records":[],"resyncRequired":false}))
+            Ok((
+                json!({"documentEpoch":8,"records":[],"resyncRequired":false}),
+                PageChangeNotifier::default(),
+                0,
+            ))
         })
         .unwrap_err();
         assert_eq!(stale.code, "stale_document");

@@ -3,7 +3,7 @@
 use crate::action::ActionError;
 use serde_json::Value;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 const QUEUED: u8 = 0;
@@ -57,22 +57,71 @@ impl DocumentRequest {
 pub struct DocumentController {
     sender: mpsc::SyncSender<DocumentRequest>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    page_changes: PageChangeNotifier,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct PageChangeNotifier {
+    inner: Arc<(Mutex<PageChangeState>, Condvar)>,
+}
+
+#[derive(Default)]
+struct PageChangeState {
+    generation: u64,
+    closed: bool,
+}
+
+impl PageChangeNotifier {
+    pub(crate) fn generation(&self) -> u64 {
+        self.inner.0.lock().unwrap().generation
+    }
+
+    pub(crate) fn notify(&self) {
+        let (state, condition) = &*self.inner;
+        let mut state = state.lock().unwrap();
+        state.generation = state.generation.saturating_add(1);
+        condition.notify_all();
+    }
+
+    pub(crate) fn close(&self) {
+        let (state, condition) = &*self.inner;
+        let mut state = state.lock().unwrap();
+        state.closed = true;
+        condition.notify_all();
+    }
+
+    pub(crate) fn wait_after(&self, generation: u64, timeout: Duration) -> bool {
+        let (state, condition) = &*self.inner;
+        let state = state.lock().unwrap();
+        let (state, _) = condition
+            .wait_timeout_while(state, timeout, |state| {
+                !state.closed && state.generation == generation
+            })
+            .unwrap();
+        state.closed || state.generation != generation
+    }
 }
 
 pub(crate) fn channel(
     wake: impl Fn() + Send + Sync + 'static,
 ) -> (DocumentController, mpsc::Receiver<DocumentRequest>) {
     let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
+    let page_changes = PageChangeNotifier::default();
     (
         DocumentController {
             sender,
             wake: Arc::new(wake),
+            page_changes,
         },
         receiver,
     )
 }
 
 impl DocumentController {
+    pub(crate) fn page_change_notifier(&self) -> PageChangeNotifier {
+        self.page_changes.clone()
+    }
+
     pub fn request(&self, command: Value, timeout: Duration) -> Result<Value, ActionError> {
         if command.to_string().len() > MAX_REQUEST_BYTES {
             return Err(error("invalid_request", "document request exceeds 64 KiB"));

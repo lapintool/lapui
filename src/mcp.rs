@@ -443,14 +443,18 @@ impl LapuiMcpServer {
         let request = json!({"documentEpoch":input.document_epoch,"cursor":input.cursor,
             "limit":input.limit,"timeoutMs":input.timeout_ms,"waitId":input.wait_id});
         let epoch = input.document_epoch;
-        let controller = self.controller();
+        let reload = self.reload.clone();
         match tokio::task::spawn_blocking(move || {
             let _guard = guard;
             wait_for_page_changes_with(&request, |cursor, limit, timeout| {
-                controller.request(
+                let controller = reload.endpoint().controller;
+                let notifier = controller.page_change_notifier();
+                let generation = notifier.generation();
+                let page = controller.request(
                     json!({"method":"pageChanges","documentEpoch":epoch,"cursor":cursor,"limit":limit}),
                     timeout,
-                )
+                )?;
+                Ok((page, notifier, generation))
             })
         })
         .await
