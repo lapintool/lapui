@@ -433,6 +433,28 @@ fn control_snapshot_filtered(doc: &BaseDocument, included: Option<&HashSet<NodeI
             .find(|attribute| attribute.name.local.to_string() == name)
             .map(|attribute| attribute.value.as_str())
     }
+    fn sensitive_value(element: &blitz::dom::ElementData, tag: &str, input_type: &str) -> bool {
+        if tag == "input" && input_type == "password" {
+            return true;
+        }
+        const SENSITIVE_AUTOCOMPLETE: &[&str] = &[
+            "current-password",
+            "new-password",
+            "one-time-code",
+            "cc-number",
+            "cc-csc",
+            "cc-exp",
+            "cc-exp-month",
+            "cc-exp-year",
+        ];
+        attr(element, "autocomplete").is_some_and(|value| {
+            value.split_ascii_whitespace().any(|token| {
+                SENSITIVE_AUTOCOMPLETE
+                    .iter()
+                    .any(|sensitive| token.eq_ignore_ascii_case(sensitive))
+            })
+        })
+    }
     fn visit(
         doc: &BaseDocument,
         id: NodeId,
@@ -524,7 +546,7 @@ fn control_snapshot_filtered(doc: &BaseDocument, included: Option<&HashSet<NodeI
                             .unwrap_or_else(|| attr(element, "checked").is_some()));
                     }
                 }
-                if tag != "input" || input_type != "password" {
+                if !sensitive_value(element, &tag, &input_type) {
                     let value = crate::forms::value(doc, id);
                     if let Some(value) = value {
                         control["value"] = json!(value);
@@ -8372,6 +8394,36 @@ mod tests {
         assert_eq!(secret["required"], true);
         assert!(secret.get("value").is_none());
         assert_eq!(snapshot["controls"][1]["placeholder"], "name@example.test");
+    }
+
+    #[test]
+    fn sensitive_autocomplete_values_are_omitted_from_semantic_snapshot() {
+        let doc = HtmlDocument::from_html(
+            r#"<html><body>
+                <input autocomplete="section-login current-password" value="pw-secret">
+                <input autocomplete="new-password" value="new-secret">
+                <input autocomplete="one-time-code" value="otp-secret">
+                <input autocomplete="cc-number" value="card-secret">
+                <input autocomplete="cc-csc" value="cvc-secret">
+                <input autocomplete="cc-exp-month" value="exp-secret">
+                <input autocomplete="email" value="visible@example.test">
+            </body></html>"#,
+            DocumentConfig::default(),
+        )
+        .into_inner();
+        let snapshot = control_snapshot(&doc);
+        let serialized = serde_json::to_string(&snapshot).unwrap();
+        for secret in [
+            "pw-secret",
+            "new-secret",
+            "otp-secret",
+            "card-secret",
+            "cvc-secret",
+            "exp-secret",
+        ] {
+            assert!(!serialized.contains(secret), "snapshot exposed {secret}");
+        }
+        assert!(serialized.contains("visible@example.test"));
     }
 
     #[test]

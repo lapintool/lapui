@@ -40,9 +40,11 @@ The MCP connection inherits the trust of the local host that launches the
 process; the stdio transport does not add authentication or per-tool user
 consent. That host can read visible page text and ordinary control values and
 can invoke every action the application registered for the running window.
-Password control values are omitted, but other fields and page text are not
-secret-filtered. Avoid rendering credentials or other secrets in AI-visible UI
-content, and only configure a trusted local MCP host.
+Password values and values marked with sensitive `autocomplete` tokens
+(`current-password`, `new-password`, `one-time-code`, and common payment-card
+fields) are omitted from semantic control snapshots. Other field values and
+page text are not secret-filtered. Avoid rendering credentials or other secrets
+in AI-visible UI content, and only configure a trusted local MCP host.
 
 The initial tool set is deliberately small:
 
