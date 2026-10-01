@@ -9,6 +9,7 @@ use crate::{
     render_wait::wait_for_render_with,
 };
 use rmcp::{
+    handler::server::tool::schema_for_type,
     handler::server::wrapper::Parameters,
     model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig},
     schemars, tool, tool_handler, tool_router, ServerHandler, ServiceExt,
@@ -23,6 +24,24 @@ use std::time::Duration;
 const MAX_TOOL_RESULT_BYTES: usize = 24 * 1024;
 const MAX_ACTION_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_ACTIVE_WAITS: usize = 4;
+
+/// MCP structured outputs are JSON objects whose operation-specific fields can
+/// vary by document state and action result. Keep the declared boundary honest:
+/// constrain the top-level container while allowing those documented fields.
+#[derive(schemars::JsonSchema)]
+#[schemars(transparent)]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct StructuredToolOutput(HashMap<String, Value>);
+
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct AppDescribeOutput {
+    protocol_version: u32,
+    runtime: String,
+    capabilities: Vec<String>,
+    script_evaluation: bool,
+}
 
 static ACTIVE_WAITS: OnceLock<Mutex<HashMap<String, Arc<WaitToken>>>> = OnceLock::new();
 
@@ -404,7 +423,7 @@ fn mcp_result(value: impl serde::Serialize) -> CallToolResult {
 
 #[tool_router]
 impl LapuiMcpServer {
-    #[tool(description = "Describe the connected Lapui application and its semantic capabilities.")]
+    #[tool(output_schema = schema_for_type::<AppDescribeOutput>(), description = "Describe the connected Lapui application and its semantic capabilities.")]
     fn app_describe(&self) -> CallToolResult {
         mcp_result(json!({
             "protocolVersion":1,
@@ -415,6 +434,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "List visible semantic controls with stable references and current values. Sensitive values are redacted by the runtime."
     )]
     async fn page_controls(&self) -> CallToolResult {
@@ -435,6 +455,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Observe a bounded preorder page of rendered HTML elements with parent refs, roles, names, visible text, viewport bounds, and semantic control state. Use nextAfter and documentEpoch to continue; restart observation after page changes."
     )]
     async fn page_observe(
@@ -468,6 +489,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Read a bounded, value-free journal of DOM attribute, text, child-list, form value/checked property, and input/change events. Continue with the returned cursor and current documentEpoch; on resyncRequired, take a fresh page_observe snapshot before continuing. Native Rust DOM mutations are not included."
     )]
     async fn page_changes(
@@ -495,6 +517,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Wait from a page_changes cursor for the next bounded batch of value-free DOM/control changes, a resync signal, or timeout. A reload returns stale_document. This is a semantic journal wait and does not confirm layout, rendering, or physical presentation."
     )]
     async fn page_wait_for_changes(
@@ -540,6 +563,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Wait until one current semantic control matches a bounded state condition. Provide exactly one of id or ref, and exactly one of equals or contains. This observes the semantic control snapshot; it does not confirm rendering or physical presentation."
     )]
     async fn page_wait_for_control(
@@ -592,6 +616,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Wait for the renderer to return from the frame causally linked to a page_control mutation or a page_changes record. Requires --debug-trace and a debugTraceSequence returned by the mutation or journal record; this does not confirm physical screen presentation."
     )]
     async fn page_wait_for_render(
@@ -632,6 +657,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Request cancellation of an active page_wait_for_changes, page_wait_for_control, or page_wait_for_render call by its waitId. The active wait returns wait_cancelled; unknown or completed identifiers return found=false."
     )]
     async fn page_cancel_wait(
@@ -650,6 +676,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Reload the current trusted local document source. All prior page references become stale and must be observed again."
     )]
     async fn page_reload(&self, Parameters(input): Parameters<ReloadInput>) -> CallToolResult {
@@ -673,6 +700,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Capture the current viewport as a bounded PNG image. This is a CPU-rendered document snapshot and does not confirm native screen presentation."
     )]
     async fn page_screenshot(&self) -> CallToolResult {
@@ -712,6 +740,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Read runtime diagnostics, including script errors and network stream status."
     )]
     async fn page_diagnostics(&self) -> CallToolResult {
@@ -732,6 +761,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Read QuickJS runtime allocation and heap counters. Set collectGarbage only when a diagnostic cycle collection is intended; this runs on the UI thread. These counters exclude Rust, DOM, renderer, GPU, and process allocator-retained memory."
     )]
     async fn runtime_memory_usage(
@@ -758,6 +788,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Activate, fill, check, or focus a semantic control, or scroll a rendered element. Use the current documentEpoch and canonical ref from page_observe/page_controls; stale references are rejected."
     )]
     async fn page_control(&self, Parameters(input): Parameters<ControlInput>) -> CallToolResult {
@@ -813,6 +844,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Discover registered business actions. Results are paged and restricted by the runtime's action catalog."
     )]
     fn actions_list(&self, Parameters(input): Parameters<ActionListInput>) -> CallToolResult {
@@ -834,6 +866,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Read the full description and input/output schemas for a registered action before invoking it."
     )]
     fn actions_describe(
@@ -850,6 +883,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Invoke one previously registered Lapui business action by its exact action id. Provide a stable requestId for retry deduplication and, for writes based on an observed state, expectedVersion to reject stale writes. Returns only the committed version and action result, not the whole application state."
     )]
     async fn action_invoke(&self, Parameters(input): Parameters<ActionInput>) -> CallToolResult {
@@ -880,6 +914,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Read, wait for a newer revision of, or request cancellation of a registered asynchronous operation. A wait blocks only for the bounded timeout."
     )]
     async fn operation(&self, Parameters(input): Parameters<OperationInput>) -> CallToolResult {
@@ -923,6 +958,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        output_schema = schema_for_type::<StructuredToolOutput>(),
         description = "Subscribe to bounded application, state, action, operation, or host changes. Omit cursor for a baseline; continue with the returned cursor and restart from the supplied baseline when resyncRequired is true."
     )]
     async fn changes(&self, Parameters(input): Parameters<ChangesInput>) -> CallToolResult {
@@ -1020,6 +1056,41 @@ mod tests {
         assert!(!names
             .iter()
             .any(|name| name.contains("script") || name.contains("eval")));
+        for tool in &tools {
+            let schema = tool.output_schema.as_ref().unwrap_or_else(|| {
+                panic!("tool {} is missing its structured output schema", tool.name)
+            });
+            assert_eq!(
+                schema.get("type").and_then(Value::as_str),
+                Some("object"),
+                "tool {} output schema",
+                tool.name
+            );
+            if tool.name == "app_describe" {
+                let properties = schema.get("properties").and_then(Value::as_object).unwrap();
+                for (field, expected_type) in [
+                    ("protocolVersion", "integer"),
+                    ("runtime", "string"),
+                    ("capabilities", "array"),
+                    ("scriptEvaluation", "boolean"),
+                ] {
+                    assert_eq!(
+                        properties
+                            .get(field)
+                            .and_then(|value| value.get("type"))
+                            .and_then(Value::as_str),
+                        Some(expected_type),
+                        "app_describe output property {field}"
+                    );
+                }
+            } else {
+                assert!(
+                    schema.contains_key("additionalProperties"),
+                    "tool {} output schema must leave dynamic response fields open",
+                    tool.name
+                );
+            }
+        }
         let invoke = tools
             .iter()
             .find(|tool| tool.name == "action_invoke")
