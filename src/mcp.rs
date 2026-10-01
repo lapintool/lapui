@@ -56,6 +56,21 @@ struct PageObserveOutput {
     cursor_consistency: String,
 }
 
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct PageChangesOutput {
+    latest_sequence: u64,
+    next_sequence: u64,
+    oldest_sequence: u64,
+    has_more: bool,
+    resync_required: bool,
+    sequence_exhausted: bool,
+    records: Vec<Value>,
+    document_epoch: u64,
+    cursor: String,
+}
+
 static ACTIVE_WAITS: OnceLock<Mutex<HashMap<String, Arc<WaitToken>>>> = OnceLock::new();
 
 struct WaitToken {
@@ -502,7 +517,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<PageChangesOutput>(),
         description = "Read a bounded, value-free journal of DOM attribute, text, child-list, form value/checked property, and input/change events. Continue with the returned cursor and current documentEpoch; on resyncRequired, take a fresh page_observe snapshot before continuing. Native Rust DOM mutations are not included."
     )]
     async fn page_changes(
@@ -1118,6 +1133,28 @@ mod tests {
                     assert!(
                         properties.contains_key(field),
                         "page_observe output missing {field}"
+                    );
+                }
+            } else if tool.name == "page_changes" {
+                let properties = schema.get("properties").and_then(Value::as_object).unwrap();
+                for (field, expected_type) in [
+                    ("latestSequence", "integer"),
+                    ("nextSequence", "integer"),
+                    ("oldestSequence", "integer"),
+                    ("hasMore", "boolean"),
+                    ("resyncRequired", "boolean"),
+                    ("sequenceExhausted", "boolean"),
+                    ("records", "array"),
+                    ("documentEpoch", "integer"),
+                    ("cursor", "string"),
+                ] {
+                    assert_eq!(
+                        properties
+                            .get(field)
+                            .and_then(|value| value.get("type"))
+                            .and_then(Value::as_str),
+                        Some(expected_type),
+                        "page_changes output property {field}"
                     );
                 }
             } else {

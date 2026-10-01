@@ -134,10 +134,10 @@ evidence; the adapter remains an early integration.
 The adapter is an early implementation. It uses the MCP Rust SDK and stdio
 transport; the SDK smoke covers a representative workflow and reconnecting to
 the same running application after a client disconnect. Every tool publishes an
-`outputSchema`. `app_describe` and `page_observe` have field-level schemas;
-other tools currently declare an open JSON object because page, action, and
-operation fields vary. Their individual properties are not yet validated by
-the advertised schema.
+`outputSchema`. `app_describe`, `page_observe`, and `page_changes` have
+field-level schemas; other tools currently declare an open JSON object because
+page, action, and operation fields vary. Their individual properties are not
+yet validated by the advertised schema.
 Tools return JSON in both
 `structuredContent` and a readable text block; tool errors set `isError` and
 include the runtime error code. Action calls require a stable `requestId` and return the
