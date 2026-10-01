@@ -12,6 +12,16 @@ Unlock the draft field using the checkbox in the first legend. Focus the draft, 
 
 Use Tab/Shift+Tab and Space/Enter to move focus and activate controls. Verify disabled inputs are skipped, the two same-name radio groups stay independent, arrow keys move within one group, and pointer shapes return correctly after hovering text and buttons. These checks need physical input; a TCP activation test proves a different path.
 
+On Windows, repeat the same form workflow at 100% and 150% display scaling (or record the nearest available scale), first at the initial window size and then after resizing the window. At each scale, verify that the caret and preedit text stay aligned with the rendered input, the IME candidate window follows the caret, and the visible listbox options remain clickable. In the file-tool demo, open and dismiss the popover with both pointer and keyboard; scroll the list with the physical wheel and confirm the pointer remains over the intended row after scrolling. Record misses or coordinate drift instead of compensating with guessed clicks. Capture the OS display scale, Lapui-reported viewport, window dimensions, renderer, and whether each action was physical or sent through structured control.
+
+Use this record for each physical run so synthetic and OS-input evidence stay separate:
+
+| OS / scale / renderer | IME composition and candidate placement | selection / Backspace | Tab / Space / Enter | pointer cursor and target | wheel / popover | resize result |
+| --- | --- | --- | --- | --- | --- | --- |
+| Record actual values; mark each item pass, fail, or not tested |  |  |  |  |  |  |
+
+Do not mark the Windows input gate complete from an exported image, a TCP/MCP call, or a synthetic `winit` event. Attach those as separate supporting evidence and note any unavailable IME or display scale.
+
 For a cross-platform report, include OS/version, Rust version, window backend (Windows, X11, Wayland or macOS), renderer and input-method name. Run `cargo test --locked`, `cargo test --locked --no-default-features` and `cargo clippy --locked --all-targets -- -D warnings`; then test the form, Vue, React and file-tool windows using both human input and structured control calls. Compare behavior rather than exact pixels because installed fonts differ.
 
 Windows and Ubuntu 24.04/WSLg X11 have passed automated tests and CPU window/TCP form, reload and script-timeout recovery scenarios. Current WSLg Wayland startup failed; macOS and physical Chinese IME behavior remain unverified. The unexecuted GitHub workflow is a test configuration, not platform acceptance evidence. Long-running resource and frame-latency measurements are also separate work; see [rendering](rendering.md).
