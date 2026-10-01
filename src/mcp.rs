@@ -43,6 +43,19 @@ struct AppDescribeOutput {
     script_evaluation: bool,
 }
 
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct PageObserveOutput {
+    document_epoch: u64,
+    root_ref: Option<String>,
+    items: Vec<Value>,
+    next_after: Option<String>,
+    truncated: bool,
+    scan_limit_reached: bool,
+    cursor_consistency: String,
+}
+
 static ACTIVE_WAITS: OnceLock<Mutex<HashMap<String, Arc<WaitToken>>>> = OnceLock::new();
 
 struct WaitToken {
@@ -455,7 +468,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<PageObserveOutput>(),
         description = "Observe a bounded preorder page of rendered HTML elements with parent refs, roles, names, visible text, viewport bounds, and semantic control state. Use nextAfter and documentEpoch to continue; restart observation after page changes."
     )]
     async fn page_observe(
@@ -1081,6 +1094,30 @@ mod tests {
                             .and_then(Value::as_str),
                         Some(expected_type),
                         "app_describe output property {field}"
+                    );
+                }
+            } else if tool.name == "page_observe" {
+                let properties = schema.get("properties").and_then(Value::as_object).unwrap();
+                for (field, expected_type) in [
+                    ("documentEpoch", "integer"),
+                    ("items", "array"),
+                    ("truncated", "boolean"),
+                    ("scanLimitReached", "boolean"),
+                    ("cursorConsistency", "string"),
+                ] {
+                    assert_eq!(
+                        properties
+                            .get(field)
+                            .and_then(|value| value.get("type"))
+                            .and_then(Value::as_str),
+                        Some(expected_type),
+                        "page_observe output property {field}"
+                    );
+                }
+                for field in ["rootRef", "nextAfter"] {
+                    assert!(
+                        properties.contains_key(field),
+                        "page_observe output missing {field}"
                     );
                 }
             } else {
