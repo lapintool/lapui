@@ -7,9 +7,11 @@ cargo run --release --locked -- --html examples/form-submit-demo/index.html --wa
 ```
 
 Edit the required name/email/quantity, choose a contact method, toggle agreement
-and delivery, and submit. The contact field exercises Lapui's bounded single-select
-list support. The visible button listbox is backed by the same single-select DOM
-and form value because Blitz does not yet paint a native select popup. The handler
+and delivery, and submit. Tab enters the contact listbox at its selected option;
+Left/Right and Home/End move the selection. The contact field exercises Lapui's
+bounded single-select list support. The visible button listbox shares its value
+with the backing select because Blitz does not yet paint a native select popup.
+The handler
 prevents navigation, reads string-only FormData, and calls the existing Rust
 `counter.increment` action. Validate focuses the first uncanceled
 invalid field; Reset restores input defaults, select choice, and textarea text.

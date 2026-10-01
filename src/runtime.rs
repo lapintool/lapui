@@ -7127,6 +7127,11 @@ mod tests {
         let html = include_str!("../examples/forms-demo/index.html");
         let (mut doc, _) =
             LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>("globalThis.contactChangeCount=0;document.getElementById('first-select').addEventListener('change',()=>contactChangeCount++);if(document.getElementById('first-contact-email').getAttribute('tabindex')!=='0'||document.getElementById('first-contact-signal').getAttribute('tabindex')!=='-1')throw Error('listbox must expose one tab stop at the selected option');")
+            })
+            .unwrap();
         let snapshot = control_request(&mut doc, json!({"method":"controls"})).unwrap();
         let controls = snapshot["controls"].as_array().unwrap();
         assert!(!controls
@@ -7171,6 +7176,16 @@ mod tests {
         );
         doc.js_context
             .with(|ctx| {
+                ctx.eval::<(), _>("if(contactChangeCount!==1)throw Error('new listbox selection should dispatch one change');")
+            })
+            .unwrap();
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>("if(document.getElementById('first-contact-signal').getAttribute('tabindex')!=='0'||document.getElementById('first-contact-email').getAttribute('tabindex')!=='-1')throw Error('listbox tab stop did not follow selection');")
+            })
+            .unwrap();
+        doc.js_context
+            .with(|ctx| {
                 ctx.eval::<(), _>("const signal=document.getElementById('first-contact-signal');__lapui_dispatch('keydown',signal.__ref,__lapui_event_path(signal.__ref),'{}',{key:'ArrowLeft'});")
             })
             .unwrap();
@@ -7197,6 +7212,38 @@ mod tests {
                 .unwrap()["selected"],
             false
         );
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>("if(document.getElementById('first-contact-email').getAttribute('tabindex')!=='0'||document.getElementById('first-contact-signal').getAttribute('tabindex')!=='-1')throw Error('keyboard selection did not update the listbox tab stop');__lapui_dispatch('keydown',document.getElementById('first-contact-email').__ref,__lapui_event_path(document.getElementById('first-contact-email').__ref),'{}',{key:'End'});if(document.getElementById('first-contact-signal').getAttribute('tabindex')!=='0'||contactChangeCount!==3)throw Error('End did not move and select the listbox option');lapui.activate(document.getElementById('first-contact-signal').__ref);if(contactChangeCount!==3)throw Error('re-activating the selected listbox option emitted change');")
+            })
+            .unwrap();
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn form_submit_demo_listbox_uses_a_single_keyboard_tab_stop() {
+        let html = include_str!("../examples/form-submit-demo/index.html");
+        let (doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        let state: String = doc
+            .js_context
+            .with(|ctx| {
+                ctx.eval("JSON.stringify(['contact-email','contact-signal','contact-none'].map(id=>document.getElementById(id).getAttribute('tabindex')))")
+            })
+            .unwrap();
+        assert_eq!(state, "[\"-1\",\"0\",\"-1\"]");
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>("const signal=document.getElementById('contact-signal');__lapui_dispatch('keydown',signal.__ref,__lapui_event_path(signal.__ref),'{}',{key:'Home'});")
+            })
+            .unwrap();
+        let state: String = doc
+            .js_context
+            .with(|ctx| {
+                ctx.eval("JSON.stringify([document.getElementById('contact').value,...['contact-email','contact-signal','contact-none'].map(id=>document.getElementById(id).getAttribute('tabindex'))])")
+            })
+            .unwrap();
+        assert_eq!(state, "[\"email\",\"0\",\"-1\",\"-1\"]");
         assert!(doc.script_diagnostics.borrow().is_empty());
     }
 

@@ -19,7 +19,7 @@ button{padding:10px 16px;border:1px solid #a4b9d9;border-radius:6px;background:#
 <div class="field"><label for="name">Name (at least 2 characters)</label><input id="name" name="name" type="text" required minlength="2" value="Ada"></div>
 <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" required value="ada@example.test"></div>
 <div class="field"><label for="quantity">Quantity (1 to 10)</label><input id="quantity" name="quantity" type="number" required min="1" max="10" step="1" value="2"></div>
-<div class="field"><label>Preferred contact</label><select id="contact" name="contact" required hidden><option value="email">Email</option><option value="signal" selected>Signal</option><option value="none">No contact</option></select><div class="select-list" role="listbox" aria-label="Preferred contact"><button class="select-choice" id="contact-email" type="button" role="option" aria-selected="false" data-contact="email">Email</button><button class="select-choice" id="contact-signal" type="button" role="option" aria-selected="true" data-contact="signal">Signal</button><button class="select-choice" id="contact-none" type="button" role="option" aria-selected="false" data-contact="none">No contact</button></div></div>
+<div class="field"><label>Preferred contact</label><select id="contact" name="contact" required hidden><option value="email">Email</option><option value="signal" selected>Signal</option><option value="none">No contact</option></select><div class="select-list" role="listbox" aria-orientation="horizontal" aria-label="Preferred contact"><button class="select-choice" id="contact-email" type="button" role="option" aria-selected="false" data-contact="email">Email</button><button class="select-choice" id="contact-signal" type="button" role="option" aria-selected="true" data-contact="signal">Signal</button><button class="select-choice" id="contact-none" type="button" role="option" aria-selected="false" data-contact="none">No contact</button></div></div>
 <div class="field choice"><input id="agree" name="agree" type="checkbox" value="yes" required checked><label for="agree">I agree</label></div>
 <div class="field choice"><input id="standard" name="delivery" type="radio" value="standard" checked><label for="standard">Standard delivery</label><input id="express" name="delivery" type="radio" value="express"><label for="express">Express delivery</label></div>
 <div class="field"><label for="notes">Notes</label><textarea id="notes" name="notes">Initial notes</textarea></div>
@@ -43,9 +43,10 @@ form.addEventListener('submit',async event=>{
 });
 form.addEventListener('reset',()=>{byId('status').value='Reset';});
 const contact=byId('contact'),contactOptions=[...document.querySelectorAll('[data-contact]')];
-function syncContact(){for(const option of contactOptions)option.setAttribute('aria-selected',String(option.getAttribute('data-contact')===contact.value));}
+function syncContact(){for(const option of contactOptions){const selected=option.getAttribute('data-contact')===contact.value;option.setAttribute('aria-selected',String(selected));option.setAttribute('tabindex',selected?'0':'-1');}}
 contact.addEventListener('change',syncContact);
-for(const option of contactOptions)option.onclick=()=>{contact.value=option.getAttribute('data-contact');syncContact();__lapui_dispatch('input',contact.__ref,__lapui_event_path(contact.__ref));__lapui_dispatch('change',contact.__ref,__lapui_event_path(contact.__ref));};
+syncContact();
+for(const option of contactOptions)option.onclick=()=>{const value=option.getAttribute('data-contact'),changed=contact.value!==value;contact.value=value;syncContact();if(changed){__lapui_dispatch('input',contact.__ref,__lapui_event_path(contact.__ref));__lapui_dispatch('change',contact.__ref,__lapui_event_path(contact.__ref));}};
 for(const option of contactOptions)option.addEventListener('keydown',event=>{
   if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
   event.preventDefault();const index=contactOptions.indexOf(option);

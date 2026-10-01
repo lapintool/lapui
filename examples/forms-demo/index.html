@@ -17,7 +17,7 @@
 </head>
 <body><main>
   <h1>Form interaction</h1>
-  <p>Use Tab, Space, Enter and radio arrow keys, or the structured control client.</p>
+  <p>Use Tab, Space, Enter, radio arrow keys, and the contact listbox's Left/Right and Home/End keys, or the structured control client.</p>
   <section>
     <label><input id="agree" type="checkbox"> Agree to the local setting</label>
     <p id="agree-state" class="status" role="status">Agreement: false</p>
@@ -26,7 +26,7 @@
     <strong>First form — choice</strong>
     <label>Preferred contact</label>
     <select id="first-select" name="contact" hidden><option value="email" selected>Email</option><option value="signal">Signal</option></select>
-    <div class="choice" role="listbox" aria-label="Preferred contact"><button id="first-contact-email" type="button" role="option" aria-selected="true" data-contact="email">Email</button><button id="first-contact-signal" type="button" role="option" aria-selected="false" data-contact="signal">Signal</button></div>
+    <div class="choice" role="listbox" aria-orientation="horizontal" aria-label="Preferred contact"><button id="first-contact-email" type="button" role="option" aria-selected="true" data-contact="email">Email</button><button id="first-contact-signal" type="button" role="option" aria-selected="false" data-contact="signal">Signal</button></div>
     <p id="contact-state" role="status">Contact: email</p>
     <label><input id="first-a" type="radio" name="choice" value="A" checked> First A</label>
     <label><input id="first-b" type="radio" name="choice" value="B"> First B</label>
@@ -55,10 +55,11 @@
       input.onchange=()=>byId(prefix+'-state').textContent=(prefix==='first'?'First':'Second')+' choice: '+input.value;
     }
     const contact=byId('first-select'),contactOptions=[...document.querySelectorAll('[data-contact]')];
-    function syncContact(){for(const option of contactOptions)option.setAttribute('aria-selected',String(option.getAttribute('data-contact')===contact.value));byId('contact-state').textContent='Contact: '+contact.value;}
+    function syncContact(){for(const option of contactOptions){const selected=option.getAttribute('data-contact')===contact.value;option.setAttribute('aria-selected',String(selected));option.setAttribute('tabindex',selected?'0':'-1');}byId('contact-state').textContent='Contact: '+contact.value;}
     contact.addEventListener('change',syncContact);
+    syncContact();
     for(const option of contactOptions){
-      option.onclick=()=>{contact.value=option.getAttribute('data-contact');syncContact();__lapui_dispatch('input',contact.__ref,__lapui_event_path(contact.__ref));__lapui_dispatch('change',contact.__ref,__lapui_event_path(contact.__ref));};
+      option.onclick=()=>{const value=option.getAttribute('data-contact'),changed=contact.value!==value;contact.value=value;syncContact();if(changed){__lapui_dispatch('input',contact.__ref,__lapui_event_path(contact.__ref));__lapui_dispatch('change',contact.__ref,__lapui_event_path(contact.__ref));}};
       option.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const index=contactOptions.indexOf(option),next=event.key==='Home'?0:event.key==='End'?contactOptions.length-1:Math.max(0,Math.min(contactOptions.length-1,index+(event.key==='ArrowLeft'?-1:1)));contactOptions[next].focus();lapui.activate(contactOptions[next].__ref);});
     }
     byId('unlock').onchange=()=>byId('locked-fields').disabled=!byId('unlock').checked;
