@@ -1,6 +1,8 @@
 /target/
 /book/
 **/node_modules/
+__pycache__/
+*.py[cod]
 # Local design plans and measurements are not part of the public repository.
 /docs/
 /.codex/

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Lapui local network UI</title>
+  <style>
+    html,body{margin:0;min-height:100%;background:#edf2f8;color:#172334;font-family:Arial,sans-serif;font-size:15px}
+    main{box-sizing:border-box;max-width:980px;margin:0 auto;padding:24px}
+    h1{margin:0 0 8px;font-size:28px}p{line-height:1.45}
+    section{box-sizing:border-box;background:white;border:1px solid #cbd5e1;border-radius:9px;margin:14px 0;padding:16px}
+    h2{font-size:18px;margin:0 0 12px}
+    label{display:inline-block;margin:4px 8px 4px 0}
+    input{box-sizing:border-box;min-width:190px;padding:8px;border:1px solid #9aaabd;border-radius:5px}
+    button{cursor:pointer;margin:4px 6px 4px 0;padding:8px 12px;border:0;border-radius:5px;background:#2459c4;color:white;font-size:14px}
+    button.secondary{background:#53657d}button.danger{background:#a73340}
+    .status{min-height:24px;padding:8px;background:#f0f4fa;border-radius:5px;overflow-wrap:anywhere}
+    #items{padding-left:24px}.item{padding:3px 0}
+    #popover{padding:12px;background:#fff4d4;border:1px solid #e6c569;border-radius:6px}
+    #churn-list{display:flex;flex-wrap:wrap;gap:4px}.churn-node{padding:4px 7px;background:#dceafe;border-radius:4px}
+    pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:140px;overflow:auto;background:#f4f6f9;padding:8px;border-radius:5px}
+  </style>
+</head>
+<body><main>
+  <h1>Local network and interaction fixture</h1>
+  <p>This example exercises Lapui's HTTP fetch, EventSource, WebSocket, dynamic DOM, form input, popover, and task timers against a local fixture server.</p>
+
+  <section>
+    <h2>HTTP fetch and list updates</h2>
+    <label for="query">Search query</label><input id="query" type="text" value="lapui">
+    <button id="fetch-items">Fetch items</button><button id="churn-items" class="secondary">Add/remove list nodes</button>
+    <p id="fetch-state" class="status" role="status">Ready</p>
+    <p id="popover-state" class="status" role="status">Popover closed</p>
+    <p id="sse-state" class="status" role="status">SSE disconnected</p>
+    <p id="ws-state" class="status" role="status">WebSocket disconnected</p>
+    <p id="task-state" class="status" role="status">No active task</p>
+    <ul id="items"></ul>
+  </section>
+
+  <section>
+    <h2>Server-sent events</h2>
+    <button id="sse-connect">Connect SSE</button><button id="sse-close" class="secondary">Close SSE</button>
+    <pre id="sse-log">No events yet.</pre>
+  </section>
+
+  <section>
+    <h2>WebSocket</h2>
+    <button id="ws-connect">Connect WebSocket</button><button id="ws-send" class="secondary">Send message</button><button id="ws-close" class="secondary">Close socket</button>
+    <pre id="ws-log">No messages yet.</pre>
+  </section>
+
+  <section>
+    <h2>Interaction and task churn</h2>
+    <button id="toggle-popover">Show popover</button><button id="start-task">Start progress task</button><button id="inject-error" class="danger">Inject asynchronous error</button>
+    <p id="popover" hidden>Popover content follows the trigger and can be opened and closed repeatedly.</p>
+    <div id="churn-list"></div>
+  </section>
+</main><script src="app.js"></script></body>
+</html>
