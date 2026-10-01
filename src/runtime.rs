@@ -7131,6 +7131,14 @@ mod tests {
         let html = include_str!("../examples/forms-demo/index.html");
         let (mut doc, _) =
             LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>(
+                    "getComputedStyle(document.getElementById('first-select')).display"
+                ))
+                .unwrap(),
+            "none"
+        );
         doc.js_context
             .with(|ctx| {
                 ctx.eval::<(), _>("globalThis.contactChangeCount=0;document.getElementById('first-select').addEventListener('change',()=>contactChangeCount++);if(document.getElementById('first-contact-email').getAttribute('tabindex')!=='0'||document.getElementById('first-contact-signal').getAttribute('tabindex')!=='-1')throw Error('listbox must expose one tab stop at the selected option');")
@@ -7229,6 +7237,14 @@ mod tests {
         let html = include_str!("../examples/form-submit-demo/index.html");
         let (doc, _) =
             LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>(
+                    "getComputedStyle(document.getElementById('contact')).display"
+                ))
+                .unwrap(),
+            "none"
+        );
         let state: String = doc
             .js_context
             .with(|ctx| {
