@@ -1,12 +1,15 @@
 use crate::action::{ActionError, ActionRegistry, ActionScope, InvokeOptions};
 use crate::control::{self, DocumentController, DocumentRequest};
+use crate::debug_trace::{DebugTrace, Span};
 use crate::fetch_work::{FetchRequest, FetchWork};
+use crate::frames::Frames;
 use crate::host_work::HostWork;
 use crate::lifecycle::Cancellation;
 use crate::script_budget::{
     ScriptBudget, CALLBACK_LIMIT, CHECKPOINT_SLICE, INTERRUPTED_MESSAGE, STARTUP_LIMIT,
 };
 use crate::scripts::{self, ScriptDiagnostics, StartupScript};
+use crate::stream_work::{Data as StreamData, StreamWork};
 use crate::timers::Timers;
 use blitz::dom::{
     BaseDocument, DocGuard, DocGuardMut, Document, DocumentConfig, EventDriver, EventHandler,
@@ -17,7 +20,6 @@ use blitz::shell::{BlitzShellEvent, BlitzShellProxy};
 use blitz::traits::events::{DomEvent, EventState, UiEvent};
 use blitz::traits::net::{Bytes, NetHandler, NetProvider, Request, Url};
 use blitz::traits::node_id::NodeId;
-use futures_util::{SinkExt, StreamExt};
 use rquickjs::{
     context::EvalOptions, function::Func, Context, Exception, FromJs, Function, Module, Runtime,
 };
@@ -35,6 +37,8 @@ use style::servo_arc::Arc as ServoArc;
 const HTML: &str = include_str!("../ui/index.html");
 const SCRIPT: &str = include_str!("../ui/app.js");
 const BRIDGE: &str = include_str!("../ui/bridge.js");
+const RESIZE_OBSERVER: &str = include_str!("../ui/resize-observer.js");
+const FORM_BRIDGE: &str = include_str!("../ui/forms.js");
 
 struct LocalDirectoryNetProvider {
     root: PathBuf,
@@ -102,6 +106,7 @@ impl NetProvider for LocalDirectoryNetProvider {
 }
 
 struct Completion {
+    trace_origin: Option<(u64, u64)>,
     request_id: Option<i32>,
     error_code: Option<String>,
     result: Result<Value, String>,
@@ -526,6 +531,7 @@ fn control_snapshot(doc: &BaseDocument) -> Value {
 }
 
 pub struct LapuiDocument {
+    debug_trace: DebugTrace,
     actions: ActionRegistry,
     action_scopes: Vec<ActionScope>,
     dom: Rc<RefCell<BaseDocument>>,
@@ -535,9 +541,8 @@ pub struct LapuiDocument {
     script_stopped: Cell<bool>,
     completions: mpsc::Receiver<Completion>,
     waker: Arc<Mutex<Option<Waker>>>,
-    event_sources: Arc<Mutex<HashMap<i32, Cancellation>>>,
+    streams: Rc<RefCell<Option<StreamWork>>>,
     fetch_requests: Arc<Mutex<HashMap<i32, Cancellation>>>,
-    web_sockets: Arc<Mutex<HashMap<i32, tokio::sync::mpsc::UnboundedSender<WebSocketCommand>>>>,
     controller: DocumentController,
     control_requests: mpsc::Receiver<DocumentRequest>,
     script_diagnostics: ScriptDiagnostics,
@@ -546,23 +551,150 @@ pub struct LapuiDocument {
     timers: Timers,
     proxy: Option<BlitzShellProxy>,
     gc_requested: Rc<Cell<bool>>,
+    frames: Rc<RefCell<Frames>>,
 }
 
 impl Drop for LapuiDocument {
     fn drop(&mut self) {
         self.lifetime.cancel();
+        self.frames.borrow_mut().stop();
         self.action_scopes.clear();
         let _ = self.forward_shutdown.send(Err("document closed".into()));
-        for (_, closed) in self.event_sources.lock().unwrap().drain() {
-            closed.cancel();
-        }
-        for (_, sender) in self.web_sockets.lock().unwrap().drain() {
-            let _ = sender.send(WebSocketCommand::Close);
-        }
     }
 }
 
 impl LapuiDocument {
+    /// Run animation callbacks at one rendering opportunity, before layout/paint.
+    /// Window embedders should use LapuiApplication. Headless embedders call this
+    /// themselves after establishing a viewport and before resolving the frame.
+    /// Callback completion does not acknowledge physical screen presentation.
+    pub fn animation_frame(&mut self) -> bool {
+        let time = self.frames.borrow().now() / 1000.0;
+        self.animation_frame_at(time)
+    }
+
+    /// Supply the embedding renderer's CSS animation time in seconds. JS frame
+    /// timestamps still use the document's independent performance clock.
+    pub fn animation_frame_at(&mut self, layout_time: f64) -> bool {
+        if layout_time.is_finite() && layout_time >= 0.0 {
+            self.frames.borrow_mut().layout_time = layout_time;
+        }
+        let callback_trace = self
+            .debug_trace
+            .span("animation_callbacks", json!({}), None);
+        self.resume_pending_jobs();
+        if self.script_budget.interrupted() {
+            return false;
+        }
+        self.frames.borrow_mut().in_frame = true;
+        let (timestamp, callbacks) = self.frames.borrow().snapshot();
+        let deadline = Instant::now() + CHECKPOINT_SLICE;
+        let mut changed = false;
+        for id in callbacks {
+            if self.script_budget.interrupted() || Instant::now() >= deadline {
+                break;
+            }
+            if !self.frames.borrow_mut().take(id) {
+                continue;
+            }
+            let result = self.script_budget.run(CALLBACK_LIMIT, || {
+                self.js_context.with(|ctx| {
+                    let function: Function = ctx.globals().get("__lapui_fire_animation_frame")?;
+                    function.call::<_, ()>((id, timestamp))
+                })
+            });
+            if let Err(error) = result {
+                scripts::report(
+                    &self.script_diagnostics,
+                    &format!("animation-frame:{id}"),
+                    "animation-frame",
+                    javascript_error(&self.js_context, &error, &self.script_budget),
+                );
+            }
+            if let Err(error) = drain_jobs(&self.js_runtime, &self.script_budget) {
+                scripts::report(&self.script_diagnostics, "microtask", "evaluate", error);
+            }
+            changed = true;
+        }
+        self.frames.borrow_mut().in_frame = false;
+        self.stop_faulted_script();
+        callback_trace.finish(
+            json!({"callbacksRan":changed,"scriptSuspended":self.script_budget.interrupted()}),
+            false,
+        );
+        changed
+    }
+
+    /// Deliver window/scroll notifications and native-size observations after
+    /// animation callbacks, before painting. Custom/offscreen hosts call this
+    /// once per rendering opportunity; bare polling does not deliver observers.
+    pub fn rendering_update(&mut self) -> bool {
+        self.rendering_update_at(self.layout_animation_time())
+    }
+
+    pub fn rendering_update_at(&mut self, layout_time: f64) -> bool {
+        if layout_time.is_finite() && layout_time >= 0.0 {
+            self.frames.borrow_mut().layout_time = layout_time;
+        }
+        let observer_trace = self
+            .debug_trace
+            .span("rendering_notifications", json!({}), None);
+        self.resume_pending_jobs();
+        if self.script_budget.interrupted() {
+            return false;
+        }
+        {
+            let mut frames = self.frames.borrow_mut();
+            frames.in_frame = true;
+            frames.rendering_pending = false;
+        }
+        let result = self.script_budget.run(CALLBACK_LIMIT, || {
+            self.js_context.with(|ctx| {
+                let function: Function = ctx.globals().get("__lapui_rendering_update")?;
+                function.call::<_, bool>(())
+            })
+        });
+        let changed = match result {
+            Ok(changed) => changed,
+            Err(error) => {
+                scripts::report(
+                    &self.script_diagnostics,
+                    "rendering-update",
+                    "rendering-update",
+                    javascript_error(&self.js_context, &error, &self.script_budget),
+                );
+                false
+            }
+        };
+        if let Err(error) = drain_jobs(&self.js_runtime, &self.script_budget) {
+            scripts::report(&self.script_diagnostics, "microtask", "evaluate", error);
+        }
+        self.frames.borrow_mut().in_frame = false;
+        self.stop_faulted_script();
+        observer_trace.finish(
+            json!({"changed":changed,"scriptSuspended":self.script_budget.interrupted()}),
+            false,
+        );
+        changed
+    }
+
+    pub(crate) fn defer_rendering_update(&mut self) {
+        self.frames.borrow_mut().rendering_pending = true;
+    }
+
+    pub fn has_pending_rendering_update(&self) -> bool {
+        self.frames.borrow().rendering_pending
+    }
+
+    pub fn has_animation_callbacks(&self) -> bool {
+        self.frames.borrow().is_pending()
+    }
+
+    /// Last sampled embedding CSS animation time, in seconds, for resolve/paint.
+    pub fn layout_animation_time(&self) -> f64 {
+        self.frames.borrow().layout_time
+    }
+
     /// Keep a Rust action scope with this document. Full replacement/drop
     /// retires these actions; application registrations remain independent.
     pub fn create_action_scope(&mut self, name: &str) -> Result<&ActionScope, ActionError> {
@@ -584,6 +716,39 @@ impl LapuiDocument {
         Ok(())
     }
 
+    pub fn debug_trace_enabled(&self) -> bool {
+        self.debug_trace.enabled()
+    }
+    pub fn configure_debug_trace(&self, enabled: bool, clear: bool) {
+        self.debug_trace.configure(enabled, clear);
+        if enabled {
+            self.dom.borrow().shell_provider.request_redraw();
+        }
+    }
+    pub fn debug_trace(&self, after_sequence: u64, limit: usize) -> Result<Value, ActionError> {
+        let mut page = self.debug_trace.read(after_sequence, limit)?;
+        page["documentEpoch"] = json!(self.dom.borrow().id());
+        Ok(page)
+    }
+    pub fn debug_trace_limits() -> Value {
+        DebugTrace::limits()
+    }
+    pub(crate) fn frame_trace(&self, target: &'static str) -> Span {
+        if !self.debug_trace.enabled() {
+            return self.debug_trace.span("frame", Value::Null, None);
+        }
+        let (causes, lost) = self.debug_trace.take_causes();
+        self.debug_trace.span(
+            "frame",
+            json!({"target":target,"causes":causes,"causesTruncated":lost,
+            "observedStateVersion":self.actions.version(),"physicalPresentation":"unknown"}),
+            None,
+        )
+    }
+    pub(crate) fn layout_trace(&self) -> Span {
+        self.debug_trace.span("layout", json!({}), None)
+    }
+
     /// Cooperative script limits advertised by the development control protocol.
     pub fn script_limits() -> Value {
         json!({
@@ -591,9 +756,40 @@ impl LapuiDocument {
             "callbackMillis": CALLBACK_LIMIT.as_millis(),
             "startupMillis": STARTUP_LIMIT.as_millis(),
             "checkpointSliceMillis": CHECKPOINT_SLICE.as_millis(),
+            "animationCallbacks": crate::frames::MAX_CALLBACKS,
+            "animationSliceMillis": CHECKPOINT_SLICE.as_millis(),
+            "renderingObserverLimits": Self::rendering_limits(),
+            "formLimits": Self::form_limits(),
             "cooperative": true,
             "interruption": "suspendUntilReload"
         })
+    }
+
+    /// String-based local-form bounds, measured in UTF-16 code units.
+    pub fn form_limits() -> Value {
+        json!({"patternCodeUnits":1024,"patternValueCodeUnits":65536,
+            "customMessageCodeUnits":4096,"formDataEntries":1024,"formDataCodeUnits":2097152})
+    }
+
+    /// Preview observation bounds; not a hard frame or native-layout budget.
+    pub fn rendering_limits() -> Value {
+        json!({"resizeObservers":128,"resizeTargets":1024,"scrollTargets":1024,
+            "deliveryPasses":32,"deliverySliceMillis":CHECKPOINT_SLICE.as_millis()})
+    }
+
+    /// Bounds of the document-owned WebSocket/SSE transport, not total heap use.
+    pub fn stream_limits() -> Value {
+        json!({"outstanding":crate::stream_work::MAX_STREAMS,
+            "queuedEvents":crate::stream_work::MAX_EVENTS,
+            "eventByteBudget":crate::stream_work::EVENT_BYTES,
+            "outgoingPerSocket":crate::stream_work::MAX_OUTGOING,
+            "outgoingByteBudget":crate::stream_work::OUTGOING_BYTES,
+            "webSocketMessageBytes":crate::stream_work::MAX_MESSAGE,
+            "urlBytes":crate::stream_work::MAX_URL,
+            "sseLineBytes":crate::stream_work::SSE_LINE,
+            "sseDataBytes":crate::stream_work::SSE_DATA,
+            "sseFieldBytes":1024,"closeFlushMillis":1000,
+            "deliveriesPerPoll":16,"deliverySliceMillis":CHECKPOINT_SLICE.as_millis()})
     }
 
     fn stop_faulted_script(&self) {
@@ -602,12 +798,7 @@ impl LapuiDocument {
         }
         self.lifetime.cancel();
         self.timers.handle.stop();
-        for closed in self.event_sources.lock().unwrap().values() {
-            closed.cancel();
-        }
-        for (_, sender) in self.web_sockets.lock().unwrap().drain() {
-            let _ = sender.send(WebSocketCommand::Close);
-        }
+        self.frames.borrow_mut().stop();
         let _ = self
             .forward_shutdown
             .send(Err("scripting suspended".into()));
@@ -637,6 +828,33 @@ impl LapuiDocument {
         self.controller.clone()
     }
 
+    fn semantic_controls(&self) -> Value {
+        let mut snapshot = control_snapshot(&self.dom.borrow());
+        if self.script_budget.interrupted() {
+            snapshot["validationAvailable"] = json!(false);
+            return snapshot;
+        }
+        let result = self.script_budget.run(CALLBACK_LIMIT, || {
+            self.js_context.with(|ctx| {
+                let function: Function = ctx.globals().get("__lapui_form_snapshot_json")?;
+                function.call::<_, String>((snapshot.to_string(),))
+            })
+        });
+        match result {
+            Ok(value) => serde_json::from_str(&value).unwrap_or(snapshot),
+            Err(error) => {
+                scripts::report(
+                    &self.script_diagnostics,
+                    "controls-validation",
+                    "control",
+                    javascript_error(&self.js_context, &error, &self.script_budget),
+                );
+                snapshot["validationAvailable"] = json!(false);
+                snapshot
+            }
+        }
+    }
+
     fn execute_control_command(&self, request: &Value) -> Result<Value, ActionError> {
         let failure = |code: &str, message: &str| ActionError {
             code: code.into(),
@@ -646,8 +864,75 @@ impl LapuiDocument {
             .get("method")
             .and_then(Value::as_str)
             .ok_or_else(|| failure("invalid_request", "missing document method"))?;
+        if matches!(method, "debugTrace.read" | "debugTrace.configure") {
+            let allowed = if method == "debugTrace.read" {
+                &["method", "documentEpoch", "afterSequence", "limit"][..]
+            } else {
+                &["method", "documentEpoch", "enabled", "clear"][..]
+            };
+            if request
+                .as_object()
+                .unwrap()
+                .keys()
+                .any(|key| !allowed.contains(&key.as_str()))
+            {
+                return Err(failure("invalid_request", "unknown debug trace field"));
+            }
+            if request.get("documentEpoch").and_then(Value::as_u64)
+                != Some(self.dom.borrow().id() as u64)
+            {
+                return Err(failure(
+                    "stale_document",
+                    "debug trace requires the current documentEpoch",
+                ));
+            }
+            if method == "debugTrace.configure" {
+                let enabled = request
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| failure("invalid_request", "enabled must be a boolean"))?;
+                let clear = request
+                    .get("clear")
+                    .map(|value| {
+                        value
+                            .as_bool()
+                            .ok_or_else(|| failure("invalid_request", "clear must be a boolean"))
+                    })
+                    .transpose()?
+                    .unwrap_or(false);
+                self.configure_debug_trace(enabled, clear);
+                return self.debug_trace(0, 128);
+            }
+            let after = request
+                .get("afterSequence")
+                .map(|value| {
+                    value.as_u64().ok_or_else(|| {
+                        failure("invalid_request", "afterSequence must be nonnegative")
+                    })
+                })
+                .transpose()?
+                .unwrap_or(0);
+            let limit = request
+                .get("limit")
+                .map(|value| {
+                    value
+                        .as_u64()
+                        .ok_or_else(|| failure("invalid_request", "limit must be 1..128"))
+                })
+                .transpose()?
+                .unwrap_or(64);
+            if limit > 128 {
+                return Err(failure("invalid_request", "limit must be 1..128"));
+            }
+            return self.debug_trace(after, limit as usize);
+        }
         if method == "controls" {
-            return Ok(control_snapshot(&self.dom.borrow()));
+            return Ok(self.semantic_controls());
+        }
+        if method == "networkStatus" {
+            return Ok(
+                json!({"documentEpoch":self.dom.borrow().id(),"streams":stream_status(&self.streams),"streamLimits":Self::stream_limits()}),
+            );
         }
         if method == "diagnostics" {
             return Ok(
@@ -766,7 +1051,7 @@ impl LapuiDocument {
             .cloned()
             .collect();
         Ok(
-            json!({"status":"dispatched", "documentEpoch":epoch, "controls":control_snapshot(&self.dom.borrow())["controls"], "dispatchErrors":dispatch_errors}),
+            json!({"status":"dispatched", "documentEpoch":epoch, "controls":self.semantic_controls()["controls"], "dispatchErrors":dispatch_errors}),
         )
     }
 
@@ -850,6 +1135,7 @@ impl LapuiDocument {
         let dom = Rc::new(RefCell::new(
             HtmlDocument::from_html(html, config).into_inner(),
         ));
+        let debug_trace = DebugTrace::new();
         let diagnostics: ScriptDiagnostics = Rc::new(RefCell::new(Default::default()));
         let mut startup_scripts =
             scripts::html_scripts(&dom.borrow(), app_root.as_deref(), &diagnostics);
@@ -889,6 +1175,7 @@ impl LapuiDocument {
         let timer_waker = waker.clone();
         let timer_proxy = proxy.clone();
         let timers = Timers::new(move || wake_document(&timer_waker, &timer_proxy, doc_id));
+        let frames = Rc::new(RefCell::new(Frames::new(debug_trace.clone())));
 
         let get_dom = dom.clone();
         let set_dom = dom.clone();
@@ -914,20 +1201,142 @@ impl LapuiDocument {
         let invoke_waker = waker.clone();
         let invoke_proxy = proxy.clone();
         let controls_dom = dom.clone();
-        let event_sources = Arc::new(Mutex::new(HashMap::<i32, Cancellation>::new()));
+        let streams = Rc::new(RefCell::new(None::<StreamWork>));
         let fetch_requests = Arc::new(Mutex::new(HashMap::<i32, Cancellation>::new()));
-        let web_sockets = Arc::new(Mutex::new(HashMap::<
-            i32,
-            tokio::sync::mpsc::UnboundedSender<WebSocketCommand>,
-        >::new()));
         js_context
             .with(|ctx| -> rquickjs::Result<()> {
                 let globals = ctx.globals();
+                let frame_clock = frames.clone();
+                globals.set("__lapui_now", Func::from(move || frame_clock.borrow().now()))?;
+                globals.set("__lapui_time_origin", frames.borrow().time_origin)?;
+                let frame_requests = frames.clone();
+                let frame_dom = dom.clone();
+                globals.set("__lapui_animation_request", Func::from(move |id: i32| -> bool {
+                    if !frame_requests.borrow_mut().request(id) { return false; }
+                    // The window driver schedules successors at its next deadline.
+                    if !frame_requests.borrow().in_frame {
+                        frame_dom.borrow().shell_provider.request_redraw();
+                    }
+                    true
+                }))?;
+                let frame_cancellations = frames.clone();
+                globals.set("__lapui_animation_cancel", Func::from(move |id: i32| { frame_cancellations.borrow_mut().cancel(id); }))?;
+                let read_trace=debug_trace.clone();
+                globals.set("__lapui_debug_trace_read",Func::from(move |after:String,limit:usize| {
+                    let result=after.parse::<u64>().map_err(|_|ActionError::new("invalid_request","invalid trace cursor"))
+                        .and_then(|after|read_trace.read(after,limit));
+                    match result { Ok(mut page)=>{page["documentEpoch"]=json!(doc_id);json!({"ok":true,"observation":page})},Err(error)=>json!({"ok":false,"error":error}) }.to_string()
+                }))?;
+                let configure_trace=debug_trace.clone();
+                let trace_dom=dom.clone();
+                globals.set("__lapui_debug_trace_configure",Func::from(move |enabled:bool,clear:bool| {
+                    configure_trace.configure(enabled,clear);
+                    if enabled { trace_dom.borrow().shell_provider.request_redraw(); }
+                }))?;
+                globals.set("__lapui_observer_limits", Self::rendering_limits().to_string())?;
+                globals.set("__lapui_form_limits", Self::form_limits().to_string())?;
+                let rendering_dom = dom.clone();
+                let rendering_frames = frames.clone();
+                globals.set("__lapui_render_request", Func::from(move || {
+                    let mut frames = rendering_frames.borrow_mut();
+                    frames.rendering_pending = true;
+                    if !frames.in_frame { rendering_dom.borrow().shell_provider.request_redraw(); }
+                }))?;
+                let viewport_dom = dom.clone();
+                globals.set("__lapui_viewport", Func::from(move || -> Vec<f64> {
+                    let doc = viewport_dom.borrow();
+                    let viewport = doc.viewport();
+                    let scroll = doc.viewport_scroll();
+                    vec![f64::from(viewport.window_size.0)/viewport.scale_f64(),
+                        f64::from(viewport.window_size.1)/viewport.scale_f64(),viewport.scale_f64(),scroll.x,scroll.y]
+                }))?;
+                let resize_dom = dom.clone();
+                let resize_frames = frames.clone();
+                let resize_batch = mutation_batch.clone();
+                globals.set("__lapui_resize_samples", Func::from(move |references: Vec<String>| -> String {
+                    if references.len() > 2048 { return "{}".into(); }
+                    flush_layout(&resize_dom, &resize_batch, &resize_frames);
+                    let doc = resize_dom.borrow();
+                    let samples: serde_json::Map<String,Value> = references.into_iter().filter_map(|reference| {
+                        resolve_node_ref(&doc, &reference).map(|id| (reference, json!(crate::geometry::resize_sample(&doc,id))))
+                    }).collect();
+                    Value::Object(samples).to_string()
+                }))?;
+                let offset_dom = dom.clone();
+                let offset_frames = frames.clone();
+                let offset_batch = mutation_batch.clone();
+                globals.set("__lapui_offset_metrics",Func::from(move |reference: String| -> Vec<f64> {
+                    flush_layout(&offset_dom,&offset_batch,&offset_frames);
+                    let doc = offset_dom.borrow();
+                    resolve_node_ref(&doc,&reference).map_or_else(||vec![0.0;4],|id|crate::geometry::offset_metrics(&doc,id))
+                }))?;
+                let offset_parent_dom = dom.clone();
+                let offset_parent_frames = frames.clone();
+                let offset_parent_batch = mutation_batch.clone();
+                globals.set("__lapui_offset_parent",Func::from(move |reference: String| -> String {
+                    flush_layout(&offset_parent_dom,&offset_parent_batch,&offset_parent_frames);
+                    let doc = offset_parent_dom.borrow();
+                    resolve_node_ref(&doc,&reference).and_then(|id|crate::geometry::offset_parent(&doc,id))
+                        .map_or_else(String::new,|id|canonical_node_ref(doc.id(),id))
+                }))?;
+                let computed_dom = dom.clone();
+                let computed_frames = frames.clone();
+                let computed_batch = mutation_batch.clone();
+                globals.set("__lapui_computed_value",Func::from(move |reference: String,name: String| -> String {
+                    flush_layout(&computed_dom,&computed_batch,&computed_frames);
+                    let doc = computed_dom.borrow();
+                    resolve_node_ref(&doc,&reference).map_or_else(String::new, |id| crate::computed_style::value(&doc,id,&name))
+                }))?;
+                let computed_names_dom = dom.clone();
+                let computed_names_frames = frames.clone();
+                let computed_names_batch = mutation_batch.clone();
+                globals.set("__lapui_computed_names",Func::from(move |reference: String| -> Vec<String> {
+                    flush_layout(&computed_names_dom,&computed_names_batch,&computed_names_frames);
+                    let doc = computed_names_dom.borrow();
+                    resolve_node_ref(&doc,&reference).map_or_else(Vec::new, |id| crate::computed_style::names(&doc,id))
+                }))?;
+                let metrics_dom = dom.clone();
+                let metrics_frames = frames.clone();
+                let metrics_batch = mutation_batch.clone();
+                globals.set("__lapui_layout_metrics", Func::from(move |reference: String| -> Vec<f64> {
+                    flush_layout(&metrics_dom, &metrics_batch, &metrics_frames);
+                    let doc = metrics_dom.borrow();
+                    resolve_node_ref(&doc, &reference).map_or_else(|| vec![0.0;8], |id| crate::geometry::metrics(&doc,id))
+                }))?;
+                let scroll_dom = dom.clone();
+                let scroll_frames = frames.clone();
+                let scroll_batch = mutation_batch.clone();
+                globals.set("__lapui_scroll", Func::from(move |reference: String, x: Option<f64>, y: Option<f64>, relative: bool| -> bool {
+                    flush_layout(&scroll_dom, &scroll_batch, &scroll_frames);
+                    let mut doc = scroll_dom.borrow_mut();
+                    resolve_node_ref(&doc,&reference).is_some_and(|id| crate::geometry::scroll(&mut doc,id,x,y,relative))
+                }))?;
+                let rects_dom = dom.clone();
+                let rects_frames = frames.clone();
+                let rects_batch = mutation_batch.clone();
+                globals.set("__lapui_client_rects", Func::from(move |reference: String| -> Vec<Vec<f64>> {
+                    flush_layout(&rects_dom,&rects_batch,&rects_frames);
+                    let doc = rects_dom.borrow();
+                    let Some(id) = resolve_node_ref(&doc,&reference) else { return Vec::new(); };
+                    if !crate::geometry::has_boxes(&doc,id) { return Vec::new(); }
+                    doc.node_client_rects(id).into_iter()
+                        .map(|rect| vec![rect.x,rect.y,rect.width,rect.height]).collect()
+                }))?;
                 let document_root = canonical_node_ref(doc_id, dom.borrow().root_node().id);
                 globals.set(
                     "__lapui_document_ref",
                     Func::from(move || document_root.clone()),
                 )?;
+                let geometry_dom = dom.clone();
+                let geometry_frames = frames.clone();
+                let geometry_batch = mutation_batch.clone();
+                globals.set("__lapui_bounding_rect", Func::from(move |reference: String| -> Vec<f64> {
+                    flush_layout(&geometry_dom, &geometry_batch, &geometry_frames);
+                    let doc = geometry_dom.borrow();
+                    let Some(id) = resolve_node_ref(&doc, &reference) else { return vec![0.0;4]; };
+                    if !crate::geometry::has_boxes(&doc,id) { return vec![0.0;4]; }
+                    doc.get_client_bounding_rect(id).map_or_else(|| vec![0.0;4], |rect| vec![rect.x,rect.y,rect.width,rect.height])
+                }))?;
                 let timer_arm = timers.handle.clone();
                 globals.set(
                     "__lapui_timer_arm",
@@ -1229,13 +1638,7 @@ impl LapuiDocument {
                             let Some(id) = resolve_node_ref(&doc, &reference) else {
                                 return false;
                             };
-                            if !crate::forms::supports_value_write(&doc, id) {
-                                return false;
-                            }
-                            let name =
-                                QualName::new(None, blitz::dom::ns!(), LocalName::from("value"));
-                            doc.mutate().set_attribute(id, name, &value);
-                            true
+                            crate::forms::set_value(&mut doc,id,&value)
                         }
                     }),
                 )?;
@@ -1273,6 +1676,15 @@ impl LapuiDocument {
                         crate::forms::set_checked_raw(&mut doc, id, checked)
                     }
                 }))?;
+                globals.set("__lapui_form_owner",Func::from({let dom=dom.clone();move |reference:String| -> String {
+                    let doc=dom.borrow();resolve_node_ref(&doc,&reference).and_then(|id|crate::forms::owner(&doc,id))
+                        .map(|id|canonical_node_ref(doc.id(),id)).unwrap_or_default()
+                }}))?;
+                globals.set("__lapui_form_controls",Func::from({let dom=dom.clone();move |reference:String| -> Vec<String> {
+                    let doc=dom.borrow();resolve_node_ref(&doc,&reference).map(|id|crate::forms::controls(&doc,id))
+                        .unwrap_or_default().into_iter().map(|id|canonical_node_ref(doc.id(),id)).collect()
+                }}))?;
+                globals.set("__lapui_url_valid",Func::from(move |value:String| -> bool {Url::parse(&value).is_ok()}))?;
                 globals.set("__lapui_label_control", Func::from({
                     let dom = dom.clone();
                     move |reference: String| -> String {
@@ -1718,6 +2130,7 @@ impl LapuiDocument {
                         serde_json::to_string(&trace_actions.trace(after)).unwrap()
                     }),
                 )?;
+                let invoke_trace=debug_trace.clone();
                 globals.set(
                     "__lapui_host_invoke",
                     Func::from(
@@ -1730,10 +2143,11 @@ impl LapuiDocument {
                             let waker = invoke_waker.clone();
                             let proxy = invoke_proxy.clone();
                             if name.len() > 128 || args.len() > 64 * 1024 || options.0.as_ref().is_some_and(|options| options.len() > 1024) {
-                                let _ = tx.send(Completion { request_id:Some(request_id),error_code:Some("invalid_arguments".into()),result:Err("action name/arguments/options exceed their 128-byte/64-KiB/1-KiB limits".into()) });
+                                let _ = tx.send(Completion { trace_origin:None, request_id:Some(request_id),error_code:Some("invalid_arguments".into()),result:Err("action name/arguments/options exceed their 128-byte/64-KiB/1-KiB limits".into()) });
                                 wake_document(&waker, &proxy, doc_id);
                                 return;
                             }
+                            let trace_origin=invoke_trace.origin(invoke_trace.instant("host_request",json!({"action":name}),false));
                             let failure_tx = tx.clone();
                             let failure_waker = waker.clone();
                             let failure_proxy = proxy.clone();
@@ -1763,6 +2177,7 @@ impl LapuiDocument {
                                     result.as_ref().err().map(|error| error.code.clone());
                                 let result = result.map_err(|error| error.message);
                                 let _ = tx.send(Completion {
+                                    trace_origin,
                                     request_id: Some(request_id),
                                     error_code,
                                     result,
@@ -1770,6 +2185,7 @@ impl LapuiDocument {
                                 wake_document(&waker, &proxy, doc_id);
                             }) {
                                 let _ = failure_tx.send(Completion {
+                                    trace_origin,
                                     request_id: Some(request_id),
                                     error_code: Some(error.code),
                                     result: Err(error.message),
@@ -1820,6 +2236,7 @@ impl LapuiDocument {
                                 .map(|snapshot| json!(snapshot));
                             let error_code = result.as_ref().err().map(|error| error.code.clone());
                             let _ = tx.send(Completion {
+                                trace_origin:None,
                                 request_id: Some(request_id),
                                 error_code,
                                 result: result.map_err(|error| error.message),
@@ -1827,6 +2244,7 @@ impl LapuiDocument {
                             wake_document(&waker, &proxy, doc_id);
                         }) {
                             let _ = failure_tx.send(Completion {
+                                trace_origin:None,
                                 request_id: Some(request_id),
                                 error_code: Some(error.code),
                                 result: Err(error.message),
@@ -1860,7 +2278,7 @@ impl LapuiDocument {
                             let result = actions.subscribe_changes(request).map(|page| json!(page));
                             if lifetime.is_cancelled() { return; }
                             let error_code = result.as_ref().err().map(|error| error.code.clone());
-                            let _ = tx.send(Completion { request_id: Some(request_id), error_code,
+                            let _ = tx.send(Completion { trace_origin:None, request_id: Some(request_id), error_code,
                                 result: result.map_err(|error| error.message) });
                             wake_document(&waker, &proxy, doc_id);
                         }) {
@@ -1886,7 +2304,7 @@ impl LapuiDocument {
                             let result = actions.action_catalog_request(&request);
                             if lifetime.is_cancelled() { return; }
                             let error_code = result.as_ref().err().map(|error| error.code.clone());
-                            let _ = tx.send(Completion { request_id: Some(request_id), error_code, result: result.map_err(|error| error.message) });
+                            let _ = tx.send(Completion { trace_origin:None, request_id: Some(request_id), error_code, result: result.map_err(|error| error.message) });
                             wake_document(&waker, &proxy, doc_id);
                         }) { Ok(()) => String::new(), Err(error) => json!(error).to_string() }
                     }
@@ -1935,6 +2353,7 @@ impl LapuiDocument {
                             }
                             let error_code = result.as_ref().err().map(|_| if cancellation.is_cancelled() { "abort_error" } else { "network_error" }.to_owned());
                             let _ = tx.send(Completion {
+                                trace_origin:None,
                                 request_id: Some(request_id),
                                 error_code,
                                 result,
@@ -1949,122 +2368,59 @@ impl LapuiDocument {
                         String::new()
                     }),
                 )?;
-                let source_tx = tx.clone();
-                let source_waker = waker.clone();
-                let source_proxy = proxy.clone();
-                let source_flags = event_sources.clone();
-                globals.set(
-                    "__lapui_event_source_open",
-                    Func::from(move |source_id: i32, url: String| {
-                        if source_id <= 0 {
-                            return;
-                        }
-                        if let Some(previous) = source_flags.lock().unwrap().remove(&source_id) {
-                            previous.cancel();
-                        }
-                        let closed = Cancellation::default();
-                        source_flags
-                            .lock()
-                            .unwrap()
-                            .insert(source_id, closed.clone());
-                        let tx = source_tx.clone();
-                        let waker = source_waker.clone();
-                        let proxy = source_proxy.clone();
-                        std::thread::spawn(move || {
-                            run_event_source(url, source_id, closed, tx, waker, proxy, doc_id)
-                        });
-                    }),
-                )?;
-                let source_flags = event_sources.clone();
-                globals.set(
-                    "__lapui_event_source_close",
-                    Func::from(move |source_id: i32| {
-                        if let Some(closed) = source_flags.lock().unwrap().remove(&source_id) {
-                            closed.cancel();
-                        }
-                    }),
-                )?;
-                let socket_tx = tx.clone();
-                let socket_waker = waker.clone();
-                let socket_proxy = proxy.clone();
-                let socket_registry = web_sockets.clone();
-                globals.set(
-                    "__lapui_websocket_open",
-                    Func::from(move |socket_id: i32, url: String| {
-                        if socket_id <= 0 {
-                            return;
-                        }
-                        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
-                        socket_registry
-                            .lock()
-                            .unwrap()
-                            .insert(socket_id, command_tx);
-                        let tx = socket_tx.clone();
-                        let waker = socket_waker.clone();
-                        let proxy = socket_proxy.clone();
-                        let registry = socket_registry.clone();
-                        std::thread::spawn(move || {
-                            if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-                                .enable_all()
-                                .build()
-                            {
-                                runtime.block_on(run_websocket(
-                                    url, socket_id, command_rx, tx, waker, proxy, doc_id,
-                                ));
+                // One lazy reactor for the document's WebSocket and SSE transports.
+                for (name, websocket) in [("__lapui_event_source_open", false), ("__lapui_websocket_open", true)] {
+                    let streams = streams.clone();
+                    let lifetime = lifetime.clone();
+                    let waker = waker.clone();
+                    let proxy = proxy.clone();
+                    globals.set(name, Func::from(move |id: i32, url: String| -> String {
+                        let result = (|| {
+                            let mut streams = streams.borrow_mut();
+                            if streams.is_none() {
+                                let waker = waker.clone();
+                                let proxy = proxy.clone();
+                                *streams = Some(StreamWork::new(lifetime.clone(), move || wake_document(&waker, &proxy, doc_id))?);
                             }
-                            registry.lock().unwrap().remove(&socket_id);
-                        });
-                    }),
-                )?;
-                let socket_registry = web_sockets.clone();
-                globals.set(
-                    "__lapui_websocket_send",
-                    Func::from(move |socket_id: i32, payload: String| -> bool {
-                        let Ok(payload) = serde_json::from_str::<Value>(&payload) else {
-                            return false;
-                        };
-                        let command = match payload.get("type").and_then(Value::as_str) {
-                            Some("text") => payload
-                                .get("data")
-                                .and_then(Value::as_str)
-                                .filter(|text| text.len() <= 8 * 1024 * 1024)
-                                .map(|text| WebSocketCommand::Text(text.to_owned())),
-                            Some("binary") => payload
-                                .get("data")
-                                .and_then(Value::as_array)
-                                .and_then(|bytes| {
-                                    if bytes.len() > 8 * 1024 * 1024 {
-                                        return None;
-                                    }
-                                    bytes
-                                        .iter()
-                                        .map(|byte| {
-                                            byte.as_u64()
-                                                .filter(|byte| *byte <= 255)
-                                                .map(|byte| byte as u8)
-                                        })
-                                        .collect::<Option<Vec<_>>>()
-                                })
-                                .map(WebSocketCommand::Binary),
-                            _ => None,
-                        };
-                        let Some(command) = command else { return false };
-                        socket_registry
-                            .lock()
-                            .unwrap()
-                            .get(&socket_id)
-                            .is_some_and(|sender| sender.send(command).is_ok())
-                    }),
-                )?;
-                let socket_registry = web_sockets.clone();
-                globals.set(
-                    "__lapui_websocket_close",
-                    Func::from(move |socket_id: i32| {
-                        if let Some(sender) = socket_registry.lock().unwrap().remove(&socket_id) {
-                            let _ = sender.send(WebSocketCommand::Close);
-                        }
-                    }),
-                )?;
+                            streams.as_ref().unwrap().open(id, url, websocket)
+                        })();
+                        stream_error(result)
+                    }))?;
+                }
+                for name in ["__lapui_event_source_close", "__lapui_websocket_close"] {
+                    let streams = streams.clone();
+                    globals.set(name, Func::from(move |id: i32| {
+                        if let Some(streams) = streams.borrow().as_ref() { streams.close(id); }
+                    }))?;
+                }
+                let text_streams = streams.clone();
+                globals.set("__lapui_websocket_send_text", Func::from(move |id: i32, text: String| -> String {
+                    stream_error(text_streams.borrow().as_ref().ok_or_else(|| ActionError::new("stream_closed", "WebSocket is closed"))
+                        .and_then(|streams| streams.send(id, tokio_tungstenite::tungstenite::Message::Text(text.into()))))
+                }))?;
+                let binary_streams = streams.clone();
+                globals.set("__lapui_websocket_send_binary", Func::from(move |id: i32, buffer: rquickjs::ArrayBuffer<'_>, offset: usize, length: usize| -> String {
+                    let result = (|| {
+                        if length > crate::stream_work::MAX_MESSAGE { return Err(ActionError::new("message_too_large", "WebSocket message exceeds 8 MiB")); }
+                        // SAFETY: this synchronous native callback neither runs JS nor
+                        // re-enters the runtime while reading. The argument keeps the
+                        // buffer alive; copy before any callback/runtime execution.
+                        let bytes = unsafe { buffer.as_bytes() }.ok_or_else(|| ActionError::new("invalid_arguments", "binary buffer is detached"))?;
+                        let end = offset.checked_add(length).ok_or_else(|| ActionError::new("invalid_arguments", "binary view is outside its buffer"))?;
+                        let bytes = bytes.get(offset..end).ok_or_else(|| ActionError::new("invalid_arguments", "binary view is outside its buffer"))?.to_vec();
+                        binary_streams.borrow().as_ref().ok_or_else(|| ActionError::new("stream_closed", "WebSocket is closed"))?
+                            .send(id, tokio_tungstenite::tungstenite::Message::Binary(bytes.into()))
+                    })();
+                    stream_error(result)
+                }))?;
+                let buffered_streams = streams.clone();
+                globals.set("__lapui_websocket_buffered", Func::from(move |id: i32| -> usize {
+                    buffered_streams.borrow().as_ref().map_or(0, |streams| streams.buffered(id))
+                }))?;
+                let status_streams = streams.clone();
+                globals.set("__lapui_network_status", Func::from(move || -> String {
+                    stream_status(&status_streams).to_string()
+                }))?;
                 globals.set(
                     "__lapui_report_script_error",
                     Func::from({
@@ -2098,6 +2454,8 @@ impl LapuiDocument {
                     }),
                 )?;
                 script_budget.run(STARTUP_LIMIT, || ctx.eval::<(), _>(BRIDGE))?;
+                script_budget.run(STARTUP_LIMIT, || ctx.eval::<(), _>(RESIZE_OBSERVER))?;
+                script_budget.run(STARTUP_LIMIT, || ctx.eval::<(), _>(FORM_BRIDGE))?;
                 for script in &startup_scripts {
                     if script_budget.interrupted() { break; }
                     let result = script_budget.run(STARTUP_LIMIT, || -> rquickjs::Result<()> {
@@ -2151,12 +2509,6 @@ impl LapuiDocument {
             })
             .map_err(|e| {
                 lifetime.cancel();
-                for closed in event_sources.lock().unwrap().values() {
-                    closed.cancel();
-                }
-                for sender in web_sockets.lock().unwrap().values() {
-                    let _ = sender.send(WebSocketCommand::Close);
-                }
                 format!("JavaScript setup failed: {e}")
             })?;
         if let Err(message) = drain_jobs(&js_runtime, &script_budget) {
@@ -2183,6 +2535,7 @@ impl LapuiDocument {
                 }
                 if forward_tx
                     .send(Completion {
+                        trace_origin: None,
                         request_id: None,
                         error_code: Some("action_failed".into()),
                         result,
@@ -2196,6 +2549,7 @@ impl LapuiDocument {
         });
 
         let document = Self {
+            debug_trace,
             actions,
             action_scopes: Vec::new(),
             dom,
@@ -2205,9 +2559,8 @@ impl LapuiDocument {
             script_stopped: Cell::new(false),
             completions,
             waker,
-            event_sources,
+            streams,
             fetch_requests,
-            web_sockets,
             controller,
             control_requests,
             script_diagnostics: diagnostics,
@@ -2216,6 +2569,7 @@ impl LapuiDocument {
             timers,
             proxy,
             gc_requested,
+            frames,
         };
         document.stop_faulted_script();
         Ok((document, external_tx))
@@ -2362,361 +2716,68 @@ pub(crate) async fn perform_fetch(
     }))
 }
 
-struct SseEvent {
-    event: String,
-    data: String,
-    last_event_id: String,
+fn stream_error(result: Result<(), ActionError>) -> String {
+    result
+        .err()
+        .map(|error| serde_json::to_string(&error).unwrap())
+        .unwrap_or_default()
 }
 
-enum WebSocketCommand {
-    Text(String),
-    Binary(Vec<u8>),
-    Close,
+fn stream_value<'js>(
+    ctx: rquickjs::Ctx<'js>,
+    data: StreamData,
+) -> rquickjs::Result<rquickjs::Object<'js>> {
+    let object = rquickjs::Object::new(ctx.clone())?;
+    match data {
+        StreamData::Binary(bytes) => {
+            object.set("type", "message")?;
+            object.set("dataType", "binary")?;
+            // A managed copy is accounted by QuickJS's heap budget, unlike
+            // an externally backed ArrayBuffer allocated on the Rust heap.
+            object.set("data", rquickjs::ArrayBuffer::new_copy(ctx, bytes)?)?;
+        }
+        StreamData::Fields(value) => {
+            for (name, value) in value.as_object().expect("native stream event fields") {
+                match value {
+                    Value::String(value) => object.set(name.as_str(), value.as_str())?,
+                    Value::Bool(value) => object.set(name.as_str(), *value)?,
+                    Value::Number(value) => object.set(name.as_str(), value.as_f64().unwrap())?,
+                    Value::Null => {
+                        object.set(name.as_str(), rquickjs::Value::new_null(ctx.clone()))?
+                    }
+                    _ => {
+                        return Err(rquickjs::Error::new_from_js(
+                            "nested stream data",
+                            "primitive event field",
+                        ))
+                    }
+                }
+            }
+        }
+    }
+    Ok(object)
 }
 
-async fn run_websocket(
-    url: String,
-    socket_id: i32,
-    mut commands: tokio::sync::mpsc::UnboundedReceiver<WebSocketCommand>,
-    tx: mpsc::Sender<Completion>,
-    waker: Arc<Mutex<Option<Waker>>>,
-    proxy: Option<BlitzShellProxy>,
-    doc_id: usize,
+fn flush_layout(
+    dom: &Rc<RefCell<BaseDocument>>,
+    batch: &Rc<RefCell<MutationBatch>>,
+    frames: &Rc<RefCell<Frames>>,
 ) {
-    let parsed = match reqwest::Url::parse(&url) {
-        Ok(url) if matches!(url.scheme(), "ws" | "wss") => url,
-        _ => {
-            emit_socket_event(
-                &tx,
-                &waker,
-                &proxy,
-                doc_id,
-                socket_id,
-                json!({"type":"error","message":"WebSocket requires a ws or wss URL"}),
-            );
-            emit_socket_event(
-                &tx,
-                &waker,
-                &proxy,
-                doc_id,
-                socket_id,
-                json!({"type":"close","code":1006,"reason":"invalid URL"}),
-            );
-            return;
-        }
-    };
-    let connection = tokio::select! {
-        biased;
-        _ = commands.recv() => {
-            emit_socket_event(&tx, &waker, &proxy, doc_id, socket_id,
-                json!({"type":"close","code":1000,"reason":"closed while connecting"}));
-            return;
-        },
-        result = tokio::time::timeout(Duration::from_secs(20), tokio_tungstenite::connect_async(parsed.as_str())) => {
-            result.map_err(|_| "WebSocket connection timed out".to_owned())
-                .and_then(|result| result.map_err(|error| error.to_string()))
-        }
-    };
-    let (mut socket, _) = match connection {
-        Ok(connection) => connection,
-        Err(error) => {
-            emit_socket_event(
-                &tx,
-                &waker,
-                &proxy,
-                doc_id,
-                socket_id,
-                json!({"type":"error","message":error.to_string()}),
-            );
-            emit_socket_event(
-                &tx,
-                &waker,
-                &proxy,
-                doc_id,
-                socket_id,
-                json!({"type":"close","code":1006,"reason":"connection failed"}),
-            );
-            return;
-        }
-    };
-    emit_socket_event(
-        &tx,
-        &waker,
-        &proxy,
-        doc_id,
-        socket_id,
-        json!({"type":"open"}),
-    );
-    loop {
-        tokio::select! {
-            command = commands.recv() => match command {
-                Some(WebSocketCommand::Text(text)) => {
-                    if let Err(error) = socket.send(tokio_tungstenite::tungstenite::Message::Text(text.into())).await {
-                        emit_socket_event(&tx, &waker, &proxy, doc_id, socket_id, json!({"type":"error","message":error.to_string()}));
-                        break;
-                    }
-                }
-                Some(WebSocketCommand::Binary(bytes)) => {
-                    if let Err(error) = socket.send(tokio_tungstenite::tungstenite::Message::Binary(bytes.into())).await {
-                        emit_socket_event(&tx, &waker, &proxy, doc_id, socket_id, json!({"type":"error","message":error.to_string()}));
-                        break;
-                    }
-                }
-                Some(WebSocketCommand::Close) | None => {
-                    let _ = socket.send(tokio_tungstenite::tungstenite::Message::Close(None)).await;
-                    break;
-                }
-            },
-            message = socket.next() => match message {
-                Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
-                    emit_socket_event(&tx, &waker, &proxy, doc_id, socket_id, json!({"type":"message","dataType":"text","data":text.as_str()}));
-                }
-                Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(bytes))) => {
-                    if bytes.len() > 8 * 1024 * 1024 {
-                        emit_socket_event(&tx, &waker, &proxy, doc_id, socket_id, json!({"type":"error","message":"WebSocket message exceeds 8 MiB"}));
-                        let _ = socket.close(None).await;
-                        break;
-                    }
-                    emit_socket_event(&tx, &waker, &proxy, doc_id, socket_id, json!({"type":"message","dataType":"binary","data":bytes.as_ref()}));
-                }
-                Some(Ok(tokio_tungstenite::tungstenite::Message::Close(frame))) => {
-                    let (code, reason) = frame.map(|frame| (u16::from(frame.code), frame.reason.to_string())).unwrap_or((1000, String::new()));
-                    emit_socket_event(&tx, &waker, &proxy, doc_id, socket_id, json!({"type":"close","code":code,"reason":reason}));
-                    return;
-                }
-                Some(Ok(_)) => {}
-                Some(Err(error)) => {
-                    emit_socket_event(&tx, &waker, &proxy, doc_id, socket_id, json!({"type":"error","message":error.to_string()}));
-                    break;
-                }
-                None => break,
-            }
-        }
+    // Synchronous reads commit writes without ending an enclosing app batch.
+    let pending = std::mem::take(&mut batch.borrow_mut().pending);
+    if !pending.is_empty() {
+        apply_mutations(dom, pending);
     }
-    emit_socket_event(
-        &tx,
-        &waker,
-        &proxy,
-        doc_id,
-        socket_id,
-        json!({"type":"close","code":1000,"reason":""}),
-    );
+    let span = frames
+        .borrow()
+        .debug_trace
+        .span("layout_read", json!({}), None);
+    dom.borrow_mut().resolve(frames.borrow().layout_time);
+    span.finish(json!({"outcome":"resolved"}), false);
 }
 
-fn emit_socket_event(
-    tx: &mpsc::Sender<Completion>,
-    waker: &Arc<Mutex<Option<Waker>>>,
-    proxy: &Option<BlitzShellProxy>,
-    doc_id: usize,
-    socket_id: i32,
-    event: Value,
-) {
-    let _ = tx.send(Completion {
-        request_id: Some(-socket_id),
-        error_code: None,
-        result: Ok(event),
-    });
-    wake_document(waker, proxy, doc_id);
-}
-
-#[derive(Default)]
-struct SseParser {
-    line: Vec<u8>,
-    skip_lf: bool,
-    seen_first_line: bool,
-    data: Vec<String>,
-    event: Option<String>,
-    last_event_id: String,
-    retry_ms: Option<u64>,
-}
-
-impl SseParser {
-    fn feed(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
-        let mut events = Vec::new();
-        for byte in chunk {
-            if self.skip_lf {
-                self.skip_lf = false;
-                if *byte == b'\n' {
-                    continue;
-                }
-            }
-            if *byte == b'\r' || *byte == b'\n' {
-                self.process_line(&mut events);
-                self.line.clear();
-                self.skip_lf = *byte == b'\r';
-            } else {
-                self.line.push(*byte);
-            }
-        }
-        events
-    }
-
-    fn process_line(&mut self, events: &mut Vec<SseEvent>) {
-        if !self.seen_first_line {
-            self.seen_first_line = true;
-            if self.line.starts_with(&[0xEF, 0xBB, 0xBF]) {
-                self.line.drain(..3);
-            }
-        }
-        if self.line.is_empty() {
-            if !self.data.is_empty() {
-                events.push(SseEvent {
-                    event: self.event.take().unwrap_or_else(|| "message".into()),
-                    data: self.data.join("\n"),
-                    last_event_id: self.last_event_id.clone(),
-                });
-                self.data.clear();
-            } else {
-                self.event = None;
-            }
-            return;
-        }
-        if self.line[0] == b':' {
-            return;
-        }
-        let separator = self.line.iter().position(|byte| *byte == b':');
-        let (field, value) = match separator {
-            Some(index) => {
-                let value_start = if self.line.get(index + 1) == Some(&b' ') {
-                    index + 2
-                } else {
-                    index + 1
-                };
-                (&self.line[..index], &self.line[value_start..])
-            }
-            None => (&self.line[..], &[][..]),
-        };
-        let field = String::from_utf8_lossy(field);
-        let value = String::from_utf8_lossy(value);
-        match field.as_ref() {
-            "data" => self.data.push(value.into_owned()),
-            "event" => self.event = Some(value.into_owned()),
-            "id" if !value.contains('\0') => self.last_event_id = value.into_owned(),
-            "retry" if value.bytes().all(|byte| byte.is_ascii_digit()) => {
-                self.retry_ms = value.parse().ok();
-            }
-            _ => {}
-        }
-    }
-}
-
-fn run_event_source(
-    url: String,
-    source_id: i32,
-    closed: Cancellation,
-    tx: mpsc::Sender<Completion>,
-    waker: Arc<Mutex<Option<Waker>>>,
-    proxy: Option<BlitzShellProxy>,
-    doc_id: usize,
-) {
-    let Ok(url) = reqwest::Url::parse(&url) else {
-        return;
-    };
-    if !matches!(url.scheme(), "http" | "https") {
-        let _ = tx.send(Completion {
-            request_id: Some(-source_id),
-            error_code: None,
-            result: Ok(
-                json!({"type":"error","message":"EventSource supports only http and https"}),
-            ),
-        });
-        wake_document(&waker, &proxy, doc_id);
-        return;
-    }
-    let Ok(client) = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .build()
-    else {
-        return;
-    };
-    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    else {
-        return;
-    };
-    let mut last_event_id = String::new();
-    let mut retry = Duration::from_millis(3000);
-
-    while !closed.is_cancelled() {
-        let stream = async {
-            let mut request = client
-                .get(url.clone())
-                .header("Accept", "text/event-stream");
-            if !last_event_id.is_empty() {
-                request = request.header("Last-Event-ID", &last_event_id);
-            }
-            let mut response = request.send().await.map_err(|error| error.to_string())?;
-            if !response.status().is_success() {
-                return Err(format!(
-                    "EventSource server returned HTTP {}",
-                    response.status()
-                ));
-            }
-            if !response
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/event-stream"))
-            {
-                return Err("EventSource response is not text/event-stream".into());
-            }
-            let _ = tx.send(Completion {
-                request_id: Some(-source_id),
-                error_code: None,
-                result: Ok(json!({"type":"open","data":"","lastEventId":last_event_id})),
-            });
-            wake_document(&waker, &proxy, doc_id);
-            let mut parser = SseParser::default();
-            while !closed.is_cancelled() {
-                let next_chunk = response.chunk().await.map_err(|error| error.to_string())?;
-                let Some(chunk) = next_chunk else { break };
-                for event in parser.feed(&chunk) {
-                    if !event.last_event_id.is_empty() {
-                        last_event_id = event.last_event_id.clone();
-                    }
-                    let _ = tx.send(Completion {
-                        request_id: Some(-source_id),
-                        error_code: None,
-                        result: Ok(json!({"type":event.event,"data":event.data,"lastEventId":event.last_event_id})),
-                    });
-                    wake_document(&waker, &proxy, doc_id);
-                }
-                if let Some(milliseconds) = parser.retry_ms.take() {
-                    retry = Duration::from_millis(milliseconds.clamp(250, 30000));
-                }
-            }
-            Ok::<(), String>(())
-        };
-        let result = runtime.block_on(async {
-            tokio::select! {
-                biased;
-                _ = closed.cancelled() => Ok(()),
-                result = stream => result,
-            }
-        });
-        if closed.is_cancelled() {
-            break;
-        }
-        if !closed.is_cancelled() {
-            let message = match result {
-                Err(message) => message,
-                Ok(()) => "EventSource connection closed".into(),
-            };
-            let _ = tx.send(Completion {
-                request_id: Some(-source_id),
-                error_code: None,
-                result: Ok(json!({"type":"error","message":message})),
-            });
-            wake_document(&waker, &proxy, doc_id);
-        }
-        runtime.block_on(async {
-            tokio::select! {
-                _ = closed.cancelled() => {},
-                _ = tokio::time::sleep(retry) => {},
-            }
-        });
-    }
+fn stream_status(streams: &Rc<RefCell<Option<StreamWork>>>) -> Value {
+    streams.borrow().as_ref().map_or_else(|| json!({"streams":0,"queuedEvents":0,"queuedEventBytes":0,"outgoingBytes":0,"reactorStarted":false}), StreamWork::stats)
 }
 
 fn wake_document(
@@ -2900,6 +2961,20 @@ impl Document for LapuiDocument {
             self.stop_faulted_script();
             return;
         }
+        let kind = match &event {
+            UiEvent::PointerMove(_) => "pointerMove",
+            UiEvent::PointerUp(_) => "pointerUp",
+            UiEvent::PointerDown(_) => "pointerDown",
+            UiEvent::PointerCancel(_) => "pointerCancel",
+            UiEvent::Wheel(_) => "wheel",
+            UiEvent::KeyUp(_) => "keyUp",
+            UiEvent::KeyDown(_) => "keyDown",
+            UiEvent::Ime(_) => "ime",
+            UiEvent::AppleStandardKeybinding(_) => "standardKeybinding",
+        };
+        let input_trace = self
+            .debug_trace
+            .span("native_input", json!({"kind":kind}), None);
         let doc_id = self.dom.borrow().id();
         let tab_pressed = matches!(
             &event,
@@ -2963,6 +3038,10 @@ impl Document for LapuiDocument {
             }
         }
         self.resume_pending_jobs();
+        input_trace.finish(
+            json!({"outcome":if self.script_budget.interrupted(){"suspended"}else{"handled"}}),
+            true,
+        );
     }
 
     fn poll(&mut self, context: Option<TaskContext>) -> bool {
@@ -2971,9 +3050,14 @@ impl Document for LapuiDocument {
         }
         let mut changed = false;
         if !self.script_budget.interrupted() && self.js_runtime.is_job_pending() {
+            let jobs_trace = self.debug_trace.span("microtasks", json!({}), None);
             if let Err(message) = drain_jobs(&self.js_runtime, &self.script_budget) {
                 scripts::report(&self.script_diagnostics, "microtask", "evaluate", message);
             }
+            jobs_trace.finish(
+                json!({"scriptSuspended":self.script_budget.interrupted()}),
+                true,
+            );
             changed = true;
         }
         for _ in 0..1024 {
@@ -2983,6 +3067,9 @@ impl Document for LapuiDocument {
             if self.script_budget.interrupted() {
                 continue;
             }
+            let timer_trace = self
+                .debug_trace
+                .span("timer", json!({"callbackId":id}), None);
             let result = self.script_budget.run(CALLBACK_LIMIT, || {
                 self.js_context.with(|ctx| {
                     let callback: Function = ctx.globals().get("__lapui_fire_timer")?;
@@ -3001,6 +3088,10 @@ impl Document for LapuiDocument {
             if let Err(error) = drain_jobs(&self.js_runtime, &self.script_budget) {
                 scripts::report(&self.script_diagnostics, "microtask", "evaluate", error);
             }
+            timer_trace.finish(
+                json!({"scriptSuspended":self.script_budget.interrupted()}),
+                true,
+            );
             changed = true;
         }
         for _ in 0..64 {
@@ -3010,9 +3101,36 @@ impl Document for LapuiDocument {
             if !request.start() {
                 continue;
             }
-            let result = self.execute_control_command(&request.command);
+            let method = request
+                .command
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let mutating = matches!(method, "activate" | "fill" | "check" | "focus");
+            let diagnostic_before = self
+                .script_diagnostics
+                .borrow()
+                .back()
+                .map_or(0, |item| item.sequence);
+            let span = mutating.then(|| {
+                self.debug_trace
+                    .span("control", json!({"method":method}), None)
+            });
+            let mut result = self.execute_control_command(&request.command);
+            if let (Some(sequence), Ok(value)) =
+                (span.as_ref().and_then(Span::sequence), &mut result)
+            {
+                value["debugTraceSequence"] = json!(sequence);
+            }
+            if let Some(span) = span {
+                span.finish(
+                    json!({"outcome":if result.is_ok(){"dispatched"}else{"rejected"},"diagnosticsBeforeSequence":diagnostic_before,"diagnosticsAfterSequence":self.script_diagnostics.borrow().back().map_or(0,|item|item.sequence)}),
+                    true,
+                );
+            }
+            // Read-only trace queries do not create their own redraw/trace loop.
+            changed |= !matches!(method, "debugTrace.read" | "debugTrace.configure");
             request.finish(result);
-            changed = true;
         }
         let mut completion_count = 0;
         for _ in 0..64 {
@@ -3026,6 +3144,8 @@ impl Document for LapuiDocument {
             if self.script_budget.interrupted() {
                 continue;
             }
+            let completion_trace=self.debug_trace.span("completion",json!({"hostRequestLinked":self.debug_trace.live_origin(completion.trace_origin).is_some(),
+                "promiseId":completion.request_id,"observedStateVersion":self.actions.version()}),self.debug_trace.live_origin(completion.trace_origin));
             let (ok, payload) = match completion.result {
                 Ok(value) => (true, value.to_string()),
                 Err(message) => (
@@ -3052,10 +3172,62 @@ impl Document for LapuiDocument {
             if let Err(err) = drain_jobs(&self.js_runtime, &self.script_budget) {
                 scripts::report(&self.script_diagnostics, "microtask", "evaluate", err);
             }
+            completion_trace.finish(json!({"outcome":if ok{"resolved"}else{"rejected"},"scriptSuspended":self.script_budget.interrupted()}),true);
+            changed = true;
+        }
+        // Release the queue borrow before entering JS: stream handlers can
+        // send, close, or construct replacement streams. This time slice is
+        // checked between deliveries; individual callbacks have their own limit.
+        let stream_deadline = Instant::now() + CHECKPOINT_SLICE;
+        for _ in 0..16 {
+            if Instant::now() >= stream_deadline {
+                break;
+            }
+            let queued = self
+                .streams
+                .borrow_mut()
+                .as_mut()
+                .and_then(|streams| streams.events.try_recv().ok());
+            let Some(queued) = queued else { break };
+            let (id, data, _delivery_bytes) = queued.take();
+            if self.script_budget.interrupted() {
+                continue;
+            }
+            let stream_trace =
+                self.debug_trace
+                    .span("stream_delivery", json!({"streamId":id}), None);
+            let result = self.script_budget.run(CALLBACK_LIMIT, || {
+                self.js_context.with(|ctx| {
+                    let event = stream_value(ctx.clone(), data)?;
+                    let function: Function = ctx.globals().get("__lapui_stream_event")?;
+                    function.call::<_, ()>((id, event))
+                })
+            });
+            if let Err(error) = result {
+                scripts::report(
+                    &self.script_diagnostics,
+                    "network-stream",
+                    "event",
+                    javascript_error(&self.js_context, &error, &self.script_budget),
+                );
+            }
+            if let Err(error) = drain_jobs(&self.js_runtime, &self.script_budget) {
+                scripts::report(&self.script_diagnostics, "microtask", "evaluate", error);
+            }
+            stream_trace.finish(
+                json!({"scriptSuspended":self.script_budget.interrupted()}),
+                true,
+            );
             changed = true;
         }
         self.resume_pending_jobs();
-        if completion_count == 64 {
+        if completion_count == 64
+            || self
+                .streams
+                .borrow()
+                .as_ref()
+                .is_some_and(|streams| !streams.events.is_empty())
+        {
             wake_document(&self.waker, &self.proxy, self.dom.borrow().id());
         }
         changed
@@ -3069,6 +3241,1480 @@ mod tests {
     use cursor_icon::CursorIcon;
     use keyboard_types::{Code, Key, Location, Modifiers};
     use std::time::Duration;
+
+    #[test]
+    fn debug_trace_shared_controls_async_host_frames_privacy_and_configuration_are_coherent() {
+        let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            "<html><head><style>html,body{margin:0}#out{width:40px;height:40px;background:red}</style></head><body><div id='out'></div><input id='secret' type='password'><button id='run'>Run</button><button id='bad'>Error</button></body></html>",
+            "document.getElementById('run').onclick=async()=>{await lapui.invoke('counter.increment',{});document.getElementById('out').style.backgroundColor='lime';globalThis.done=true;};document.getElementById('bad').onclick=()=>{throw Error('private-error-message');};").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(240, 240, 1.0, ColorScheme::Light));
+        let epoch = doc.inner().id();
+        let snapshot = control_request(&mut doc, json!({"method":"controls"})).unwrap();
+        let reference = |name: &str| {
+            snapshot["controls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["id"] == name)
+                .unwrap()["ref"]
+                .clone()
+        };
+        assert_eq!(doc.debug_trace(0, 128).unwrap()["latestSequence"], 0);
+        let configured = control_request(
+            &mut doc,
+            json!({"method":"debugTrace.configure","documentEpoch":epoch,"enabled":true}),
+        )
+        .unwrap();
+        assert_eq!(configured["enabled"], true);
+        control_request(&mut doc,json!({"method":"fill","documentEpoch":epoch,"ref":reference("secret"),"value":"private-input-value"})).unwrap();
+        doc.inner_mut().resolve(0.0);
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("document.getElementById('secret').focus()"))
+            .unwrap();
+        doc.handle_ui_event(UiEvent::Ime(blitz::traits::events::BlitzImeEvent::Commit(
+            "private-ime-value".into(),
+        )));
+        let dispatched = control_request(
+            &mut doc,
+            json!({"method":"activate","documentEpoch":epoch,"ref":reference("run")}),
+        )
+        .unwrap();
+        let control_sequence = dispatched["debugTraceSequence"].as_u64().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>("globalThis.done===true"))
+            .unwrap()
+        {
+            doc.poll(None);
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        control_request(
+            &mut doc,
+            json!({"method":"activate","documentEpoch":epoch,"ref":reference("bad")}),
+        )
+        .unwrap();
+        #[cfg(feature = "software-renderer")]
+        {
+            let pixels = crate::snapshot::render_rgba(&mut doc, 240, 240).unwrap();
+            assert_eq!(
+                &pixels[(10 * 240 + 10) * 4..(10 * 240 + 10) * 4 + 4],
+                &[0, 255, 0, 255]
+            );
+        }
+        #[cfg(not(feature = "software-renderer"))]
+        {
+            let frame = doc.frame_trace("test");
+            doc.animation_frame();
+            doc.rendering_update();
+            let layout = doc.layout_trace();
+            doc.inner_mut().resolve(0.0);
+            layout.finish(json!({"outcome":"resolved"}), false);
+            frame.finish(
+                json!({"outcome":"no_renderer","physicalPresentation":"unknown"}),
+                false,
+            );
+        }
+        let page = control_request(
+            &mut doc,
+            json!({"method":"debugTrace.read","documentEpoch":epoch,"limit":128}),
+        )
+        .unwrap();
+        let records = page["records"].as_array().unwrap();
+        let host = records
+            .iter()
+            .find(|item| item["kind"] == "host_request")
+            .unwrap();
+        assert_eq!(host["parentSequence"], control_sequence);
+        assert_eq!(host["data"]["action"], "counter.increment");
+        let completion = records
+            .iter()
+            .find(|item| item["kind"] == "completion" && item["phase"] == "start")
+            .unwrap();
+        assert_eq!(completion["parentSequence"], host["sequence"]);
+        assert_eq!(completion["data"]["hostRequestLinked"], true);
+        assert_eq!(completion["data"]["observedStateVersion"], 1);
+        let completed = records
+            .iter()
+            .find(|item| item["kind"] == "completion" && item["phase"] == "end")
+            .unwrap();
+        let frame = records
+            .iter()
+            .find(|item| item["kind"] == "frame" && item["phase"] == "start")
+            .unwrap();
+        assert!(frame["data"]["causes"]
+            .as_array()
+            .unwrap()
+            .contains(&completed["sequence"]));
+        assert_eq!(frame["data"]["observedStateVersion"], 1);
+        let layout = records
+            .iter()
+            .find(|item| item["kind"] == "layout" && item["phase"] == "start")
+            .unwrap();
+        assert_eq!(layout["parentSequence"], frame["sequence"]);
+        let error = records
+            .iter()
+            .find(|item| {
+                item["kind"] == "control"
+                    && item["phase"] == "end"
+                    && item["data"]["diagnosticsAfterSequence"].as_u64().unwrap() > 0
+            })
+            .unwrap();
+        assert_eq!(error["data"]["diagnosticsBeforeSequence"], 0);
+        for secret in [
+            "private-input-value",
+            "private-error-message",
+            "private-ime-value",
+        ] {
+            assert!(!page.to_string().contains(secret));
+        }
+        let last = page["latestSequence"].as_u64().unwrap();
+        let read = doc.controller();
+        let caller = std::thread::spawn(move || {
+            read.request(
+                json!({"method":"debugTrace.read","documentEpoch":epoch}),
+                Duration::from_secs(2),
+            )
+        });
+        // Process the read through the normal poll without fabricating a redraw.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !caller.is_finished() {
+            assert!(!doc.poll(None));
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        caller.join().unwrap().unwrap();
+        assert_eq!(doc.debug_trace(0, 128).unwrap()["latestSequence"], last);
+        for request in [
+            json!({"method":"debugTrace.read","documentEpoch":epoch,"limit":129}),
+            json!({"method":"debugTrace.read","documentEpoch":epoch,"limit":-1}),
+            json!({"method":"debugTrace.configure","documentEpoch":epoch,"enabled":"true"}),
+            json!({"method":"debugTrace.read","documentEpoch":epoch,"extra":"ignored?"}),
+        ] {
+            assert_eq!(
+                control_request(&mut doc, request).unwrap_err().code,
+                "invalid_request"
+            );
+        }
+        assert_eq!(
+            control_request(
+                &mut doc,
+                json!({"method":"debugTrace.read","documentEpoch":epoch+1})
+            )
+            .unwrap_err()
+            .code,
+            "stale_document"
+        );
+        control_request(
+            &mut doc,
+            json!({"method":"debugTrace.configure","documentEpoch":epoch,"enabled":false}),
+        )
+        .unwrap();
+        let dispatched=control_request(&mut doc,json!({"method":"fill","documentEpoch":epoch,"ref":reference("secret"),"value":"private-new-value"})).unwrap();
+        assert!(dispatched.get("debugTraceSequence").is_none());
+        assert_eq!(doc.debug_trace(0, 128).unwrap()["latestSequence"], last);
+    }
+
+    #[test]
+    fn debug_trace_cleared_session_rejects_delayed_host_parent_and_survives_script_suspension() {
+        let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            "<html><body><button id='run'>Run</button><button id='loop'>Loop</button></body></html>",
+            "document.getElementById('run').onclick=()=>{lapui.invoke('counter.increment',{}).then(()=>globalThis.done=true);lapui.debugTrace.configure({enabled:false});lapui.debugTrace.configure({enabled:true,clear:true});};document.getElementById('loop').onclick=()=>{while(true){}};").unwrap();
+        doc.configure_debug_trace(true, false);
+        let epoch = doc.inner().id();
+        let snapshot = control_snapshot(&doc.inner());
+        let reference = |name: &str| {
+            snapshot["controls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["id"] == name)
+                .unwrap()["ref"]
+                .clone()
+        };
+        control_request(
+            &mut doc,
+            json!({"method":"activate","documentEpoch":epoch,"ref":reference("run")}),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>("globalThis.done===true"))
+            .unwrap()
+        {
+            doc.poll(None);
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let page = doc.debug_trace(0, 128).unwrap();
+        assert_eq!(page["resyncRequired"], true);
+        let completion = page["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["kind"] == "completion" && item["phase"] == "start")
+            .unwrap();
+        assert_eq!(completion["parentSequence"], Value::Null);
+        assert_eq!(completion["data"]["hostRequestLinked"], false);
+        assert_eq!(
+            control_request(
+                &mut doc,
+                json!({"method":"activate","documentEpoch":epoch,"ref":reference("loop")})
+            )
+            .unwrap_err()
+            .code,
+            "script_error"
+        );
+        let page = control_request(
+            &mut doc,
+            json!({"method":"debugTrace.read","documentEpoch":epoch}),
+        )
+        .unwrap();
+        assert_eq!(page["enabled"], true);
+        assert!(page["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "control" && item["data"]["outcome"] == "rejected"));
+        assert_eq!(control_request(&mut doc,json!({"method":"debugTrace.configure","documentEpoch":epoch,"enabled":false,"clear":true})).unwrap()["records"],json!([]));
+    }
+
+    #[test]
+    fn local_form_native_enter_submission_obeys_cancel_repeat_composition_and_default_button() {
+        use blitz::traits::events::{BlitzKeyEvent, KeyState};
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None,
+            "<html><body><form id='form'><input id='name' value='Ada'><button id='send'>Send</button><button id='later'>Later</button></form></body></html>",
+            "globalThis.calls=[];document.getElementById('form').onsubmit=e=>{e.preventDefault();calls.push(e.submitter?.id??null);};document.getElementById('name').focus();").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(480, 400, 1.0, ColorScheme::Light));
+        doc.inner_mut().resolve(0.0);
+        let enter = |repeat, composing| {
+            UiEvent::KeyDown(BlitzKeyEvent {
+                key: Key::Enter,
+                code: Code::Enter,
+                location: Location::Standard,
+                modifiers: Modifiers::empty(),
+                is_auto_repeating: repeat,
+                is_composing: composing,
+                state: KeyState::Pressed,
+                text: Some("\r".into()),
+            })
+        };
+        let evaluate = |doc: &LapuiDocument, source: &str| {
+            doc.js_context
+                .with(|ctx| ctx.eval::<(), _>(source))
+                .unwrap()
+        };
+        doc.handle_ui_event(enter(false, false));
+        doc.handle_ui_event(enter(true, false));
+        doc.handle_ui_event(enter(false, true));
+        evaluate(&doc,"if(JSON.stringify(calls)!=='[\"send\"]'||document.getElementById('name').value!=='Ada')throw Error('repeat/composition');document.getElementById('name').onkeydown=e=>e.preventDefault();");
+        doc.handle_ui_event(enter(false, false));
+        evaluate(&doc,"if(calls.length!==1)throw Error('canceled enter');document.getElementById('name').onkeydown=null;document.getElementById('send').disabled=true;");
+        doc.handle_ui_event(enter(false, false));
+        evaluate(&doc,"if(calls.length!==1)throw Error('disabled default bypass');document.getElementById('send').remove();document.getElementById('later').remove();");
+        doc.handle_ui_event(enter(false, false));
+        evaluate(&doc,"if(calls.length!==2||calls[1]!==null)throw Error('implicit null submitter');const second=document.createElement('input');document.getElementById('form').append(second);");
+        doc.handle_ui_event(enter(false, false));
+        evaluate(
+            &doc,
+            "if(calls.length!==2)throw Error('multiple blocking controls');",
+        );
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn local_forms_unsupported_reset_preflight_formdata_bounds_and_native_editor_layouts() {
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None,
+            "<html><body><form id='form'><input id='name' value='initial'><textarea id='area'>Initial text</textarea><select id='select' name='choice'><option>One</option></select></form><input id='fallback' type='invalid'></body></html>", "").unwrap();
+        let area = doc.inner().get_element_by_id("area").unwrap();
+        assert_eq!(
+            crate::forms::value(&doc.inner(), area).unwrap(),
+            "Initial text"
+        );
+        let result=doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"(()=>{
+            const form=document.getElementById('form'),name=document.getElementById('name');name.value='current';
+            let rejected=0;try{form.reset();}catch(e){if(e.name==='NotSupportedError')rejected++;}
+            if(name.value!=='current')throw Error('partial reset');
+            try{new FormData(form);}catch(e){if(e.name==='NotSupportedError')rejected++;}
+            if(rejected!==2)throw Error('unsupported native type');document.getElementById('select').remove();
+            const data=new FormData();for(let i=0;i<1024;i++)data.append('name',String(i));
+            try{data.append('overflow','value');}catch(e){if(e instanceof RangeError)rejected++;}
+            if([...data].length!==1024)throw Error('partial FormData append');
+            try{data.set('name','x'.repeat(2097152));}catch(e){if(e instanceof RangeError)rejected++;}
+            if(data.get('name')!=='0'||data.getAll('name').length!==1024)throw Error('partial FormData set');
+            try{new FormData().append('file','text','filename');}catch(e){if(e.name==='NotSupportedError')rejected++;}
+            if(rejected!==5)throw Error('limits');
+            const fallback=document.getElementById('fallback');fallback.value='fallback text';if(fallback.value!=='fallback text')throw Error('invalid type default');
+            const area=document.getElementById('area');area.firstChild.nodeValue='Changed default';if(area.value!=='Changed default')throw Error('child text default');
+            const inserted=document.createElement('div');inserted.innerHTML='<textarea id="inserted">Inserted text</textarea>';document.body.append(inserted);
+            globalThis.insertedRef=inserted.querySelector('textarea').__ref;
+            return true;
+        })()"#)).unwrap_or_else(|error|panic!("{}",javascript_error(&doc.js_context,&error,&doc.script_budget)));
+        assert!(result);
+        doc.inner_mut()
+            .set_viewport(Viewport::new(480, 400, 1.0, ColorScheme::Light));
+        doc.inner_mut().resolve(0.0);
+        let inserted = doc.inner().get_element_by_id("inserted").unwrap();
+        assert_eq!(
+            crate::forms::value(&doc.inner(), inserted).unwrap(),
+            "Inserted text"
+        );
+        #[cfg(feature = "software-renderer")]
+        for width in [480, 620, 480] {
+            crate::snapshot::render_rgba(&mut doc, width, 400).unwrap();
+            for id in ["name", "area", "inserted", "fallback"] {
+                let dom = doc.inner();
+                let input = dom.get_element_by_id(id).unwrap();
+                assert!(dom
+                    .get_node(input)
+                    .unwrap()
+                    .element_data()
+                    .unwrap()
+                    .text_input_data()
+                    .unwrap()
+                    .editor
+                    .try_layout()
+                    .is_some());
+            }
+        }
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn local_forms_separate_native_current_values_defaults_dirty_flags_reset_and_cloning() {
+        let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            "<html><body><form id='form'><input id='text' name='text' value='initial'><textarea id='area' name='area'>Initial\ntext</textarea><input id='check' type='checkbox' checked><input id='first' type='radio' name='choice' checked><input id='second' type='radio' name='choice'></form></body></html>","").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        let result=doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"(()=>{
+          const form=document.getElementById('form'),text=document.getElementById('text'),area=document.getElementById('area'),check=document.getElementById('check'),first=document.getElementById('first'),second=document.getElementById('second');
+          if(text.value!=='initial'||area.value!=='Initial\ntext')throw Error('initial current values');
+          text.value='current';text.defaultValue='new default';if(text.value!=='current'||text.getAttribute('value')!=='new default')throw Error('dirty input');
+          text.removeAttribute('value');if(text.value!=='current'||text.defaultValue!=='')throw Error('remove default');
+          text.defaultValue='restore';area.value='Edited\r\narea';area.defaultValue='New\r\ndefault';if(area.value!=='Edited\narea'||area.defaultValue!=='New\r\ndefault')throw Error('textarea dirty/default');
+          check.checked=false;check.defaultChecked=true;if(check.checked||!check.defaultChecked)throw Error('dirty checked');
+          second.checked=true;
+          text.setCustomValidity('custom original');
+          const clone=form.cloneNode(true);document.body.appendChild(clone);
+          const clonedText=clone.querySelector('#text');if(clonedText.value!=='current'||clonedText.defaultValue!=='restore'||clonedText.validity.customError)throw Error('clone values');
+          if(clone.querySelector('#area').value!=='Edited\narea'||clone.querySelector('#check').checked||!clone.querySelector('#second').checked)throw Error('clone widgets');
+          clonedText.defaultValue='clone default';if(clonedText.value!=='current')throw Error('cloned dirty flag');
+          let changes=0;form.addEventListener('input',()=>changes++);form.addEventListener('change',()=>changes++);
+          form.addEventListener('reset',event=>{if(text.value!=='current')throw Error('reset before restoration');event.preventDefault();},{once:true});
+          form.reset();if(text.value!=='current'||changes)throw Error('canceled reset');
+          form.reset();if(text.value!=='restore'||area.value!=='New\ndefault'||!check.checked||!first.checked||second.checked||changes)throw Error('native reset');
+          text.defaultValue='clean default';check.defaultChecked=false;if(text.value!=='clean default'||check.checked)throw Error('reset cleared dirty flags');
+          if(!text.validity.customError)throw Error('reset incorrectly cleared custom validity');
+          clone.reset();if(clonedText.value!=='clone default')throw Error('clone independent reset');
+          return true;
+        })()"#)).unwrap_or_else(|error|panic!("{}",javascript_error(&doc.js_context,&error,&doc.script_budget)));
+        assert!(result);
+        doc.inner_mut().resolve(0.0);
+        let text = doc.inner().get_element_by_id("text").unwrap();
+        assert_eq!(
+            crate::forms::value(&doc.inner(), text).unwrap(),
+            "clean default"
+        );
+    }
+
+    #[test]
+    fn local_form_constraints_live_validity_invalid_events_and_ai_fields_share_values() {
+        let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            "<html><body><form id='form'><input id='text' name='text' required minlength='3' maxlength='5' pattern='[A-Z]+'><input id='email' type='email' multiple><input id='url' type='url'><input id='number' type='number' min='2' max='10' step='2'><input id='check' type='checkbox' required><input id='radio1' type='radio' name='choice' required><input id='radio2' type='radio' name='choice'><input id='disabled' disabled required><input id='readonly' readonly required><input id='password' type='password' value='private-value'></form></body></html>","").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"(()=>{
+          globalThis.form=document.getElementById('form');globalThis.text=document.getElementById('text');globalThis.invalid=[];
+          form.addEventListener('invalid',e=>{invalid.push(e.target.id);if(e.bubbles||!e.cancelable)throw Error('invalid event flags');},true);
+          form.addEventListener('invalid',()=>{throw Error('invalid bubbled');});
+          globalThis.liveValidity=text.validity;
+          if(!(liveValidity instanceof ValidityState)||!liveValidity.valueMissing||text.willValidate!==true)throw Error('initial required');
+          text.value='AB';if(liveValidity.tooShort||liveValidity.valueMissing)throw Error('programmatic length');
+          lapui.fill(text.__ref,'ab');if(!liveValidity.tooShort||!liveValidity.patternMismatch)throw Error('user length/pattern');
+          lapui.fill(text.__ref,'ABCDEF');if(!liveValidity.tooLong)throw Error('maximum user length');
+          text.value='ABC';if(!liveValidity.valid)throw Error('valid text');
+          const email=document.getElementById('email');email.value='bad';if(!email.validity.typeMismatch)throw Error('email');
+          email.value=' one@example.test, two@example.test ';if(!email.validity.valid)throw Error('multiple email');
+          const url=document.getElementById('url');url.value='relative/path';if(!url.validity.typeMismatch)throw Error('url');url.value='https://example.test/path';
+          const number=document.getElementById('number');number.value='1';if(!number.validity.rangeUnderflow||!number.validity.stepMismatch)throw Error('numeric range');
+          number.value='11';if(!number.validity.rangeOverflow)throw Error('numeric maximum');number.valueAsNumber=6;if(number.value!=='6'||!number.validity.valid)throw Error('numeric property');
+          number.value='not a number';if(number.value!==''||number.validity.badInput)throw Error('programmatic numeric sanitation');
+          lapui.fill(number.__ref,'not a number');if(number.value!==''||!number.validity.badInput)throw Error('interactive bad input');number.value='6';
+          if(form.checkValidity()||invalid.join(',')!=='check,radio1,radio2')throw Error('form invalid controls '+invalid);
+          document.getElementById('check').checked=true;document.getElementById('radio2').checked=true;
+          if(!form.checkValidity())throw Error('valid controls');
+          text.setCustomValidity('Choose a different name');if(!liveValidity.customError||liveValidity.valid||text.validationMessage!=='Choose a different name')throw Error('custom validity');
+          text.addEventListener('invalid',e=>e.preventDefault(),{once:true});form.reportValidity();if(document.activeElement===text)throw Error('canceled invalid report focus');
+          form.reportValidity();if(document.activeElement!==text)throw Error('report focus');
+          document.getElementById('password').setCustomValidity('private-message');
+          const secret=lapui.controls().controls.find(item=>item.id==='password');
+          if('value' in secret||'validationMessage' in secret||!secret.validity.customError)throw Error('password projection');
+          return document.getElementById('disabled').willValidate===false&&document.getElementById('readonly').willValidate===false;
+        })()"#)).unwrap_or_else(|error|panic!("{}",javascript_error(&doc.js_context,&error,&doc.script_budget))));
+        let snapshot = control_request(&mut doc, json!({"method":"controls"})).unwrap();
+        let text = snapshot["controls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == "text")
+            .unwrap();
+        assert_eq!(text["validity"]["customError"], true);
+        assert_eq!(text["validationMessage"], "Choose a different name");
+        assert_eq!(text["willValidate"], true);
+        assert!(text["formRef"].as_str().unwrap().starts_with("node:"));
+        let secret = snapshot["controls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == "password")
+            .unwrap();
+        assert!(secret.get("value").is_none());
+        assert!(secret.get("validationMessage").is_none());
+        assert_eq!(secret["validity"]["customError"], true);
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn local_form_submit_reset_external_ownership_formdata_and_shared_ai_activation() {
+        let html="<html><body><form id='form'><input id='name' name='name' required><input id='hidden' type='hidden' name='extra' value='secret'><input id='checked' type='checkbox' name='choice' value='yes' checked><input name='choice' type='checkbox' value='no'><fieldset disabled><input name='excluded' value='omit'><legend><input name='legend' value='keep'></legend></fieldset><textarea name='notes'>Initial text</textarea><button id='send' name='command' value='save'><span id='nested'>Save</span></button><button id='reset' type='reset'>Reset</button><button id='skip' formnovalidate name='command' value='skip'>Skip validation</button></form><input id='external' form='form' name='external' value='outside'><form id='other'><button id='wrong'>Wrong</button></form></body></html>";
+        let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,html,r#"
+          globalThis.form=document.getElementById('form');globalThis.submissions=[];globalThis.entries=[];globalThis.resets=0;
+          form.addEventListener('submit',e=>{e.preventDefault();submissions.push([e.submitter?.id??null,e.bubbles,e.cancelable]);entries.push([...new FormData(form,e.submitter)]);form.requestSubmit();});
+          form.addEventListener('formdata',e=>e.formData.append('added','event'));
+          form.addEventListener('reset',()=>resets++);
+        "#).unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"(()=>{
+          if(!(form instanceof HTMLFormElement)||!(form.elements instanceof HTMLFormControlsCollection))throw Error('form markers');
+          const collection=form.elements;if(collection!==form.elements||collection.namedItem('external')!==document.getElementById('external')||collection[0]!==document.getElementById('name'))throw Error('live collection');
+          const before=collection.length;const extra=document.createElement('input');extra.name='dynamic';extra.value='new';form.appendChild(extra);if(collection.length!==before+1)throw Error('collection insertion');extra.remove();
+          document.getElementById('name').value='Ada';document.getElementById('nested').click();
+          if(submissions.length!==1||submissions[0][0]!=='send')throw Error('nested click submitter');
+          form.requestSubmit();if(submissions.at(-1)[0]!==null)throw Error('explicit null submitter');
+          let invalid=0;try{form.requestSubmit(document.getElementById('name'));}catch(e){if(e instanceof TypeError)invalid++;}
+          try{form.requestSubmit(document.getElementById('wrong'));}catch(e){if(e.name==='NotFoundError')invalid++;}
+          try{form.submit();}catch(e){if(e.name==='NotSupportedError')invalid++;}if(invalid!==3)throw Error('submit errors');
+          form.reset();if(resets!==1||document.getElementById('name').value!==''||document.getElementById('external').value!=='outside')throw Error('reset owner');
+          form.requestSubmit();if(submissions.length!==2)throw Error('invalid submission');
+          document.getElementById('skip').click();if(submissions.length!==3||submissions.at(-1)[0]!=='skip')throw Error('submitter noValidate');
+          form.noValidate=true;form.requestSubmit();if(submissions.length!==4)throw Error('form noValidate');form.noValidate=false;
+          const data=new FormData();data.append('a','one');data.append('b','two');data.append('a','three');data.set('a','replace');
+          if(JSON.stringify([...data])!==JSON.stringify([['a','replace'],['b','two']])||data.getAll('a').length!==1||data.get('absent')!==null)throw Error('FormData mutations');
+          data.append('\ud800','\udfff');if(data.get('\uFFFD')!=='\uFFFD')throw Error('scalar strings');
+          return true;
+        })()"#)).unwrap_or_else(|error|panic!("{}",javascript_error(&doc.js_context,&error,&doc.script_budget))));
+        let entries: Value = serde_json::from_str(
+            &doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("JSON.stringify(entries[0])"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            entries,
+            json!([
+                ["name", "Ada"],
+                ["extra", "secret"],
+                ["choice", "yes"],
+                ["legend", "keep"],
+                ["notes", "Initial text"],
+                ["command", "save"],
+                ["external", "outside"],
+                ["added", "event"]
+            ])
+        );
+        let snapshot = control_request(&mut doc, json!({"method":"controls"})).unwrap();
+        let named = |id: &str| {
+            snapshot["controls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["id"] == id)
+                .unwrap()["ref"]
+                .clone()
+        };
+        control_request(&mut doc,json!({"method":"fill","documentEpoch":snapshot["documentEpoch"],"ref":named("name"),"value":"AI name"})).unwrap();
+        control_request(&mut doc,json!({"method":"activate","documentEpoch":snapshot["documentEpoch"],"ref":named("send")})).unwrap();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("submissions.length"))
+                .unwrap(),
+            5
+        );
+        control_request(&mut doc,json!({"method":"activate","documentEpoch":snapshot["documentEpoch"],"ref":named("reset")})).unwrap();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("document.getElementById('name').value"))
+                .unwrap(),
+            ""
+        );
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn resize_observers_use_native_box_sizes_snapshots_and_selected_box_changes() {
+        let html="<html><head><style>html,body{margin:0}#box{width:100.5px;height:30.25px;padding:5px;border:2px solid}#hidden{display:none}#zero{width:0;height:0}</style></head><body><div id='box'></div><span id='inline'>Inline text</span><div id='hidden'></div><div id='zero'></div></body></html>";
+        let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,html,r#"
+            globalThis.box=document.getElementById('box');globalThis.logs=[];globalThis.saved=null;
+            for(const mode of ['content-box','border-box','device-pixel-content-box']){
+              const ro=new ResizeObserver(function(entries,observer){
+                if(this!==observer)throw new Error('Wrong callback receiver');
+                logs.push([mode,entries.map(e=>[e.target.id,e.contentRect.x,e.contentRect.y,e.contentRect.width,e.contentRect.height,e.contentBoxSize[0].inlineSize,e.borderBoxSize[0].inlineSize,e.devicePixelContentBoxSize[0].inlineSize])]);
+                saved=entries[0];
+              });
+              for(const id of ['box','inline','hidden','zero'])ro.observe(document.getElementById(id),{box:mode});
+            }
+        "#).unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 2.0, ColorScheme::Light));
+        doc.poll(None);
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("logs.length"))
+                .unwrap(),
+            0
+        );
+        assert!(doc.rendering_update());
+        let log = doc
+            .js_context
+            .with(|ctx| ctx.eval::<String, _>("JSON.stringify(logs)"))
+            .unwrap();
+        let log: Value = serde_json::from_str(&log).unwrap();
+        for index in 0..3 {
+            assert_eq!(
+                log[index][1],
+                json!([["box", 5, 5, 100.5, 30.25, 100.5, 114.5, 201]])
+            );
+        }
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"saved instanceof ResizeObserverEntry && saved.contentRect instanceof DOMRectReadOnly && saved.contentBoxSize[0] instanceof ResizeObserverSize && Object.isFrozen(saved.contentBoxSize) && (()=>{try{saved.contentBoxSize.push(1);return false;}catch{}return true;})()"#)).unwrap());
+        assert!(!doc.rendering_update());
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("logs=[];box.style.padding='10px'"))
+            .unwrap();
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("JSON.stringify(logs.map(row=>row[0]))"))
+                .unwrap(),
+            "[\"border-box\"]"
+        );
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<f64, _>("saved.contentRect.x"))
+                .unwrap(),
+            10.0
+        );
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>("globalThis.oldEntry=saved;logs=[];box.style.width='120px'")
+            })
+            .unwrap();
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("logs.length"))
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<f64, _>("oldEntry.contentRect.width"))
+                .unwrap(),
+            100.5
+        );
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("logs=[];box.style.transform='translateX(20px)'"))
+            .unwrap();
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("logs.length"))
+                .unwrap(),
+            0
+        );
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("box.style.display='none'"))
+            .unwrap();
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("logs.length"))
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<f64, _>("saved.contentRect.width"))
+                .unwrap(),
+            0.0
+        );
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("logs=[];box.style.display='block'"))
+            .unwrap();
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("logs.length"))
+                .unwrap(),
+            3
+        );
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("logs=[]"))
+            .unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("JSON.stringify(logs.map(row=>row[0]))"))
+                .unwrap(),
+            "[\"device-pixel-content-box\"]"
+        );
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("logs=[];box.remove()"))
+            .unwrap();
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("logs.length"))
+                .unwrap(),
+            3
+        );
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("logs=[];document.body.appendChild(box)"))
+            .unwrap();
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("logs.length"))
+                .unwrap(),
+            3
+        );
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn resize_observers_deliver_deeper_changes_and_defer_self_resize_loops() {
+        let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            "<html><body><div id='outer' style='width:100px;height:100px'><div id='child' style='width:50px;height:20px'></div></div></body></html>",r#"
+            globalThis.outer=document.getElementById('outer');globalThis.child=document.getElementById('child');
+            globalThis.logs=[];globalThis.looping=false;
+            globalThis.observer=new ResizeObserver(entries=>{
+                logs.push(entries.map(e=>[e.target.id,e.contentRect.width]));
+                if(entries.some(e=>e.target===outer)){
+                    if(looping)outer.style.width=(outer.getBoundingClientRect().width+1)+'px';
+                    else child.style.width='80px';
+                }
+            });observer.observe(outer);observer.observe(child);
+        "#).unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("JSON.stringify(logs)"))
+                .unwrap(),
+            "[[[\"outer\",100],[\"child\",50]],[[\"child\",80]]]"
+        );
+        assert!(doc.script_diagnostics.borrow().is_empty());
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("logs=[];looping=true;outer.style.width='120px'"))
+            .unwrap();
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("logs.length"))
+                .unwrap(),
+            1
+        );
+        assert!(doc.has_pending_rendering_update());
+        assert_eq!(
+            doc.script_diagnostics.borrow().back().unwrap().phase,
+            "resize-observer"
+        );
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("looping=false"))
+            .unwrap();
+        doc.rendering_update();
+        assert!(!doc.has_pending_rendering_update());
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("JSON.stringify(logs.at(-1))"))
+                .unwrap(),
+            "[[\"outer\",121]]"
+        );
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>("observer.disconnect();logs=[];outer.style.width='130px'")
+            })
+            .unwrap();
+        assert!(!doc.rendering_update());
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("logs.length"))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn resize_observer_capacity_is_reclaimed_and_disconnection_releases_detached_nodes() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body></body></html>",
+            "",
+        )
+        .unwrap();
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"(()=>{
+          let invalid=0;
+          for(const run of [()=>new ResizeObserver(null),()=>new ResizeObserver(()=>{}).observe(document),()=>new ResizeObserver(()=>{}).observe(document.body,{box:'invalid'})])try{run();}catch(e){if(e instanceof TypeError)invalid++;}
+          if(invalid!==3)return false;
+          const all=Array.from({length:128},()=>new ResizeObserver(()=>{}));
+          for(const ro of all)ro.observe(document.createElement('div'));
+          const replacement=new ResizeObserver(()=>{});
+          try{replacement.observe(document.createElement('div'));return false;}catch(e){if(!(e instanceof RangeError))return false;}
+          all[0].disconnect();replacement.observe(document.createElement('div'));
+          for(const ro of all)ro.disconnect();replacement.disconnect();
+          const nodes=Array.from({length:1024},()=>document.createElement('div'));
+          for(const node of nodes)replacement.observe(node);
+          replacement.observe(nodes[0],{box:'border-box'});
+          try{replacement.observe(document.createElement('div'));return false;}catch(e){if(!(e instanceof RangeError))return false;}
+          replacement.unobserve(nodes[0]);replacement.observe(document.createElement('div'));replacement.disconnect();
+          const node=document.createElement('div');node.style.cssText='width:20px;height:20px';node.innerHTML='<span>retained child</span>';
+          document.body.appendChild(node);globalThis.rootRef=node.__ref;globalThis.childRef=node.firstChild.__ref;
+          globalThis.retainedObserver=new ResizeObserver(()=>{});retainedObserver.observe(node);node.remove();
+          return true;
+        })()"#)).unwrap());
+        doc.js_runtime.run_gc();
+        doc.poll(None);
+        let reference = doc
+            .js_context
+            .with(|ctx| ctx.eval::<String, _>("rootRef"))
+            .unwrap();
+        let child = doc
+            .js_context
+            .with(|ctx| ctx.eval::<String, _>("childRef"))
+            .unwrap();
+        assert!(resolve_node_ref(&doc.dom.borrow(), &reference).is_some());
+        assert!(resolve_node_ref(&doc.dom.borrow(), &child).is_some());
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("retainedObserver.disconnect();retainedObserver=null"))
+            .unwrap();
+        doc.js_runtime.run_gc();
+        doc.poll(None);
+        assert!(resolve_node_ref(&doc.dom.borrow(), &reference).is_none());
+        assert!(resolve_node_ref(&doc.dom.borrow(), &child).is_none());
+    }
+
+    #[test]
+    fn resize_callback_errors_are_diagnosed_and_runaway_callbacks_suspend_the_document() {
+        let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,"<html><body><div id='box' style='width:20px;height:20px'></div></body></html>",r#"
+          globalThis.calls=0;
+          new ResizeObserver(()=>{throw new Error('observer failure')}).observe(document.getElementById('box'));
+          new ResizeObserver(()=>{calls++}).observe(document.getElementById('box'));
+        "#).unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("calls"))
+                .unwrap(),
+            1
+        );
+        assert!(doc
+            .script_diagnostics
+            .borrow()
+            .iter()
+            .any(|entry| entry.phase == "resize-observer"
+                && entry.message.contains("observer failure")));
+        doc.js_context.with(|ctx|ctx.eval::<(),_>("new ResizeObserver(()=>{while(true){}}).observe(document.getElementById('box'))")).unwrap();
+        doc.rendering_update();
+        assert!(doc.script_budget.interrupted());
+        assert!(!doc.has_pending_rendering_update());
+        assert_eq!(
+            control_request(&mut doc, json!({"method":"diagnostics"})).unwrap()["scriptStatus"],
+            "suspended"
+        );
+    }
+
+    #[test]
+    fn window_listeners_receive_resize_native_scroll_and_shared_capture_bubble_paths() {
+        let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,
+          "<html><head><style>html,body{margin:0}body{height:1000px}#scroll{width:100px;height:50px;overflow:auto}#content{width:100px;height:300px}</style></head><body><div id='scroll'><div id='content'></div></div><button id='button'>Button</button></body></html>",r#"
+          globalThis.events=[];globalThis.scroller=document.getElementById('scroll');
+          const resize=function(e){events.push(['resize',e.target===window,e.currentTarget===window,e.bubbles,e.cancelable,e.eventPhase,this===window]);};
+          window.addEventListener('resize',resize,{once:true});window.addEventListener('resize',resize);
+          window.addEventListener('scroll',e=>events.push(['capture-scroll',e.target===scroller,e.eventPhase]),true);
+          window.addEventListener('scroll',e=>events.push(['bubble-scroll',e.target===document,e.eventPhase]));
+          scroller.addEventListener('scroll',e=>events.push(['element-scroll',e.bubbles,e.cancelable]));
+          window.addEventListener('click',e=>events.push(['capture-click',e.eventPhase,e.composedPath().at(-1)===window]),true);
+          window.addEventListener('click',e=>events.push(['bubble-click',e.eventPhase]));
+        "#).unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 2.0, ColorScheme::Light));
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("JSON.stringify(events)"))
+                .unwrap(),
+            "[[\"resize\",true,true,false,false,2,true]]"
+        );
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("events=[];document.getElementById('button').click()"))
+            .unwrap();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("JSON.stringify(events)"))
+                .unwrap(),
+            "[[\"capture-click\",1,true],[\"bubble-click\",3]]"
+        );
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("events=[]"))
+            .unwrap();
+        let id = doc.inner().get_element_by_id("scroll").unwrap();
+        doc.inner_mut()
+            .scroll_to(id, 0.0, 100.0, blitz::dom::ScrollBehavior::Instant);
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("JSON.stringify(events)"))
+                .unwrap(),
+            "[[\"capture-scroll\",true,1],[\"element-scroll\",false,false]]"
+        );
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>("events=[];scroller.scrollTop=120;scroller.scrollTop=130")
+            })
+            .unwrap();
+        doc.poll(None);
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("events.length"))
+                .unwrap(),
+            2
+        );
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("events=[]"))
+            .unwrap();
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("scroller.style.display='none'"))
+            .unwrap();
+        doc.rendering_update();
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("scroller.style.display='block'"))
+            .unwrap();
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("events.length"))
+                .unwrap(),
+            0
+        );
+        let mut scroll = doc.inner().viewport_scroll();
+        scroll.y = 20.0;
+        doc.inner_mut().set_viewport_scroll(scroll);
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("JSON.stringify(events)"))
+                .unwrap(),
+            "[[\"capture-scroll\",false,1],[\"bubble-scroll\",true,3]]"
+        );
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("events=[]"))
+            .unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(900, 600, 2.0, ColorScheme::Light));
+        doc.rendering_update();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("events.length"))
+                .unwrap(),
+            0
+        );
+        assert!(!doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>("window instanceof Node"))
+            .unwrap());
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn floating_ui_dom_bundle_positions_flips_shifts_and_accepts_through_shared_controls() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/floating-demo");
+        let html = std::fs::read_to_string(root.join("index.html")).unwrap();
+        let (mut doc, _) =
+            LapuiDocument::new_with_local_source(ActionRegistry::default(), None, &html, "", &root)
+                .unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(900, 850, 1.0, ColorScheme::Light));
+        fn field(doc: &LapuiDocument, id: &str) -> String {
+            doc.js_context
+                .with(|ctx| {
+                    ctx.eval::<String, _>(format!(
+                        "document.getElementById({}).value",
+                        serde_json::to_string(id).unwrap()
+                    ))
+                })
+                .unwrap()
+        }
+        fn activate(doc: &mut LapuiDocument, id: &str) {
+            let snapshot = control_request(doc, json!({"method":"controls"})).unwrap();
+            let reference = snapshot["controls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["id"] == id)
+                .unwrap()["ref"]
+                .clone();
+            control_request(doc,json!({"method":"activate","documentEpoch":snapshot["documentEpoch"],"ref":reference})).unwrap();
+        }
+        fn settle(doc: &mut LapuiDocument) {
+            for _ in 0..100 {
+                doc.poll(None);
+                doc.animation_frame();
+                doc.rendering_update();
+                if field(doc, "status") != "Positioning" {
+                    return;
+                }
+            }
+            panic!("floating UI did not settle: {}", field(doc, "status"));
+        }
+        activate(&mut doc, "anchor");
+        settle(&mut doc);
+        assert_eq!(
+            field(&doc, "status"),
+            "Open",
+            "diagnostics: {}",
+            serde_json::to_string(&*doc.script_diagnostics.borrow()).unwrap()
+        );
+        assert_eq!(field(&doc, "placement"), "bottom-start");
+        assert_eq!(field(&doc, "bounds"), "Yes");
+        assert_eq!(field(&doc, "coordinates"), "24.0 / 150.0");
+        assert_eq!(field(&doc, "style-width"), "220px");
+        #[cfg(feature = "software-renderer")]
+        {
+            let pixels = crate::snapshot::render_rgba(&mut doc, 900, 850).unwrap();
+            let popover = doc.inner().get_element_by_id("popover").unwrap();
+            let bounds = doc.inner().get_client_bounding_rect(popover).unwrap();
+            let x = (bounds.x + 12.0) as usize;
+            let y = (bounds.y + 5.0) as usize;
+            let pixel = (y * 900 + x) * 4;
+            assert_eq!(&pixels[pixel..pixel + 4], &[215, 229, 255, 255]);
+        }
+        activate(&mut doc, "edge");
+        settle(&mut doc);
+        assert_eq!(field(&doc, "status"), "Open");
+        assert_eq!(field(&doc, "placement"), "top-end");
+        assert_eq!(field(&doc, "bounds"), "Yes");
+        let stage_width = doc
+            .js_context
+            .with(|ctx| ctx.eval::<f64, _>("document.getElementById('stage').clientWidth"))
+            .unwrap();
+        let coordinates = field(&doc, "coordinates");
+        let numbers: Vec<f64> = coordinates
+            .split('/')
+            .map(|value| value.trim().parse().unwrap())
+            .collect();
+        assert_eq!(numbers, vec![stage_width - 230.0, 122.0]);
+        doc.inner_mut()
+            .set_viewport(Viewport::new(600, 850, 1.0, ColorScheme::Light));
+        // Resize is handled by the real autoUpdate window listener.
+        settle(&mut doc);
+        assert_eq!(field(&doc, "bounds"), "Yes");
+        assert_ne!(field(&doc, "coordinates"), coordinates);
+        let before_resize = field(&doc, "coordinates");
+        activate(&mut doc, "resize-anchor");
+        settle(&mut doc);
+        assert_ne!(field(&doc, "coordinates"), before_resize);
+        assert_eq!(field(&doc, "bounds"), "Yes");
+        activate(&mut doc, "accept");
+        assert_eq!(field(&doc, "status"), "Accepted");
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>(
+                "getComputedStyle(document.getElementById('popover')).display==='none'"
+            ))
+            .unwrap());
+        activate(&mut doc, "anchor");
+        settle(&mut doc);
+        activate(&mut doc, "center");
+        settle(&mut doc);
+        assert_eq!(field(&doc, "coordinates"), "24.0 / 150.0");
+        activate(&mut doc, "left-edge");
+        settle(&mut doc);
+        assert_eq!(field(&doc, "placement"), "bottom-start");
+        assert_eq!(field(&doc, "coordinates"), "8.0 / 150.0");
+        assert_eq!(field(&doc, "bounds"), "Yes");
+        activate(&mut doc, "close");
+        assert_eq!(field(&doc, "status"), "Closed");
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn computed_style_reads_the_live_cascade_variables_shorthands_and_used_css_sizes() {
+        let html = "<html><head><style>html,body{margin:0}body{color:rgb(12,34,56);font-size:16px;--Tone:rgb(255,0,0);--gap:5%}#box{width:50%;height:40px;padding:var(--gap);border:3px solid currentColor;background-color:var(--Tone);overflow:hidden auto;margin:10px 11px}#box.compact{width:120px;box-sizing:border-box;background-color:rgb(0,0,255)}@media(min-width:600px){#box{width:75%}}</style></head><body><div id='box'>content</div><span id='inline'>inline</span></body></html>";
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 2.0, ColorScheme::Light));
+        let result: String = doc.js_context.with(|ctx|ctx.eval(r#"
+            globalThis.box = document.getElementById('box');
+            globalThis.computed = getComputedStyle(box);
+            JSON.stringify([computed.width,computed.height,computed.paddingLeft,computed.color,computed.backgroundColor,computed.borderTopColor,computed.overflow,computed.margin,computed.fontSize,computed.boxSizing])
+        "#)).unwrap_or_else(|error|panic!("{}",javascript_error(&doc.js_context,&error,&doc.script_budget)));
+        assert_eq!(result,"[\"200px\",\"40px\",\"20px\",\"rgb(12, 34, 56)\",\"rgb(255, 0, 0)\",\"rgb(12, 34, 56)\",\"hidden auto\",\"10px 11px\",\"16px\",\"content-box\"]");
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"(() => {
+            if(computed.getPropertyValue('COLOR') !== computed.color || computed['background-color'] !== computed.backgroundColor || computed.cssFloat !== computed.getPropertyValue('float')) return false;
+            if(computed.getPropertyValue('not-a-property')!=='' || computed.getPropertyValue('--tone')!=='') return false;
+            if(computed.getPropertyValue('--Tone').replace(/\s/g,'')!=='rgb(255,0,0)' || !computed.getPropertyValue('--gap').includes('5%')) return false;
+            const names=Array.from(computed);
+            if(names.length!==computed.length || computed[0]!==computed.item(0) || computed.item(1e6)!=='' || !names.includes('width') || !names.includes('direction') || !names.includes('--Tone')) return false;
+            if(Object.keys(computed).filter(key=>/^[0-9]+$/.test(key)).length!==names.length) return false;
+            if(!(computed instanceof CSSStyleDeclaration) || !(box.style instanceof CSSStyleDeclaration) || computed.parentRule!==null || computed.cssText!=='' || computed.getPropertyPriority('color')!=='') return false;
+            for(const change of [()=>computed.width='1px',()=>computed.setProperty('width','1px'),()=>computed.removeProperty('width'),()=>computed.cssText='width:1px',()=>delete computed.width,()=>Object.defineProperty(computed,'width',{value:'1px'})]) {
+                try { change(); return false; } catch(error) { if(error.name!=='NoModificationAllowedError') return false; }
+            }
+            for(const invalid of [null,{},document,document.createTextNode('text')]) {
+                try { getComputedStyle(invalid); return false; } catch(error) { if(!(error instanceof TypeError)) return false; }
+            }
+            try { getComputedStyle(box,'::before'); return false; } catch(error) { if(error.name!=='NotSupportedError') return false; }
+            if(getComputedStyle(box,null).width!==computed.width || getComputedStyle(box,'').width!==computed.width) return false;
+            box.classList.add('compact');
+            if(computed.width!=='120px' || computed.boxSizing!=='border-box' || computed.backgroundColor!=='rgb(0, 0, 255)') return false;
+            box.classList.remove('compact');
+            let inside;
+            lapui.batch(()=>{box.style.width='40%';inside=computed.width;box.style.height='70px';});
+            if(inside!=='160px' || computed.height!=='70px') return false;
+            document.body.style.color='rgb(9,8,7)';
+            if(computed.color!=='rgb(9, 8, 7)' || computed.borderTopColor!==computed.color) return false;
+            box.style.removeProperty('width');
+            box.style.display='none';
+            if(computed.display!=='none' || computed.width!=='50%') return false;
+            box.style.display='block';
+            if(computed.width!=='200px' || getComputedStyle(document.getElementById('inline')).width!=='auto') return false;
+            return document instanceof Node && box instanceof Node && document.createTextNode('x') instanceof Node && Node.ELEMENT_NODE===1;
+        })()"#)).unwrap_or_else(|error|panic!("{}",javascript_error(&doc.js_context,&error,&doc.script_budget))));
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("computed.width"))
+                .unwrap(),
+            "600px"
+        );
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>(
+                r#"(() => {
+            box.remove();
+            if(computed.length!==0 || computed.width!=='') return false;
+            document.body.appendChild(box);
+            return computed.width==='600px';
+        })()"#
+            ))
+            .unwrap());
+    }
+
+    #[test]
+    fn a_retained_computed_view_keeps_detached_nodes_only_until_the_view_is_collected() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body></body></html>",
+            "",
+        )
+        .unwrap();
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>(
+                    r#"
+            (() => {
+                const root=document.createElement('div');
+                root.innerHTML='<span>Retained subtree</span>';
+                document.body.appendChild(root);
+                globalThis.rootReference=root.__ref;
+                globalThis.childReference=root.firstChild.__ref;
+                globalThis.retainedComputed=getComputedStyle(root);
+                root.remove();
+            })();
+        "#,
+                )
+            })
+            .unwrap();
+        doc.js_runtime.run_gc();
+        doc.poll(None);
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>("Boolean(__lapui_resolve(rootReference)) && Boolean(__lapui_resolve(childReference)) && retainedComputed.length===0")).unwrap());
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("globalThis.retainedComputed=null"))
+            .unwrap();
+        doc.js_runtime.run_gc();
+        doc.poll(None);
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>(
+                "!__lapui_resolve(rootReference) && !__lapui_resolve(childReference)"
+            ))
+            .unwrap());
+    }
+
+    #[test]
+    fn offset_metrics_use_native_parent_padding_edges_ignore_scroll_and_hide_boxless_nodes() {
+        let html = "<html><head><style>html,body{margin:0}#parent{position:absolute;left:30px;top:40px;width:120px;height:80px;padding:10px;border:2px solid;overflow:hidden}#child{position:absolute;left:25px;top:35px;width:50px;height:20px;padding:3px;border:1px solid}#tall{height:400px}#fixed{position:fixed;left:5px;top:6px;width:10px;height:11px}</style></head><body><div id='parent'><div id='child'></div><div id='tall'></div></div><div id='fixed'></div></body></html>";
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 2.0, ColorScheme::Light));
+        let value: String = doc.js_context.with(|ctx|ctx.eval(r#"
+            globalThis.parent = document.getElementById('parent');
+            globalThis.child = document.getElementById('child');
+            JSON.stringify([child.offsetLeft,child.offsetTop,child.offsetWidth,child.offsetHeight,child.offsetParent.id,parent.offsetLeft,parent.offsetTop,parent.offsetParent.nodeName])
+        "#)).unwrap();
+        assert_eq!(value, "[25,35,58,28,\"parent\",30,40,\"BODY\"]");
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"(() => {
+            parent.scrollTop=60;
+            if(child.offsetTop!==35 || child.getBoundingClientRect().y!==17 || child.offsetParent!==parent) return false;
+            if(document.getElementById('fixed').offsetParent!==null || document.body.offsetParent!==null || document.documentElement.offsetParent!==null) return false;
+            parent.style.display='none';
+            if(child.offsetWidth!==0 || child.offsetTop!==0 || child.offsetParent!==null) return false;
+            parent.style.display='block';
+            if(child.offsetWidth!==58 || child.offsetParent!==parent) return false;
+            child.remove();
+            return child.offsetWidth===0 && child.offsetParent===null;
+        })()"#)).unwrap());
+    }
+
+    #[test]
+    fn css_scroll_metrics_programmatic_clamping_and_coalesced_non_bubbling_events() {
+        let html = "<html><head><style>html,body{margin:0}body{height:900px}#scroller{position:absolute;left:40px;top:50px;width:120px;height:80px;padding:10px;border:2px solid;overflow:hidden}#content{width:400px;height:300px}#clip{width:50px;height:40px;overflow:clip}#large{height:100px}</style></head><body><div id='scroller'><div id='content'></div></div><div id='clip'><div id='large'></div></div></body></html>";
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 2.0, ColorScheme::Light));
+        let initial: String = doc.js_context.with(|ctx| ctx.eval(r#"
+            globalThis.scroller = document.getElementById('scroller');
+            globalThis.content = document.getElementById('content');
+            globalThis.events = [];
+            globalThis.bubbled = 0;
+            scroller.addEventListener('scroll', event => events.push([event.bubbles,event.cancelable,scroller.scrollTop]));
+            document.body.addEventListener('scroll',()=>bubbled++);
+            JSON.stringify([scroller.clientWidth,scroller.clientHeight,scroller.clientLeft,scroller.clientTop,scroller.scrollWidth,scroller.scrollHeight,innerWidth,innerHeight,content.getBoundingClientRect().x,content.getBoundingClientRect().y])
+        "#)).unwrap();
+        assert_eq!(initial, "[140,100,2,2,420,320,400,300,52,62]");
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool,_>(r#"(() => {
+            scroller.scrollTop = 60;
+            scroller.scrollLeft = 20;
+            if (scroller.scrollTop !== 60 || scroller.scrollLeft !== 20 || scrollY !== 0 || events.length !== 0) return false;
+            const rect = content.getBoundingClientRect();
+            if (rect.x !== 32 || rect.y !== 2) return false;
+            scroller.scrollBy({top:15});
+            return scroller.scrollTop === 75 && scroller.scrollLeft === 20;
+        })()"#)).unwrap_or_else(|error| panic!("{}",javascript_error(&doc.js_context,&error,&doc.script_budget))));
+        doc.poll(None);
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("JSON.stringify(events)"))
+                .unwrap(),
+            "[[false,false,75]]"
+        );
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<u32, _>("bubbled"))
+                .unwrap(),
+            0
+        );
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"(() => {
+            scroller.scrollTo(1e9,1e9);
+            if (scroller.scrollLeft !== 280 || scroller.scrollTop !== 220 || scrollY !== 0) return false;
+            scroller.scrollTo({top:-5});
+            if (scroller.scrollTop !== 0 || scroller.scrollLeft !== 280) return false;
+            scroller.scrollBy(-1e9,-1e9);
+            if (scroller.scrollLeft !== 0 || scroller.scrollTop !== 0) return false;
+            scroller.scrollTop = Infinity;
+            document.getElementById('clip').scrollTop = 50;
+            if(document.getElementById('clip').scrollTop !== 0) return false;
+            try { scroller.scrollTo({top:1,behavior:'smooth'}); return false; } catch(error) { if(error.name !== 'NotSupportedError') return false; }
+            try { scroller.scrollTo({top:1,behavior:'invalid'}); return false; } catch(error) { if(!(error instanceof TypeError)) return false; }
+            globalThis.rootEvents = 0;
+            document.addEventListener('scroll',()=>rootEvents++);
+            scrollTo({top:100});
+            scrollBy({top:20});
+            if(scrollY !== 120 || pageYOffset !== 120 || document.scrollingElement.scrollTop !== 120) return false;
+            if(content.getBoundingClientRect().y !== -58) return false;
+            return scroller.scrollTop === 0;
+        })()"#)).unwrap());
+        doc.poll(None);
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<u32, _>("rootEvents"))
+                .unwrap(),
+            1
+        );
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"(() => {
+            scroller.scrollTop=100;
+            scroller.style.display='none';
+            scroller.scrollTop=200;
+            if(scroller.scrollTop!==0 || scroller.getClientRects().length!==0) return false;
+            const hidden=scroller.getBoundingClientRect();
+            if(hidden.x!==0 || hidden.y!==0 || hidden.width!==0 || hidden.height!==0) return false;
+            scroller.style.display='block';
+            if(scroller.scrollTop!==100) return false;
+            scroller.remove();
+            scroller.scrollTop = 200;
+            return scroller.clientWidth === 0 && scroller.scrollHeight === 0 && scroller.scrollTop === 0 && scroller.getClientRects().length === 0;
+        })()"#)).unwrap());
+    }
+
+    #[test]
+    fn client_rects_return_css_pixel_inline_fragments_and_stable_list_snapshots() {
+        let html = "<html><head><style>html,body{margin:0}#text{width:120px;font:16px sans-serif}</style></head><body><div id='text'><span id='inline'>one two three four five six seven eight nine ten eleven twelve</span></div><div id='box' style='width:50px;height:20px'></div></body></html>";
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 2.0, ColorScheme::Light));
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"(() => {
+            globalThis.inline = document.getElementById('inline');
+            globalThis.rects = inline.getClientRects();
+            if(rects.length < 2 || rects.item(0) !== rects[0] || rects.item(1e6) !== null) return false;
+            const union = inline.getBoundingClientRect();
+            const minX = Math.min(...rects.map(rect=>rect.left)), minY=Math.min(...rects.map(rect=>rect.top));
+            const maxX = Math.max(...rects.map(rect=>rect.right)), maxY=Math.max(...rects.map(rect=>rect.bottom));
+            if(Math.abs(union.x-minX)>0.01 || Math.abs(union.y-minY)>0.01 || Math.abs(union.right-maxX)>0.01 || Math.abs(union.bottom-maxY)>0.01) return false;
+            const box = document.getElementById('box');
+            const before = box.getClientRects();
+            lapui.batch(()=>{box.style.width='70px';if(box.clientWidth!==70)throw new Error('batch metric did not flush');box.style.height='30px';});
+            if(before.length!==1 || before[0].width!==50 || box.getClientRects()[0].width!==70 || box.clientHeight!==30) return false;
+            box.style.width='0'; box.style.height='0';
+            if(box.getClientRects().length!==1 || box.getClientRects()[0].width!==0) return false;
+            box.style.display='none';
+            if(box.getClientRects().length!==0 || box.clientWidth!==0) return false;
+            document.getElementById('text').style.display='none';
+            return inline.getClientRects().length===0;
+        })()"#)).unwrap());
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>("document.getElementById('text').style.display='block';innerWidth===800 && innerHeight===600 && rects.length>1 && inline.getClientRects().length===rects.length")).unwrap());
+    }
+
+    #[test]
+    fn bounding_rect_flushes_style_batches_uses_css_pixels_and_snapshots_detached_nodes() {
+        let html = "<html><head><style>html,body{margin:0}body{height:600px}#box{position:absolute;left:30px;top:40px;box-sizing:content-box;width:100px;height:50px;padding:10px;border:2px solid}</style></head><body><div id='box'></div></body></html>";
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(400, 300, 2.0, ColorScheme::Light));
+        let initial: String = doc
+            .js_context
+            .with(|ctx| {
+                ctx.eval(
+                    r#"
+            globalThis.box = document.getElementById('box');
+            globalThis.initial = box.getBoundingClientRect();
+            JSON.stringify(initial)
+        "#,
+                )
+            })
+            .unwrap();
+        let initial: Value = serde_json::from_str(&initial).unwrap();
+        assert_eq!(
+            initial,
+            json!({"x":30,"y":40,"width":124,"height":74,"top":40,"left":30,"right":154,"bottom":114})
+        );
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool,_>(r#"(() => {
+            box.style.width = '160px';
+            const changed = box.getBoundingClientRect();
+            if(changed.width !== 184 || initial.width !== 124 || !(initial instanceof DOMRectReadOnly) || !(initial instanceof DOMRect)) return false;
+            initial.x = 1;
+            if(box.getBoundingClientRect().x !== 30) return false;
+            let insideWidth = 0;
+            lapui.batch(() => { box.style.width = '200px'; insideWidth = box.getBoundingClientRect().width; box.style.height = '60px'; });
+            if(insideWidth !== 224 || box.getBoundingClientRect().height !== 84) return false;
+            box.style.display = 'none';
+            if(box.getBoundingClientRect().width !== 0) return false;
+            box.style.display = 'block';
+            box.remove();
+            if(Object.values(box.getBoundingClientRect().toJSON()).some(value => value !== 0)) return false;
+            document.body.appendChild(box);
+            if(box.getBoundingClientRect().width !== 224) return false;
+            const negative = DOMRect.fromRect({x:10,y:20,width:-4,height:-6});
+            const readonly = new DOMRectReadOnly(1,2,3,4);
+            return negative.left === 6 && negative.top === 14 && negative.right === 10 && negative.bottom === 20 && readonly.width === 3;
+        })()"#)).unwrap());
+        let mut scroll = doc.inner().viewport_scroll();
+        scroll.x = 12.0;
+        scroll.y = 15.0;
+        doc.inner_mut().set_viewport_scroll(scroll);
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>(
+                "box.getBoundingClientRect().x === 18 && box.getBoundingClientRect().y === 25"
+            ))
+            .unwrap());
+        // Responsive CSS layout is recalculated after a viewport change.
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>("box.style.boxSizing = 'border-box'; box.style.width = '50%'")
+            })
+            .unwrap();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<f64, _>("box.getBoundingClientRect().width"))
+                .unwrap(),
+            100.0
+        );
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 300, 2.0, ColorScheme::Light));
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<f64, _>("box.getBoundingClientRect().width"))
+                .unwrap(),
+            200.0
+        );
+    }
+
+    #[test]
+    fn animation_frames_share_timestamp_checkpoint_microtasks_and_defer_nested_requests() {
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None,
+            "<html><body><p id='status'>initial</p></body></html>", r#"
+            globalThis.events = [];
+            globalThis.times = [];
+            globalThis.clockValid = false;
+            let cancelled;
+            requestAnimationFrame(function(timestamp) {
+                clockValid = this === globalThis && performance.now() >= timestamp && performance.timeOrigin > 1000000000000;
+                events.push('a'); times.push(timestamp);
+                cancelAnimationFrame(cancelled);
+                requestAnimationFrame(() => events.push('nested'));
+                queueMicrotask(() => {
+                    events.push('microtask');
+                    requestAnimationFrame(() => events.push('microtask-frame'));
+                });
+                document.getElementById('status').textContent = 'frame';
+            });
+            cancelled = requestAnimationFrame(() => events.push('cancelled'));
+            requestAnimationFrame(() => { events.push('throw'); throw new Error('animation fixture error'); });
+            requestAnimationFrame(timestamp => { times.push(timestamp); events.push('last'); });
+        "#).unwrap();
+        assert!(doc.has_animation_callbacks());
+        doc.poll(None);
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>("events.length === 0"))
+            .unwrap());
+        assert!(doc.animation_frame());
+        assert_eq!(text(&doc, "status"), "frame");
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool,_>("clockValid && events.join(',') === 'a,microtask,throw,last' && times.length === 2 && times[0] === times[1]")).unwrap());
+        assert!(doc.has_animation_callbacks());
+        assert!(doc.animation_frame());
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>(
+                "events.join(',') === 'a,microtask,throw,last,nested,microtask-frame'"
+            ))
+            .unwrap());
+        assert!(!doc.has_animation_callbacks());
+        assert!(!doc.animation_frame());
+        assert_eq!(doc.script_diagnostics.borrow().len(), 1);
+        assert_eq!(doc.script_diagnostics.borrow()[0].phase, "animation-frame");
+    }
+
+    #[test]
+    fn animation_capacity_cancellation_and_document_shutdown_release_native_requests() {
+        let (doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body></body></html>",
+            "",
+        )
+        .unwrap();
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool,_>(r#"(() => {
+            let typeError = false, rangeError = false;
+            try { requestAnimationFrame('invalid'); } catch(error) { typeError = error instanceof TypeError; }
+            const handles = [];
+            for(let index=0;index<1024;index++) handles.push(requestAnimationFrame(() => {}));
+            try { requestAnimationFrame(() => {}); } catch(error) { rangeError = error instanceof RangeError; }
+            handles.forEach(cancelAnimationFrame);
+            cancelAnimationFrame(NaN); cancelAnimationFrame(-1); cancelAnimationFrame(0);
+            const replacement = requestAnimationFrame(() => {});
+            cancelAnimationFrame(String(replacement));
+            return typeError && rangeError && replacement > handles[handles.length - 1];
+        })()"#)).unwrap());
+        assert!(!doc.has_animation_callbacks());
+        let frames = doc.frames.clone();
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("requestAnimationFrame(() => {})"))
+            .unwrap();
+        assert!(frames.borrow().is_pending());
+        drop(doc);
+        assert!(!frames.borrow().is_pending());
+        assert!(!frames.borrow_mut().request(12345));
+    }
+
+    #[test]
+    fn animation_slice_defers_remaining_callbacks_and_interrupt_suspends_the_document() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body></body></html>",
+            r#"
+            globalThis.steps = [];
+            requestAnimationFrame(timestamp => {
+                steps.push(timestamp);
+                const end = performance.now() + 30;
+                while(performance.now() < end) {}
+            });
+            requestAnimationFrame(timestamp => steps.push(timestamp));
+        "#,
+        )
+        .unwrap();
+        doc.animation_frame();
+        assert!(doc.has_animation_callbacks());
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>("steps.length === 1"))
+            .unwrap());
+        doc.animation_frame();
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>("steps.length === 2 && steps[1] > steps[0]"))
+            .unwrap());
+        assert!(!doc.has_animation_callbacks());
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>(
+                    r#"
+            globalThis.ranAfterInterrupt = false;
+            requestAnimationFrame(() => { while(true) {} });
+            requestAnimationFrame(() => ranAfterInterrupt = true);
+        "#,
+                )
+            })
+            .unwrap();
+        doc.animation_frame();
+        assert!(doc.script_budget.interrupted());
+        assert!(!doc.has_animation_callbacks());
+        assert!(!doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>("ranAfterInterrupt"))
+            .unwrap());
+        let diagnostic = control_request(&mut doc, json!({"method":"diagnostics"})).unwrap();
+        assert_eq!(diagnostic["scriptStatus"], "suspended");
+        assert!(diagnostic["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error["source"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("animation-frame:")));
+    }
 
     #[test]
     fn javascript_action_discovery_and_parameterized_availability_share_rust_handlers() {
@@ -3293,12 +4939,9 @@ mod tests {
                     .contains("execution limit"),
                 "{kind}"
             );
-            assert!(
-                !control_request(&mut doc, json!({"method":"controls"})).unwrap()["controls"]
-                    .as_array()
-                    .unwrap()
-                    .is_empty()
-            );
+            let snapshot = control_request(&mut doc, json!({"method":"controls"})).unwrap();
+            assert!(!snapshot["controls"].as_array().unwrap().is_empty());
+            assert_eq!(snapshot["validationAvailable"], false);
             assert!(!doc.timers.handle.arm(1, 1));
             assert!(doc.lifetime.is_cancelled());
             assert!(!doc.poll(None));
@@ -4317,7 +5960,7 @@ mod tests {
           outer.addEventListener('click', outerCapture, {capture:true, once:true});
           outer.addEventListener('click', outerCapture, true);
           button.addEventListener('click', function(event) {
-            eventOrder.push(`target-capture:${event.eventPhase}:${this === button}:${event.composedPath().at(-1) === document}`);
+            eventOrder.push(`target-capture:${event.eventPhase}:${this === button}:${event.composedPath().at(-1) === window}`);
           }, true);
           button.addEventListener('click', event => eventOrder.push(`target-bubble:${event.eventPhase}`));
           button.addEventListener('click', {handleEvent(event) { eventOrder.push('object-once'); }}, {once:true});
@@ -6269,11 +7912,14 @@ mod tests {
 
     #[test]
     fn sse_decoder_preserves_utf8_and_multiline_data_across_chunks() {
-        let mut parser = SseParser::default();
+        let mut parser = crate::stream_work::SseParser::default();
         assert!(parser
             .feed(b"\xEF\xBB\xBFid: 7\r\nevent: update\r\ndata: \xE4")
+            .unwrap()
             .is_empty());
-        let events = parser.feed(b"\xB8\xAD\r\ndata: second\r\nretry: 750\r\n\r\n");
+        let events = parser
+            .feed(b"\xB8\xAD\r\ndata: second\r\nretry: 750\r\n\r\n")
+            .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event, "update");
         assert_eq!(events[0].data, "中\nsecond");
@@ -6350,6 +7996,300 @@ mod tests {
             .with(|ctx| ctx.eval::<u32, _>("__source.readyState"))
             .unwrap();
         assert_eq!(state, 2);
+    }
+
+    fn poll_stream_until(doc: &mut LapuiDocument, condition: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            doc.poll(None);
+            if doc
+                .js_context
+                .with(|ctx| ctx.eval::<bool, _>(condition))
+                .unwrap()
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        panic!(
+            "network condition timed out: {condition}; status={}; diagnostics={}",
+            stream_status(&doc.streams),
+            serde_json::to_string(&*doc.script_diagnostics.borrow()).unwrap()
+        );
+    }
+
+    fn read_stream_test_request(stream: &mut std::net::TcpStream) {
+        use std::io::{BufRead, BufReader};
+        let mut reader = BufReader::new(stream);
+        let mut bytes = 0;
+        loop {
+            let mut line = String::new();
+            let read = reader.read_line(&mut line).unwrap();
+            assert!(read > 0, "request ended before its headers");
+            bytes += read;
+            assert!(bytes <= 16384, "request headers exceed fixture limit");
+            if line == "\r\n" {
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn stream_constructors_enforce_combined_capacity_and_close_reclaims_native_slots() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body></body></html>",
+            "",
+        )
+        .unwrap();
+        assert_eq!(stream_status(&doc.streams)["reactorStarted"], false);
+        doc.js_context.with(|ctx| ctx.eval::<(),_>(r#"
+            globalThis.streams = [];
+            for (let index = 0; index < 8; index++) streams.push(index % 2 ? new WebSocket('ws://127.0.0.1:0/') : new EventSource('http://127.0.0.1:0/'));
+            globalThis.busy = ''; globalThis.invalid = '';
+            try { new EventSource('http://127.0.0.1:0/'); } catch(error) { busy = error.code; }
+            try { new WebSocket('file:///bad'); } catch(error) { invalid = error.code; }
+        "#)).unwrap();
+        assert_eq!(stream_status(&doc.streams)["streams"], 8);
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>("busy === 'network_busy' && invalid === 'invalid_url'"))
+            .unwrap());
+        let response = control_request(&mut doc, json!({"method":"networkStatus"})).unwrap();
+        assert_eq!(response["streamLimits"]["outstanding"], 8);
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("streams.forEach(stream => stream.close())"))
+            .unwrap();
+        poll_stream_until(&mut doc, "lapui.networkStatus().streams === 0");
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn sse_transport_backpressure_delivers_every_message_in_order_after_ui_resumes() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            read_stream_test_request(&mut stream);
+            let body: String = (0..100).map(|index| format!("data:{index}\n\n")).collect();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        });
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None, "<html><body></body></html>", &format!(r#"
+            globalThis.messages = [];
+            globalThis.source = new EventSource('http://{address}/');
+            source.onmessage = event => {{ messages.push(Number(event.data)); if(messages.length === 100) source.close(); }};
+        "#)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        // Intentionally do not poll the UI while native transport fills its queue.
+        while stream_status(&doc.streams)["queuedEvents"] != 64 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(stream_status(&doc.streams)["queuedEvents"], 64);
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>("messages.length === 0"))
+            .unwrap());
+        poll_stream_until(
+            &mut doc,
+            "messages.length === 100 && lapui.networkStatus().streams === 0",
+        );
+        server.join().unwrap();
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool,_>("messages.every((value,index) => value === index) && source.readyState === EventSource.CLOSED && lapui.networkStatus().queuedEventBytes === 0")).unwrap());
+    }
+
+    #[test]
+    fn websocket_typed_view_sends_flush_before_immediate_close_and_restore_buffered_amount() {
+        use std::net::TcpListener;
+        use tokio_tungstenite::tungstenite::{accept, Message};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut socket = accept(stream).unwrap();
+            assert_eq!(socket.read().unwrap().into_text().unwrap(), "first");
+            assert_eq!(socket.read().unwrap().into_data().as_ref(), &[1, 2, 255]);
+            assert_eq!(socket.read().unwrap().into_text().unwrap(), "last");
+            assert!(matches!(socket.read().unwrap(), Message::Close(_)));
+        });
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None, "<html><body></body></html>", &format!(r#"
+            globalThis.closed = false;
+            globalThis.limitError = '';
+            globalThis.socket = new WebSocket('ws://{address}/');
+            socket.onopen = () => {{
+                try {{ socket.send(new ArrayBuffer(8388609)); }} catch(error) {{ limitError = error.code; }}
+                socket.send('first');
+                const buffer = new Uint8Array([77,1,2,255,88]).buffer;
+                socket.send(new DataView(buffer, 1, 3));
+                socket.send('last');
+                socket.close();
+            }};
+            socket.onclose = () => closed = true;
+        "#)).unwrap();
+        poll_stream_until(&mut doc, "closed");
+        server.join().unwrap();
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool,_>("limitError === 'message_too_large' && socket.bufferedAmount === 0 && lapui.networkStatus().streams === 0")).unwrap());
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn websocket_rejects_oversized_declared_frames_without_waiting_for_payload() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        for opcode in [0x81_u8, 0x82] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut socket = tokio_tungstenite::tungstenite::accept(stream).unwrap();
+                let mut header = vec![opcode, 127];
+                header
+                    .extend_from_slice(&(crate::stream_work::MAX_MESSAGE as u64 + 1).to_be_bytes());
+                socket.get_mut().write_all(&header).unwrap();
+                // No payload is sent; rejection must release the transport.
+                let mut byte = [0];
+                let result = socket.get_mut().read(&mut byte);
+                assert!(matches!(result, Ok(0)) || result.is_err());
+            });
+            let (mut doc, _) = LapuiDocument::new_with_source(
+                ActionRegistry::default(),
+                None,
+                "<html><body></body></html>",
+                &format!(
+                    r#"
+                globalThis.closed = false;
+                globalThis.code = '';
+                globalThis.closeCode = 0;
+                globalThis.socket = new WebSocket('ws://{address}/');
+                socket.onerror = event => code = event.code;
+                socket.onclose = event => {{ closeCode = event.code; closed = true; }};
+            "#
+                ),
+            )
+            .unwrap();
+            poll_stream_until(&mut doc, "closed");
+            server.join().unwrap();
+            assert!(doc.js_context.with(|ctx| ctx.eval::<bool,_>("code === 'message_too_large' && closeCode === 1009 && lapui.networkStatus().streams === 0")).unwrap());
+        }
+    }
+
+    #[test]
+    fn sse_oversized_lines_and_unterminated_events_fail_closed_and_reclaim_slots() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        let long_line = "x".repeat(crate::stream_work::SSE_LINE + 1);
+        let long_event =
+            format!("data:{}\n", "x".repeat(crate::stream_work::SSE_LINE - 6)).repeat(3);
+        for body in [long_line, long_event] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                read_stream_test_request(&mut stream);
+                write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",body.len()).unwrap();
+                let _ = stream.write_all(body.as_bytes());
+            });
+            let (mut doc, _) = LapuiDocument::new_with_source(
+                ActionRegistry::default(),
+                None,
+                "<html><body></body></html>",
+                &format!(
+                    r#"
+                globalThis.fatalCode = '';
+                globalThis.source = new EventSource('http://{address}/');
+                source.onerror = event => {{ if(event.fatal) fatalCode = event.code; }};
+            "#
+                ),
+            )
+            .unwrap();
+            poll_stream_until(&mut doc, "source.readyState === EventSource.CLOSED");
+            server.join().unwrap();
+            assert!(doc
+                .js_context
+                .with(|ctx| ctx.eval::<bool, _>(
+                    "fatalCode === 'message_too_large' && lapui.networkStatus().streams === 0"
+                ))
+                .unwrap());
+        }
+    }
+
+    #[test]
+    fn sse_reconnection_preserves_and_clears_ids_and_named_errors_do_not_change_state() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for index in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    request.push_str(&line.to_ascii_lowercase());
+                }
+                assert_eq!(request.contains("last-event-id: 7\r\n"), index == 1);
+                if index == 2 {
+                    stream
+                        .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                        .unwrap();
+                } else {
+                    let body = if index == 0 {
+                        "retry: 250\nid: 7\nevent: open\ndata: named-open\n\nevent: error\ndata: named-error\n\n"
+                    } else {
+                        "id:\ndata: reset\n\n"
+                    };
+                    write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+                }
+            }
+        });
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None, "<html><body></body></html>", &format!(r#"
+            globalThis.namedStates = [];
+            globalThis.resetId = 'missing';
+            globalThis.source = new EventSource('http://{address}/');
+            source.addEventListener('open', event => {{ if(event.data === 'named-open') namedStates.push(source.readyState); }});
+            source.addEventListener('error', event => {{ if(event.data === 'named-error') namedStates.push(source.readyState); }});
+            source.onmessage = event => resetId = event.lastEventId;
+        "#)).unwrap();
+        poll_stream_until(&mut doc, "source.readyState === EventSource.CLOSED");
+        server.join().unwrap();
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool,_>("namedStates.length === 2 && namedStates.every(value => value === EventSource.OPEN) && resetId === '' && lapui.networkStatus().streams === 0")).unwrap());
     }
 
     #[test]

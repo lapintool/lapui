@@ -124,6 +124,9 @@ pub struct ReloadDocument {
 }
 
 impl ReloadDocument {
+    pub(crate) fn document_for_frame(&mut self) -> &mut LapuiDocument {
+        &mut self.document
+    }
     pub fn new(
         document: LapuiDocument,
         notify: mpsc::Sender<Result<Value, String>>,
@@ -275,6 +278,7 @@ impl ReloadDocument {
             inner.set_viewport(viewport);
             inner.set_shell_provider(provider.clone());
         }
+        new_document.configure_debug_trace(self.document.debug_trace_enabled(), false);
         let current = new_document.inner().id();
         let new_endpoint = DocumentEndpoint {
             controller: new_document.controller(),
@@ -476,6 +480,73 @@ mod tests {
     }
 
     #[test]
+    fn reload_preserves_trace_policy_but_discards_records_and_rejects_old_trace_epoch() {
+        let actions = ActionRegistry::default();
+        let source = DocumentSource::Embedded {
+            html: "<html><body><button id='run'>Run</button></body></html>".into(),
+            script: "".into(),
+        };
+        let (document, notify) = source.load(actions.clone(), None).unwrap();
+        document.configure_debug_trace(true, false);
+        let (mut document, handle) = ReloadDocument::new(document, notify, source, actions, None);
+        let epoch = document.inner().id();
+        let reference = crate::runtime::canonical_node_ref(
+            epoch,
+            document.inner().get_element_by_id("run").unwrap(),
+        );
+        let controller = handle.endpoint().controller;
+        let caller = std::thread::spawn(move || {
+            controller.request(
+                json!({"method":"activate","documentEpoch":epoch,"ref":reference}),
+                Duration::from_secs(2),
+            )
+        });
+        while !caller.is_finished() {
+            document.poll(None);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        caller.join().unwrap().unwrap();
+        assert!(
+            document.document.debug_trace(0, 128).unwrap()["latestSequence"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        request(
+            &mut document,
+            &handle,
+            json!({"method":"reload","documentEpoch":epoch}),
+        )
+        .unwrap();
+        assert!(document.document.debug_trace_enabled());
+        assert_eq!(
+            document.document.debug_trace(0, 128).unwrap()["latestSequence"],
+            0
+        );
+        let controller = handle.endpoint().controller;
+        let caller = std::thread::spawn(move || {
+            controller.request(
+                json!({"method":"debugTrace.read","documentEpoch":epoch,"afterSequence":1}),
+                Duration::from_secs(2),
+            )
+        });
+        while !caller.is_finished() {
+            document.poll(None);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(caller.join().unwrap().unwrap_err().code, "stale_document");
+        document.document.configure_debug_trace(false, false);
+        let epoch = document.inner().id();
+        request(
+            &mut document,
+            &handle,
+            json!({"method":"reload","documentEpoch":epoch}),
+        )
+        .unwrap();
+        assert!(!document.document.debug_trace_enabled());
+    }
+
+    #[test]
     fn reload_preserves_app_state_and_viewport_but_invalidates_old_document_channels() {
         let actions = ActionRegistry::default();
         let source = DocumentSource::Embedded {
@@ -568,6 +639,40 @@ mod tests {
                 .code,
             "document_closed"
         );
+    }
+
+    #[test]
+    fn reload_discards_old_animation_callbacks_and_runs_only_the_replacement_frame() {
+        let actions = ActionRegistry::default();
+        let source = DocumentSource::Embedded {
+            html:"<html><body><button id='run'>initial</button></body></html>".into(),
+            script:"requestAnimationFrame(() => document.getElementById('run').textContent = 'new frame');".into(),
+        };
+        let (document, notify) = LapuiDocument::new_with_source(actions.clone(),None,
+            "<html><body><button id='run'>old</button></body></html>",
+            "requestAnimationFrame(() => { document.getElementById('run').textContent = 'old frame'; lapui.invoke('counter.increment', {}); });").unwrap();
+        let (mut document, handle) =
+            ReloadDocument::new(document, notify, source, actions.clone(), None);
+        assert!(document.document_for_frame().has_animation_callbacks());
+        let old_epoch = document.inner().id();
+        request(
+            &mut document,
+            &handle,
+            json!({"method":"reload","documentEpoch":old_epoch}),
+        )
+        .unwrap();
+        assert!(document.document_for_frame().has_animation_callbacks());
+        document.document_for_frame().animation_frame();
+        assert!(!document.document_for_frame().has_animation_callbacks());
+        let inner = document.inner();
+        assert_eq!(
+            inner
+                .get_node(inner.get_element_by_id("run").unwrap())
+                .unwrap()
+                .text_content(),
+            "new frame"
+        );
+        assert_eq!(actions.observe().count, 0);
     }
 
     #[test]

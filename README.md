@@ -35,7 +35,13 @@ The [module example](examples/modules-demo/README.md) runs without Node or a bui
 
 The [form example](guide/forms.md) covers shared click defaults, labels, independent radio groups, disabled fieldsets, read-only input and keyboard activation: `cargo run --release --locked -- --html examples/forms-demo/index.html --watch`.
 
+The [local submission example](examples/form-submit-demo/README.md) shares submit/reset, string FormData and selected validation with AI controls: `cargo run --release --locked -- --html examples/form-submit-demo/index.html --watch`. See [form behavior and limits](guide/forms.md).
+
 The [change-feed example](examples/changes-demo/README.md) shares Rust state with a resumable UI and local clients: `cargo run --release --locked -- --html examples/changes-demo/index.html`. Pause/resume, consistent baselines, bounded history and disconnect recovery are described in [change subscriptions](guide/changes.md).
+
+The [animation example](guide/getting-started.md#run-the-animation-and-measurement-example) uses requestAnimationFrame, cancellation and CSS-pixel measurements without a build step: `cargo run --release --locked -- --html examples/animation-demo/index.html`. See [scheduling](guide/scheduling.md) and [geometry](guide/geometry.md) for the supported subset. The scrollable-list example runs with `cargo run --release --locked -- --html examples/scroll-demo/index.html`.
+
+The [Floating UI example](examples/floating-demo/README.md) runs the actual DOM positioning library with native computed styles and geometry: `cargo run --release --locked -- --html examples/floating-demo/index.html`. Selected offset, flip and shift cases pass; the library’s autoUpdate follows viewport and anchor-size changes while open. See [computed styles](guide/computed-styles.md) for the supported subset.
 
 The [Vue 3 example](examples/vue-demo/README.md) and [React DOM example](examples/react-demo/README.md) exercise the live DOM bridge, reactive lists, and conditional content. React also tests controlled input, delegated capture/bubble events, effects and the asynchronous Rust action.
 

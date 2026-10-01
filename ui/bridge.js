@@ -5,11 +5,45 @@
     };
   }
   const elements = new Map();
+  const rectValues = new WeakMap();
+  class DOMRectReadOnly {
+    constructor(x = 0, y = 0, width = 0, height = 0) { rectValues.set(this, [Number(x), Number(y), Number(width), Number(height)]); }
+    get x() { return rectValues.get(this)[0]; }
+    get y() { return rectValues.get(this)[1]; }
+    get width() { return rectValues.get(this)[2]; }
+    get height() { return rectValues.get(this)[3]; }
+    get top() { return Math.min(this.y, this.y + this.height); }
+    get right() { return Math.max(this.x, this.x + this.width); }
+    get bottom() { return Math.max(this.y, this.y + this.height); }
+    get left() { return Math.min(this.x, this.x + this.width); }
+    toJSON() { return { x:this.x, y:this.y, width:this.width, height:this.height, top:this.top, right:this.right, bottom:this.bottom, left:this.left }; }
+    static fromRect(rect = {}) { return new this(rect.x, rect.y, rect.width, rect.height); }
+  }
+  class DOMRect extends DOMRectReadOnly {}
+  for (const [index, name] of ['x','y','width','height'].entries()) {
+    Object.defineProperty(DOMRect.prototype, name, {
+      get() { return rectValues.get(this)[index]; },
+      set(value) { rectValues.get(this)[index] = Number(value); }, configurable:true
+    });
+  }
+  globalThis.DOMRect = DOMRect;
+  globalThis.DOMRectReadOnly = DOMRectReadOnly;
+  const styleViews = new WeakSet();
+  class CSSStyleDeclaration {
+    constructor() { throw new TypeError('Illegal constructor'); }
+    static [Symbol.hasInstance](value) { return styleViews.has(value); }
+  }
+  globalThis.CSSStyleDeclaration = CSSStyleDeclaration;
+  globalThis.CSSStyleProperties = CSSStyleDeclaration;
   const documentFragments = new Set();
   // The native DOM is authoritative. These edges describe ownership only:
   // a connected document keeps its wrappers/listeners alive, while retaining
   // any node in a detached tree keeps its parents and descendants alive.
   const nodeState = new WeakMap();
+  const windowReference = `window:${__lapui_document_ref()}`;
+  const scrollWatches = new Map();
+  const observationLimits=JSON.parse(__lapui_observer_limits);
+  let lastViewport = __lapui_viewport();
   const styleOwner = Symbol('style owner');
   const retiredNodes = new FinalizationRegistry(reference => {
     if (elements.get(reference)?.deref()) return;
@@ -55,6 +89,30 @@
     if (timer.repeat && timers.get(id) === timer && !__lapui_timer_arm(id, timer.delay)) timers.delete(id);
   };
   const eventSources = new Map();
+  globalThis.performance = { now: () => __lapui_now(), timeOrigin: __lapui_time_origin };
+  const animationCallbacks = new Map();
+  let nextAnimationId = 1;
+  globalThis.requestAnimationFrame = callback => {
+    if (typeof callback !== 'function') throw new TypeError('Animation callback must be a function');
+    if (animationCallbacks.size >= 1024 || nextAnimationId > 2147483647) throw new RangeError('Animation callback capacity exceeded');
+    const id = nextAnimationId++;
+    if (!__lapui_animation_request(id)) throw new Error('Animation scheduler is unavailable');
+    animationCallbacks.set(id, callback);
+    return id;
+  };
+  globalThis.cancelAnimationFrame = id => {
+    id = Number(id);
+    if (!Number.isInteger(id) || !animationCallbacks.has(id)) return;
+    animationCallbacks.delete(id);
+    __lapui_animation_cancel(id);
+  };
+  globalThis.__lapui_fire_animation_frame = (id, timestamp) => {
+    const callback = animationCallbacks.get(id);
+    if (!callback) return;
+    animationCallbacks.delete(id);
+    try { callback.call(globalThis, timestamp); }
+    catch (error) { __lapui_report_script_error(`animation-frame:${id}`, String(error?.message || error), String(error?.stack || ''), 'animation-frame'); }
+  };
   let nextRequestId = 1;
   function actionCatalog(request) {
     return new Promise((resolve,reject)=>{
@@ -139,6 +197,7 @@
           return true;
         }
       });
+      styleViews.add(this.style);
       const element = this;
       const tokens = () => (element.className.match(/\S+/g) || []);
       const validateToken = token => {
@@ -202,7 +261,10 @@
     }
     get nodeValue() { return this.nodeType === 3 || this.nodeType === 8 ? __lapui_get_text(this.__ref) : null; }
     set nodeValue(value) {
-      if (this.nodeType === 3 || this.nodeType === 8) __lapui_set_text(this.__ref, value == null ? '' : String(value));
+      if (this.nodeType === 3 || this.nodeType === 8) {
+        __lapui_set_text(this.__ref, value == null ? '' : String(value));
+        globalThis.__lapui_form_tree?.(this);
+      }
     }
     get parentNode() {
       const reference = __lapui_parent(this.__ref);
@@ -241,6 +303,31 @@
     get checked() { return __lapui_get_checked(this.__ref); }
     set checked(value) { __lapui_set_checked(this.__ref, Boolean(value)); }
     get isConnected() { return __lapui_is_connected(this.__ref); }
+    getBoundingClientRect() { return new DOMRect(...__lapui_bounding_rect(this.__ref)); }
+    get offsetLeft() { return __lapui_offset_metrics(this.__ref)[0]; }
+    get offsetTop() { return __lapui_offset_metrics(this.__ref)[1]; }
+    get offsetWidth() { return __lapui_offset_metrics(this.__ref)[2]; }
+    get offsetHeight() { return __lapui_offset_metrics(this.__ref)[3]; }
+    get offsetParent() { return getElement(__lapui_offset_parent(this.__ref)); }
+    getClientRects() {
+      const list = __lapui_client_rects(this.__ref).map(rect => new DOMRect(...rect));
+      Object.defineProperty(list, 'item', {value: index => list[Number(index)] ?? null});
+      return list;
+    }
+    get scrollLeft() { return __lapui_layout_metrics(this.__ref)[0]; }
+    set scrollLeft(value) { this.scrollTo({left: value}); }
+    get scrollTop() { return __lapui_layout_metrics(this.__ref)[1]; }
+    set scrollTop(value) { this.scrollTo({top: value}); }
+    get clientWidth() { return __lapui_layout_metrics(this.__ref)[2]; }
+    get clientHeight() { return __lapui_layout_metrics(this.__ref)[3]; }
+    get clientLeft() { return __lapui_layout_metrics(this.__ref)[4]; }
+    get clientTop() { return __lapui_layout_metrics(this.__ref)[5]; }
+    get scrollWidth() { return __lapui_layout_metrics(this.__ref)[6]; }
+    get scrollHeight() { return __lapui_layout_metrics(this.__ref)[7]; }
+    scrollTo(...args) { scrollElement(this, false, args); }
+    scroll(...args) { this.scrollTo(...args); }
+    scrollBy(...args) { scrollElement(this, true, args); }
+
     click() { lapui.activate(this.__ref); }
     get textContent() { return __lapui_get_text(this.__ref); }
     set textContent(value) {
@@ -252,6 +339,7 @@
     set innerHTML(value) {
       if (!__lapui_set_inner_html(this.__ref, String(value))) throw new Error('innerHTML update failed');
       syncChildren(this);
+      globalThis.__lapui_form_tree?.(this);
     }
     get value() { return __lapui_get_value(this.__ref); }
     set value(value) { __lapui_set_value(this.__ref, String(value)); }
@@ -283,6 +371,7 @@
       if (!__lapui_append_child(this.__ref, child.__ref)) throw new Error('appendChild failed');
       if (previous && previous !== this) syncChildren(previous);
       syncChildren(this);
+      globalThis.__lapui_form_tree?.(child);
       return child;
     }
     append(...items) { for (const item of items) this.appendChild(asNode(item)); }
@@ -304,17 +393,22 @@
       if (!__lapui_insert_before(this.__ref, child.__ref, reference)) throw new Error('insertBefore failed');
       if (previous && previous !== this) syncChildren(previous);
       syncChildren(this);
+      globalThis.__lapui_form_tree?.(child);
       return child;
     }
     removeChild(child) {
       if (!__lapui_remove_child(this.__ref, child.__ref)) throw new Error('removeChild failed');
       syncChildren(this);
+      if(this.tagName==='TEXTAREA')globalThis.__lapui_form_tree?.(this);
       return child;
     }
     remove() {
       const previous = this.parentNode;
       __lapui_remove_node(this.__ref);
-      if (previous) syncChildren(previous);
+      if (previous) {
+        syncChildren(previous);
+        if(previous.tagName==='TEXTAREA')globalThis.__lapui_form_tree?.(previous);
+      }
     }
     setAttribute(name, value) { __lapui_set_attribute(this.__ref, String(name).toLowerCase(), String(value)); }
     getAttribute(name) {
@@ -341,6 +435,15 @@
       if (callbacks.some(record => record.callback === callback && record.capture === capture)) return;
       callbacks.push({ callback, capture, once: Boolean(options?.once), passive: Boolean(options?.passive) });
       listeners.set(key, callbacks);
+      if (key === 'scroll' && this !== globalThis && this !== globalThis.document && !scrollWatches.has(this.__ref)) {
+        if (scrollWatches.size >= observationLimits.scrollTargets) for (const [ref,watch] of scrollWatches) if (!watch.target.deref()) scrollWatches.delete(ref);
+        if (scrollWatches.size >= observationLimits.scrollTargets) {
+          callbacks.pop(); if (!callbacks.length) listeners.delete(key);
+          throw new RangeError('Scroll observation capacity exceeded');
+        }
+        const metrics = __lapui_layout_metrics(this.__ref);
+        scrollWatches.set(this.__ref,{target:new WeakRef(this),last:[metrics[0],metrics[1]]});
+      }
     }
     removeEventListener(type, callback, options = false) {
       const capture = typeof options === 'boolean' ? options : Boolean(options?.capture);
@@ -350,7 +453,10 @@
       const index = callbacks.findIndex(record => record.callback === callback && record.capture === capture);
       if (index >= 0) callbacks.splice(index, 1);
       if (callbacks.length) listeners.set(key, callbacks);
-      else listeners.delete(key);
+      else {
+        listeners.delete(key);
+        if (key === 'scroll') scrollWatches.delete(this.__ref);
+      }
     }
   }
 
@@ -484,8 +590,9 @@
       this.onerror = null;
       this._listeners = new Map();
       this._id = nextStreamId++;
+      if (this._id > 0x7fffffff) throw new Error('Stream identities exhausted');
+      throwStreamError(__lapui_event_source_open(this._id, this.url));
       eventSources.set(this._id, this);
-      __lapui_event_source_open(this._id, this.url);
     }
     addEventListener(type, callback) {
       const callbacks = this._listeners.get(type) || [];
@@ -503,9 +610,12 @@
       __lapui_event_source_close(this._id);
     }
     _receive(raw) {
-      if (raw.type === 'open') this.readyState = LapuiEventSource.OPEN;
-      if (raw.type === 'error') this.readyState = LapuiEventSource.CONNECTING;
-      const event = { type: raw.type, data: raw.data, lastEventId: raw.lastEventId, target: this };
+      if (raw.kind === 'open') this.readyState = LapuiEventSource.OPEN;
+      if (raw.kind === 'error') {
+        this.readyState = raw.fatal ? LapuiEventSource.CLOSED : LapuiEventSource.CONNECTING;
+        if (raw.fatal) eventSources.delete(this._id);
+      }
+      const event = { type: raw.type, data: raw.data, lastEventId: raw.lastEventId, code: raw.code, message: raw.message, fatal: raw.fatal, target: this };
       const handler = raw.type === 'open' ? this.onopen : raw.type === 'error' ? this.onerror : raw.type === 'message' ? this.onmessage : null;
       if (handler) handler(event);
       for (const callback of [...(this._listeners.get(raw.type) || [])]) callback(event);
@@ -526,8 +636,9 @@
       this.onclose = null;
       this._listeners = new Map();
       this._id = nextStreamId++;
+      if (this._id > 0x7fffffff) throw new Error('Stream identities exhausted');
+      throwStreamError(__lapui_websocket_open(this._id, this.url));
       eventSources.set(this._id, this);
-      __lapui_websocket_open(this._id, this.url);
     }
     addEventListener(type, callback) {
       const callbacks = this._listeners.get(type) || [];
@@ -540,13 +651,14 @@
     }
     send(data) {
       if (this.readyState !== LapuiWebSocket.OPEN) throw new Error('WebSocket is not open');
-      let payload;
-      if (typeof data === 'string') payload = { type: 'text', data };
-      else if (data instanceof ArrayBuffer) payload = { type: 'binary', data: Array.from(new Uint8Array(data)) };
-      else if (ArrayBuffer.isView(data)) payload = { type: 'binary', data: Array.from(new Uint8Array(data.buffer, data.byteOffset, data.byteLength)) };
+      let error;
+      if (typeof data === 'string') error = __lapui_websocket_send_text(this._id, data);
+      else if (data instanceof ArrayBuffer) error = __lapui_websocket_send_binary(this._id, data, 0, data.byteLength);
+      else if (ArrayBuffer.isView(data)) error = __lapui_websocket_send_binary(this._id, data.buffer, data.byteOffset, data.byteLength);
       else throw new TypeError('WebSocket.send accepts strings and binary buffers');
-      if (!__lapui_websocket_send(this._id, JSON.stringify(payload))) throw new Error('WebSocket send failed');
+      throwStreamError(error);
     }
+    get bufferedAmount() { return __lapui_websocket_buffered(this._id); }
     close() {
       if (this.readyState >= LapuiWebSocket.CLOSING) return;
       this.readyState = LapuiWebSocket.CLOSING;
@@ -559,14 +671,21 @@
         eventSources.delete(this._id);
       }
       const data = raw.dataType === 'binary' && typeof Uint8Array !== 'undefined' ? new Uint8Array(raw.data) : raw.data;
-      const event = { type: raw.type, data, code: raw.code, reason: raw.reason, target: this };
+      const event = { type: raw.type, data, code: raw.code, message: raw.message, reason: raw.reason, target: this };
       const handler = raw.type === 'open' ? this.onopen : raw.type === 'message' ? this.onmessage : raw.type === 'error' ? this.onerror : raw.type === 'close' ? this.onclose : null;
       if (handler) handler(event);
       for (const callback of [...(this._listeners.get(raw.type) || [])]) callback(event);
     }
   }
 
+  function throwStreamError(encoded) {
+    if (!encoded) return;
+    const error = JSON.parse(encoded);
+    throw Object.assign(new Error(error.message), { code: error.code });
+  }
+
   const getOrCreate = canonical => {
+    if (canonical === windowReference) return globalThis;
     if (globalThis.document && canonical === globalThis.document.__ref) return globalThis.document;
     let element = elements.get(canonical)?.deref();
     if (!element) {
@@ -602,12 +721,14 @@
     }
   };
   const getElement = reference => {
+    if (reference === windowReference) return globalThis;
     const canonical = __lapui_resolve(String(reference));
     if (!canonical) return null;
     const element = getOrCreate(canonical);
     if (!nodeState.get(element).initialized) syncChildren(element);
     return element;
   };
+  globalThis.__lapui_element = getElement;
   const asNode = value => value && typeof value.__ref === 'string' && Number.isInteger(value.nodeType)
     ? value
     : getElement(__lapui_create_text(String(value)));
@@ -616,6 +737,13 @@
   // type checks. The host currently exposes HTML nodes only, so the SVG and
   // MathML constructors serve as compatibility sentinels until namespace
   // aware element creation is implemented.
+  globalThis.Node = class Node {
+    constructor() { throw new TypeError('Illegal constructor'); }
+    static [Symbol.hasInstance](value) { return value !== globalThis && nodeState.has(value); }
+  };
+  for (const [name,value] of Object.entries({ELEMENT_NODE:1,ATTRIBUTE_NODE:2,TEXT_NODE:3,COMMENT_NODE:8,DOCUMENT_NODE:9,DOCUMENT_FRAGMENT_NODE:11})) {
+    Object.defineProperty(Node,name,{value});
+  }
   globalThis.Element = Element;
   globalThis.HTMLElement = Element;
   globalThis.HTMLIFrameElement = class HTMLIFrameElement {
@@ -631,6 +759,71 @@
     }
   };
 
+  globalThis.getComputedStyle = (element, pseudo = null) => {
+    if (!(element instanceof Element) || element.nodeType !== 1) throw new TypeError('getComputedStyle requires an Element');
+    if (pseudo !== null && String(pseudo) !== '') throw new DOMException('Pseudo-element style queries are not supported','NotSupportedError');
+    const names = () => __lapui_computed_names(element.__ref);
+    const value = name => __lapui_computed_value(element.__ref,String(name));
+    const readonly = () => { throw new DOMException('Computed styles are read-only','NoModificationAllowedError'); };
+    const style = {
+      getPropertyValue(name) { return value(name); },
+      getPropertyPriority() { return ''; },
+      setProperty: readonly, removeProperty: readonly,
+      get length() { return names().length; },
+      item(index) { return names()[Number(index) >>> 0] ?? ''; },
+      get cssText() { return ''; },
+      get parentRule() { return null; },
+      [Symbol.iterator]() { return names()[Symbol.iterator](); }
+    };
+    Object.defineProperty(style,styleOwner,{value:element});
+    Object.setPrototypeOf(style,CSSStyleDeclaration.prototype);
+    const proxy = new Proxy(style,{
+      get(target,property,receiver) {
+        if (Reflect.has(target,property)) return Reflect.get(target,property,receiver);
+        if (typeof property !== 'string') return undefined;
+        if (/^(0|[1-9][0-9]*)$/.test(property)) return names()[Number(property)];
+        const name = property === 'cssFloat' ? 'float' : property.startsWith('--') ? property : property.replace(/[A-Z]/g,char=>'-'+char.toLowerCase());
+        return value(name);
+      },
+      set: readonly, deleteProperty: readonly, defineProperty: readonly,
+      ownKeys(target) { return [...names().map((_,index)=>String(index)),...Reflect.ownKeys(target)]; },
+      getOwnPropertyDescriptor(target,property) {
+        if (typeof property==='string' && /^(0|[1-9][0-9]*)$/.test(property)) {
+          const name = names()[Number(property)];
+          return name === undefined ? undefined : {value:name,writable:false,enumerable:true,configurable:true};
+        }
+        return Reflect.getOwnPropertyDescriptor(target,property);
+      }
+    });
+    styleViews.add(proxy);
+    return proxy;
+  };
+
+  const pendingScrollEvents = new Set();
+  function scrollElement(element, relative, args) {
+    const options = args[0] !== null && typeof args[0] === 'object' ? args[0] : {left: args[0], top: args[1]};
+    const behavior = options.behavior === undefined ? 'auto' : String(options.behavior);
+    if (!['auto','instant','smooth'].includes(behavior)) throw new TypeError('Invalid scroll behavior');
+    if (behavior === 'smooth') throw new DOMException('Smooth JS scrolling is not supported', 'NotSupportedError');
+    const coordinate = value => { if (value === undefined) return undefined; const number = Number(value); return Number.isFinite(number) ? number : 0; };
+    if (!__lapui_scroll(element.__ref,coordinate(options.left),coordinate(options.top),relative)) return;
+    const target = element === document.documentElement ? document : element;
+    if (pendingScrollEvents.has(target)) return;
+    pendingScrollEvents.add(target);
+    queueMicrotask(() => {
+      pendingScrollEvents.delete(target);
+      if (target === document || target.isConnected) {
+        const metrics = __lapui_layout_metrics(element.__ref);
+        if (target === document) { lastViewport[3]=metrics[0]; lastViewport[4]=metrics[1]; }
+        else {
+          const watch=scrollWatches.get(target.__ref);
+          if(watch)watch.last=[metrics[0],metrics[1]];
+        }
+        __lapui_dispatch('scroll',target.__ref,__lapui_event_path(target.__ref));
+      }
+    });
+  }
+
   globalThis.document = {
     __ref: __lapui_document_ref(),
     nodeType: 9,
@@ -641,6 +834,7 @@
     addEventListener(...args) { Element.prototype.addEventListener.apply(this, args); },
     removeEventListener(...args) { Element.prototype.removeEventListener.apply(this, args); },
     get documentElement() { return this.querySelector('html'); },
+    get scrollingElement() { return this.documentElement; },
     get body() { return getElement(__lapui_body()); },
     get activeElement() {
       const active = getElement(__lapui_get_active_element());
@@ -683,6 +877,52 @@
     }
   };
 
+  for (const [name,index] of [['scrollX',0],['pageXOffset',0],['scrollY',1],['pageYOffset',1],['innerWidth',2],['innerHeight',3]]) {
+    Object.defineProperty(globalThis,name,{get:()=>__lapui_layout_metrics(document.documentElement.__ref)[index],configurable:true});
+  }
+  globalThis.scrollTo = (...args) => document.documentElement.scrollTo(...args);
+  globalThis.scroll = globalThis.scrollTo;
+  globalThis.scrollBy = (...args) => document.documentElement.scrollBy(...args);
+
+  nodeState.set(globalThis,{listeners:new Map()});
+  globalThis.addEventListener = (...args) => Element.prototype.addEventListener.apply(globalThis,args);
+  globalThis.removeEventListener = (...args) => Element.prototype.removeEventListener.apply(globalThis,args);
+  // Actual viewport and native scroll changes are checked at rendering time.
+  // Weak target references do not retain otherwise unreachable detached nodes.
+  globalThis.__lapui_render_window_notifications = () => {
+    let changed=false;
+    const viewport=__lapui_viewport(), previous=lastViewport;
+    lastViewport=viewport;
+    if(viewport[0]!==previous[0] || viewport[1]!==previous[1]) {
+      __lapui_dispatch('resize',windowReference);
+      changed=true;
+    }
+    if(viewport[3]!==previous[3] || viewport[4]!==previous[4]) {
+      __lapui_dispatch('scroll',document.__ref,__lapui_event_path(document.__ref));
+      changed=true;
+    }
+    const targets=[];
+    for(const [ref,watch] of scrollWatches) {
+      const target=watch.target.deref();
+      if(!target)scrollWatches.delete(ref);
+      else if(target.isConnected)targets.push([ref,target,watch]);
+    }
+    if(targets.length) {
+      const samples=JSON.parse(__lapui_resize_samples(targets.map(([ref])=>ref)));
+      for(const [ref,target,watch] of targets) {
+        const sample=samples[ref];
+        if(!sample || scrollWatches.get(ref)!==watch || !target.isConnected)continue;
+        const next=[sample[8],sample[9]];
+        if(next[0]!==watch.last[0] || next[1]!==watch.last[1]) {
+          watch.last=next;
+          __lapui_dispatch('scroll',ref,__lapui_event_path(ref));
+          changed=true;
+        }
+      }
+    }
+    return changed;
+  };
+
   nodeState.set(document, { parent: null, children: [], listeners: new Map(), initialized: false });
   syncChildren(document);
 
@@ -702,6 +942,7 @@
     },
     controls() { return JSON.parse(__lapui_controls()); },
     diagnostics() { return JSON.parse(__lapui_script_diagnostics()); },
+    networkStatus() { return JSON.parse(__lapui_network_status()); },
     observe() { return JSON.parse(__lapui_host_observe()); },
     actions: {
       list(options = {}) {
@@ -839,11 +1080,13 @@
   };
 
   let armedSpace = null;
-  const dispatch = (type, targetId, path = '', detail = '{}') => {
+  const dispatch = (type, targetId, path = '', detail = '{}', fields = {}) => {
     if (type === 'keydown' && keydownDispatchDepth === 0) focusTransitionDuringKeydown = null;
     const target = getElement(targetId);
     if ((type === 'blur' || type === 'focusout') && armedSpace?.deref() === target) armedSpace = null;
     const ids = path ? path.split('\n') : [targetId];
+    if (ids.at(-1) === document.__ref) ids.push(windowReference);
+    if (type === 'input') globalThis.__lapui_form_input?.(target);
     const click = type === 'click';
     const checkable = click && target?.tagName === 'INPUT' && ['checkbox', 'radio'].includes(target.type.toLowerCase());
     let label = null;
@@ -865,10 +1108,11 @@
     const targetBefore = checkable && target.checked;
     if (checkable) target.checked = target.type.toLowerCase() === 'radio' ? true : !targetBefore;
     let dispatched = false;
-    const bubbles = !['focus', 'blur', 'mouseenter', 'mouseleave', 'pointerenter', 'pointerleave'].includes(type);
-    const cancelable = ['keydown', 'keyup', 'keypress', 'click', 'dblclick', 'submit'].includes(type);
+    const bubbles = type === 'scroll' ? target === document : !['focus', 'blur', 'mouseenter', 'mouseleave', 'pointerenter', 'pointerleave', 'resize', 'invalid'].includes(type);
+    const cancelable = ['keydown', 'keyup', 'keypress', 'click', 'dblclick', 'submit', 'reset', 'invalid'].includes(type);
     const event = {
       ...JSON.parse(detail),
+      ...fields,
       type,
       target,
       currentTarget: null,
@@ -876,7 +1120,7 @@
       cancelable,
       defaultPrevented: false,
       eventPhase: 0,
-      timeStamp: Date.now(),
+      timeStamp: performance.now(),
       preventDefault() { if (this.cancelable && !this.__passive) this.defaultPrevented = true; },
       stopPropagation() { this.__stopped = true; },
       stopImmediatePropagation() { this.__stopped = true; this.__immediate = true; },
@@ -944,6 +1188,11 @@
         control.focus();
       }
     }
+    let formDefault=false;
+    if(click && globalThis.__lapui_form_click) {
+      try{formDefault=__lapui_form_click(target,ids.map(getElement),event);}
+      catch(error){formDefault=true;__lapui_report_script_error('form-default',String(error?.message||error),String(error?.stack||''),'form');}
+    }
     let keyboardDefault = false;
     const button = target?.tagName === 'BUTTON' || (target?.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes(target.type.toLowerCase()));
     const checkInput = target?.tagName === 'INPUT' && ['checkbox', 'radio'].includes(target.type.toLowerCase());
@@ -968,13 +1217,17 @@
         }
       }
     }
+    if(type==='keydown' && event.key==='Enter' && !button && !event.ctrlKey && !event.altKey && !event.metaKey && globalThis.__lapui_form_enter) {
+      try { if(__lapui_form_enter(target,event))keyboardDefault=true; }
+      catch(error){keyboardDefault=true;__lapui_report_script_error('form-default',String(error?.message||error),String(error?.stack||''),'form');}
+    }
     if (type === 'keyup' && event.key === ' ') {
       const armed = armedSpace?.deref(); armedSpace = null;
       if (armed === target && !event.defaultPrevented && !event.ctrlKey && !event.altKey && !event.metaKey && document.activeElement === target && __lapui_is_enabled(targetId)) {
         keyboardDefault = true; lapui.activate(targetId);
       }
     }
-    return JSON.stringify({ dispatched, defaultPrevented: event.defaultPrevented, nativeDefaultHandled: Boolean(checkable || label || keyboardDefault) });
+    return JSON.stringify({ dispatched, defaultPrevented: event.defaultPrevented, nativeDefaultHandled: Boolean(checkable || label || keyboardDefault || formDefault) });
   };
   const clicking = new Set();
   globalThis.__lapui_dispatch = (type, targetId, ...args) => {
@@ -994,13 +1247,13 @@
     dispatchFocusTransition(String(previous), String(current));
   };
 
+  globalThis.__lapui_stream_event = (id, data) => {
+    const stream = eventSources.get(id);
+    if (stream) stream._receive(data);
+  };
+
   globalThis.__lapui_complete = (requestId, ok, payload) => {
     const data = JSON.parse(payload);
-    if (requestId < 0) {
-      const source = eventSources.get(-requestId);
-      if (source) source._receive(data);
-      return;
-    }
     if (requestId === 0) {
       if (ok && typeof globalThis.__lapui_render === 'function') globalThis.__lapui_render(data);
       return;
@@ -1013,3 +1266,18 @@
     else callback.reject(Object.assign(new Error(data.message), { code: data.code }));
   };
 })();
+
+// Developer-only, opt-in metadata trace. No input values or result bodies.
+lapui.debugTrace=Object.freeze({
+  configure({enabled,clear=false}={}){
+    if(typeof enabled!=='boolean'||typeof clear!=='boolean')throw new TypeError('Trace flags must be boolean');
+    __lapui_debug_trace_configure(enabled,clear);
+    return this.read();
+  },
+  read({afterSequence=0,limit=64}={}){
+    if(!Number.isSafeInteger(afterSequence)||afterSequence<0||!Number.isInteger(limit)||limit<1||limit>128)throw new RangeError('Invalid trace cursor or limit');
+    const reply=JSON.parse(__lapui_debug_trace_read(String(afterSequence),limit));
+    if(!reply.ok)throw new RangeError(reply.error.message);
+    return reply.observation;
+  }
+});

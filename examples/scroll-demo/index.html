@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Lapui scrolling</title><style>
+html,body { margin:0; width:100%; min-height:100%; background:#edf3fb; color:#182b49; font-family:sans-serif; }
+main { margin:24px; padding:24px; max-width:720px; background:white; border:1px solid #cfdaeb; border-radius:12px; }
+h1 { margin-top:0; font-size:26px; } p { line-height:1.5; }
+#viewport { height:240px; overflow:auto; border:2px solid #a4b9d9; background:#f8faff; }
+#rows { width:840px; padding:12px; }
+.row { display:block; width:800px; height:48px; margin-bottom:8px; text-align:left; background:white; }
+.row.selected { background:#d7e5ff; }
+.field { display:flex; align-items:center; gap:12px; margin:12px 0; } label { min-width:150px; }
+input { width:260px; padding:8px; border:1px solid #c7d6eb; border-radius:4px; background:white; }
+button { padding:10px 20px; border:1px solid #a4b9d9; border-radius:6px; background:#edf3fb; cursor:pointer; }
+.controls { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
+</style></head><body><main>
+<h1>Scrolling and geometry</h1><p>Scroll with the pointer or the buttons. The viewport, offsets and content extent come from the same layout used to draw this list.</p>
+<div id="viewport"><div id="rows"></div></div>
+<div class="controls"><button id="down">Down 120</button><button id="right">Right 120</button><button id="end">End</button><button id="home">Home</button></div>
+<div class="field"><label for="position">Left / top</label><input id="position" readonly></div>
+<div class="field"><label for="client">Client width / height</label><input id="client" readonly></div>
+<div class="field"><label for="extent">Content width / height</label><input id="extent" readonly></div>
+<div class="field"><label for="selected">Selected row</label><input id="selected" readonly value="None"></div>
+<div class="field"><label for="row-position">Last row viewport y</label><input id="row-position" readonly></div>
+<script src="app.js"></script></main></body></html>

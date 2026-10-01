@@ -5,7 +5,9 @@ use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz::dom::Document;
 use blitz::traits::shell::{ColorScheme, Viewport};
+use serde_json::json;
 use std::path::Path;
+use std::time::Instant;
 
 /// Render current state at 1x scale. This resolves layout but does not wait for
 /// all application/network work, and changes the document's viewport.
@@ -23,13 +25,28 @@ pub fn render_rgba(
         return Err("snapshot dimensions must be 1..8192 and at most 16 megapixels".into());
     }
     document.poll(None);
+    let frame = document.frame_trace("image");
+    let measured = frame.sequence().is_some();
+    document
+        .inner_mut()
+        .set_viewport(Viewport::new(width, height, 1.0, ColorScheme::Light));
+    document.animation_frame();
+    document.rendering_update();
+    let layout_time = document.layout_animation_time();
+    let layout = document.layout_trace();
     let mut dom = document.inner_mut();
-    dom.set_viewport(Viewport::new(width, height, 1.0, ColorScheme::Light));
-    dom.resolve(0.0);
+    dom.resolve(layout_time);
+    layout.finish(json!({"outcome":"resolved"}), false);
     let mut renderer = VelloCpuImageRenderer::new(width, height);
     let mut pixels = Vec::new();
+    let renderer_start = measured.then(Instant::now);
+    let mut scene_millis = None;
     renderer.render_to_vec(
-        |painter| blitz_paint::paint_scene(painter, &mut dom, 1.0, width, height, 0, 0),
+        |painter| {
+            let start = measured.then(Instant::now);
+            blitz_paint::paint_scene(painter, &mut dom, 1.0, width, height, 0, 0);
+            scene_millis = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
+        },
         &mut pixels,
     );
     // Vello returns premultiplied RGBA; image encoders expect straight alpha.
@@ -43,6 +60,9 @@ pub fn render_rgba(
             }
         }
     }
+    frame.finish(json!({"outcome":"image_ready","width":width,"height":height,
+        "sceneBuildMillis":scene_millis,"rendererCallMillis":renderer_start.map(|start|start.elapsed().as_secs_f64()*1000.0),
+        "physicalPresentation":"not_applicable"}),false);
     Ok(pixels)
 }
 
@@ -68,6 +88,34 @@ pub fn save_png(
 mod tests {
     use super::*;
     use crate::action::ActionRegistry;
+    #[test]
+    fn cpu_snapshot_delivers_native_resize_before_painting_observer_changes() {
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None,
+            "<html><head><style>html,body{margin:0;background:#fff}#box{width:50%;height:40px;background:#f00}</style></head><body><div id='box'></div></body></html>",
+            "new ResizeObserver(entries => { document.getElementById('box').style.background = entries[0].contentRect.width >= 60 ? '#00f' : '#0f0'; }).observe(document.getElementById('box'));").unwrap();
+        let pixels = render_rgba(&mut doc, 100, 80).unwrap();
+        let pixel = (10 * 100 + 10) * 4;
+        assert_eq!(&pixels[pixel..pixel + 4], &[0, 255, 0, 255]);
+        let pixels = render_rgba(&mut doc, 140, 80).unwrap();
+        let pixel = (10 * 140 + 10) * 4;
+        assert_eq!(&pixels[pixel..pixel + 4], &[0, 0, 255, 255]);
+        assert!(!doc.has_pending_rendering_update());
+    }
+
+    #[test]
+    fn cpu_snapshot_runs_one_animation_opportunity_before_resolving_and_painting() {
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None,
+            "<html><head><style>html,body{margin:0;background:#fff}#box{width:40px;height:40px;background:#f00}</style></head><body><div id='box'></div></body></html>",
+            "requestAnimationFrame(() => { document.getElementById('box').style.background = '#00f'; requestAnimationFrame(() => document.getElementById('box').style.background = '#0f0'); });").unwrap();
+        let pixels = render_rgba(&mut doc, 100, 80).unwrap();
+        let pixel = (10 * 100 + 10) * 4;
+        assert_eq!(&pixels[pixel..pixel + 4], &[0, 0, 255, 255]);
+        assert!(doc.has_animation_callbacks());
+        let pixels = render_rgba(&mut doc, 100, 80).unwrap();
+        assert_eq!(&pixels[pixel..pixel + 4], &[0, 255, 0, 255]);
+        assert!(!doc.has_animation_callbacks());
+    }
+
     #[test]
     fn cpu_paint_outputs_css_pixels_and_changes_after_dom_mutation_and_resize() {
         let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None,

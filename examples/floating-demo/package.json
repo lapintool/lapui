@@ -1,0 +1,14 @@
+{
+  "name": "lapui-floating-demo",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "esbuild app.js --bundle --format=iife --target=es2020 --outfile=dist/app.js"
+  },
+  "dependencies": {
+    "@floating-ui/dom": "1.8.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
+}

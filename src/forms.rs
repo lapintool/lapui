@@ -1,5 +1,8 @@
 //! Form ownership and checked state over the authoritative native DOM.
-use blitz::dom::{node::SpecialElementData, BaseDocument, LocalName};
+use blitz::dom::{
+    node::{SpecialElementData, TextInputData},
+    BaseDocument, LocalName, QualName,
+};
 use blitz::traits::node_id::NodeId;
 use std::collections::HashMap;
 
@@ -21,6 +24,7 @@ pub(crate) fn value(doc: &BaseDocument, id: NodeId) -> Option<String> {
     element
         .text_input_data()
         .map(|input| input.editor.text().to_string())
+        .or_else(|| tag(doc, id, "textarea").then(|| doc.get_node(id).unwrap().text_content()))
         .or_else(|| attr(doc, id, "value").map(str::to_owned))
         .or_else(|| {
             (tag(doc, id, "input")
@@ -31,14 +35,21 @@ pub(crate) fn value(doc: &BaseDocument, id: NodeId) -> Option<String> {
         })
 }
 
+fn input_kind(doc: &BaseDocument, id: NodeId) -> String {
+    let kind = attr(doc, id, "type").unwrap_or("text").to_ascii_lowercase();
+    match kind.as_str() {
+        "text" | "password" | "email" | "number" | "search" | "tel" | "url" | "checkbox"
+        | "radio" | "button" | "submit" | "reset" | "hidden" | "image" | "file" | "date"
+        | "month" | "week" | "time" | "datetime-local" | "range" | "color" => kind,
+        _ => "text".into(),
+    }
+}
+
 pub(crate) fn supports_value_write(doc: &BaseDocument, id: NodeId) -> bool {
     tag(doc, id, "textarea")
         || (tag(doc, id, "input")
             && matches!(
-                attr(doc, id, "type")
-                    .unwrap_or("text")
-                    .to_ascii_lowercase()
-                    .as_str(),
+                input_kind(doc, id).as_str(),
                 "text"
                     | "password"
                     | "email"
@@ -322,4 +333,67 @@ pub(crate) fn focus_step(doc: &mut BaseDocument, reverse: bool) {
     if let Some(id) = next {
         doc.set_focus_to(id);
     }
+}
+
+pub(crate) fn owner(doc: &BaseDocument, id: NodeId) -> Option<NodeId> {
+    let nodes = subtree(doc, root(doc, id));
+    form_owner(doc, id, &tree_ids(doc, &nodes))
+}
+
+pub(crate) fn controls(doc: &BaseDocument, form: NodeId) -> Vec<NodeId> {
+    if !tag(doc, form, "form") {
+        return Vec::new();
+    }
+    let nodes = subtree(doc, root(doc, form));
+    let ids = tree_ids(doc, &nodes);
+    nodes
+        .into_iter()
+        .filter(|id| {
+            [
+                "input", "button", "select", "textarea", "fieldset", "output", "object",
+            ]
+            .iter()
+            .any(|name| tag(doc, *id, name))
+                && form_owner(doc, *id, &ids) == Some(form)
+        })
+        .collect()
+}
+
+/// Property writes update the native editor without rewriting default attributes.
+pub(crate) fn set_value(doc: &mut BaseDocument, id: NodeId, value: &str) -> bool {
+    if !supports_value_write(doc, id) {
+        return false;
+    }
+    let kind = input_kind(doc, id);
+    let multiline = tag(doc, id, "textarea");
+    if !multiline
+        && matches!(
+            kind.as_str(),
+            "checkbox" | "radio" | "button" | "submit" | "reset" | "hidden"
+        )
+    {
+        let name = QualName::new(None, blitz::dom::ns!(), LocalName::from("value"));
+        doc.mutate().set_attribute(id, name, value);
+        return true;
+    }
+    doc.snapshot_node_state_only(id);
+    let element = doc
+        .get_node_mut(id)
+        .unwrap()
+        .data
+        .downcast_element_mut()
+        .unwrap();
+    let special = std::mem::take(&mut element.special_data);
+    let mut input = match special {
+        SpecialElementData::TextInput(input) => input,
+        _ => TextInputData::new(multiline),
+    };
+    input.editor.set_text(value);
+    let node = doc.get_node_mut(id).unwrap();
+    node.data.downcast_element_mut().unwrap().special_data = SpecialElementData::TextInput(input);
+    node.mark_ancestors_dirty();
+    // Refresh independently of Taffy's cached measurement, since paint reads Parley directly.
+    doc.with_text_input(id, |mut driver| driver.refresh_layout());
+    doc.shell_provider.request_redraw();
+    true
 }

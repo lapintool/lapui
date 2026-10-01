@@ -23,3 +23,9 @@ Fetch uses one lazily started document-owned reactor and reusable client, with e
 QuickJS uses a cooperative execution deadline and a 128 MiB managed-heap cap. An interrupted document suspends scripts until reload, retaining diagnostic/control reads while cancelling document-owned work. See [task scheduling](scheduling.md) for limits and native-call exceptions.
 
 The local control listener is a development-only interface. It listens on `127.0.0.1` and accepts one JSON request per connection. Future work must add an explicit permission model before offering a production AI or automation endpoint.
+
+WebSocket and SSE use a second lazy document-owned reactor with a shared eight-stream limit, bounded incoming delivery, and bounded WebSocket sends. UI dispatch converts owned native fields and binary buffers directly into JS values. Stream callbacks run without holding the queue borrow, allowing close/send/replacement construction. See [Network requests](network.md) for the exact transport budgets, backpressure, shutdown, and native allocation limits.
+
+The CLI uses LapuiApplication around Blitz for actual-redraw animation callbacks and sleeping event-loop deadlines. CSS-pixel measurements and immediate JS scroll commands read/modify the same native layout and offsets used by the renderer. They commit pending batch writes when queried; callbacks and returned measurements do not acknowledge screen presentation. See [scheduling](scheduling.md) and [geometry](geometry.md).
+
+At the same paced rendering opportunity, native box observations and window/scroll notifications run after animation callbacks and before painting. Size entries sample Blitz layout; active observations own their targets, while native scroll sampling uses weak target references. Close/reload retires the document context. See [size observations and window events](observers.md) for budgets and lifecycle rules.

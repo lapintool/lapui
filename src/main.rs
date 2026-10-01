@@ -1,11 +1,12 @@
 use anyrender_vello::VelloWindowRenderer;
 mod connection_pool;
-use blitz::shell::{create_default_event_loop, BlitzApplication, BlitzShellProxy, WindowConfig};
+use blitz::shell::{create_default_event_loop, BlitzShellProxy, WindowConfig};
 use connection_pool::ConnectionPool;
 use lapui::action::{ActionError, ActionRegistry};
 use lapui::control::DocumentController;
 use lapui::reload::{DocumentSource, ReloadDocument, ReloadHandle};
 use lapui::runtime::LapuiDocument;
+use lapui::shell::LapuiApplication;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -53,6 +54,7 @@ fn respond(
                     "cancelOperation",
                     "controls",
                     "diagnostics",
+                    "networkStatus",
                     "activate",
                     "fill",
                     "check",
@@ -61,6 +63,8 @@ fn respond(
                     "actions.list",
                     "actions.describe",
                     "actions.check",
+                    "debugTrace.configure",
+                    "debugTrace.read",
                 ];
                 if reload.is_some() {
                     methods.push("reload");
@@ -79,10 +83,14 @@ fn respond(
                         "subscriptions": true,
                         "controlChangeStream": false,
                         "frameEvents": false,
+                        "debugTrace": true,
+                        "renderingTimingTrace": true,
+                        "physicalPresentationAck": false,
                         "durableRecovery": false,
                         "controlSnapshot": true,
                         "controlMutations": true,
                         "scriptDiagnostics": true,
+                        "networkStreamStatus": true,
                         "scriptExecutionLimits": true,
                         "registeredActions": true,
                         "scopedActions": true,
@@ -97,6 +105,9 @@ fn respond(
                     "expectedVersionMethods": ["invoke"],
                     "controlMutationPreconditions": ["documentEpoch"],
                     "scriptExecutionLimits": LapuiDocument::script_limits(),
+                    "debugTraceLimits": LapuiDocument::debug_trace_limits(),
+                    "debugTraceMethodSchemas":debug_trace_schemas(),
+                    "networkStreamLimits": LapuiDocument::stream_limits(),
                     "changeSubscriptionLimits": ActionRegistry::change_limits(),
                     "actionCatalogLimits": ActionRegistry::action_limits(),
                     "actionCatalogSchemas": {"actions.list":{"type":"object","additionalProperties":false,"required":["method"],"properties":{
@@ -228,9 +239,17 @@ fn respond(
                 }
                 observation
             }
-            Some("controls" | "diagnostics" | "activate" | "fill" | "check" | "focus") => {
-                controller.request(request, Duration::from_secs(5))
-            }
+            Some(
+                "controls"
+                | "diagnostics"
+                | "networkStatus"
+                | "activate"
+                | "fill"
+                | "check"
+                | "focus"
+                | "debugTrace.read"
+                | "debugTrace.configure",
+            ) => controller.request(request, Duration::from_secs(5)),
             _ => Err(ActionError {
                 code: "invalid_request".into(),
                 message: "unsupported protocol method; call describe to discover methods".into(),
@@ -242,6 +261,13 @@ fn respond(
         Err(error) => json!({"ok":false,"error":error}),
     };
     writeln!(stream, "{response}")
+}
+
+fn debug_trace_schemas() -> Value {
+    json!({"debugTrace.configure":{"type":"object","additionalProperties":false,"required":["method","documentEpoch","enabled"],
+        "properties":{"method":{"const":"debugTrace.configure"},"documentEpoch":{"type":"integer","minimum":1},"enabled":{"type":"boolean"},"clear":{"type":"boolean","default":false}}},
+        "debugTrace.read":{"type":"object","additionalProperties":false,"required":["method","documentEpoch"],
+        "properties":{"method":{"const":"debugTrace.read"},"documentEpoch":{"type":"integer","minimum":1},"afterSequence":{"type":"integer","minimum":0,"default":0},"limit":{"type":"integer","minimum":1,"maximum":128,"default":64}}}})
 }
 
 fn control_method_schemas() -> Value {
@@ -310,7 +336,9 @@ fn run_client(
         "describe-action" => json!({"method":"actions.describe","action":request_file.ok_or("describe-action requires an action ID")?}),
         "controls" => json!({"method":"controls"}),
         "diagnostics" => json!({"method":"diagnostics"}),
+        "network-status" => json!({"method":"networkStatus"}),
         "trace" => json!({"method":"trace"}),
+        "debug-trace" => json!({"method":"debugTrace.read","documentEpoch":request_file.ok_or("debug-trace requires the document epoch from controls")?.parse::<u64>()?}),
         "changes" => if let Some(cursor) = request_file { json!({"method":"changes.subscribe","cursor":cursor}) } else { json!({"method":"changes.subscribe"}) },
         "reload-status" => json!({"method":"reloadStatus"}),
         "operation" => json!({"method":"operation","operationId":request_file.ok_or("operation requires an operation ID")?}),
@@ -323,7 +351,7 @@ fn run_client(
             if bytes.len() > MAX_CONTROL_REQUEST_BYTES { return Err("request file exceeds 64 KiB".into()); }
             serde_json::from_slice(&bytes)?
         }
-        _ => return Err("client command must be describe, observe, actions, describe-action <id>, increment, changes [cursor], trace, controls, diagnostics, reload, reload-status, operation <id>, cancel-operation <id>, or request-file <path>".into()),
+        _ => return Err("client command must be describe, observe, actions, describe-action <id>, increment, changes [cursor], trace, controls, diagnostics, network-status, reload, reload-status, operation <id>, cancel-operation <id>, or request-file <path>".into()),
     };
     writeln!(stream, "{request}")?;
     let mut response = String::new();
@@ -335,7 +363,7 @@ fn run_client(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("Lapui {}\n\nRun: lapui [--demo files | --html <index.html> [--js <bundle.js>]]\n     [--renderer cpu|gpu] [--watch]\nExport current state: lapui [app options] --snapshot <image.png> [--width <pixels> --height <pixels>]\nClient: lapui client <address> describe|observe|increment|controls|diagnostics|trace|actions\n        lapui client <address> describe-action <action-id>\n        lapui client <address> changes [cursor]\n        lapui client <address> reload|reload-status\n        lapui client <address> operation|cancel-operation <operation-id>\n        lapui client <address> request-file <request.json>\n\nCPU drawing and PNG export require the software-renderer feature (enabled by default).\n--watch uses local files and a window; it performs full document reloads.\nThe control address is printed when the window starts. Snapshots do not wait for all asynchronous work.", env!("CARGO_PKG_VERSION"));
+        println!("Lapui {}\n\nRun: lapui [--demo files | --html <index.html> [--js <bundle.js>]]\n     [--renderer cpu|gpu] [--watch] [--debug-trace]\nExport current state: lapui [app options] --snapshot <image.png> [--width <pixels> --height <pixels>]\nClient: lapui client <address> describe|observe|increment|controls|diagnostics|network-status|trace|debug-trace <documentEpoch>|actions\n        lapui client <address> describe-action <action-id>\n        lapui client <address> changes [cursor]\n        lapui client <address> reload|reload-status\n        lapui client <address> operation|cancel-operation <operation-id>\n        lapui client <address> request-file <request.json>\n\nCPU drawing and PNG export require the software-renderer feature (enabled by default).\n--watch uses local files and a window; it performs full document reloads.\nThe control address is printed when the window starts. Snapshots do not wait for all asynchronous work.", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if args.get(1).is_some_and(|arg| arg == "--version") {
@@ -354,6 +382,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut js_path: Option<PathBuf> = None;
     let mut demo_files = false;
     let mut watch_files = false;
+    let mut debug_trace = false;
     let mut software_renderer = cfg!(feature = "software-renderer");
     let mut snapshot_path: Option<PathBuf> = None;
     let mut snapshot_width = 1000u32;
@@ -363,6 +392,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while index < args.len() {
         match args[index].as_str() {
             "--watch" => watch_files = true,
+            "--debug-trace" => debug_trace = true,
             "--snapshot" => {
                 index += 1;
                 snapshot_path = Some(
@@ -470,6 +500,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let (document, notify) = source.load(actions.clone(), proxy.clone())?;
+    document.configure_debug_trace(debug_trace, false);
     #[cfg(feature = "software-renderer")]
     if let Some(path) = snapshot_path {
         let mut document = document;
@@ -518,7 +549,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if software_renderer {
         #[cfg(feature = "software-renderer")]
         {
-            let mut app = BlitzApplication::new(proxy, events);
+            let mut app = LapuiApplication::new(proxy, events);
             app.add_window(WindowConfig::new(
                 Box::new(document),
                 anyrender_vello_cpu::VelloCpuWindowRenderer::new(),
@@ -526,7 +557,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             event_loop.run_app(app)?;
         }
     } else {
-        let mut app = BlitzApplication::new(proxy, events);
+        let mut app = LapuiApplication::new(proxy, events);
         app.add_window(WindowConfig::new(
             Box::new(document),
             VelloWindowRenderer::new(),
@@ -815,6 +846,7 @@ mod tests {
                 "cancelOperation",
                 "controls",
                 "diagnostics",
+                "networkStatus",
                 "activate",
                 "fill",
                 "check",
@@ -822,12 +854,36 @@ mod tests {
                 "changes.subscribe",
                 "actions.list",
                 "actions.describe",
-                "actions.check"
+                "actions.check",
+                "debugTrace.configure",
+                "debugTrace.read"
             ])
         );
         assert_eq!(
             response["observation"]["capabilities"]["expectedVersion"],
             true
+        );
+        assert_eq!(response["observation"]["capabilities"]["debugTrace"], true);
+        assert_eq!(
+            response["observation"]["capabilities"]["physicalPresentationAck"],
+            false
+        );
+        assert_eq!(
+            response["observation"]["capabilities"]["frameEvents"],
+            false
+        );
+        assert_eq!(
+            response["observation"]["debugTraceLimits"]["defaultEnabled"],
+            false
+        );
+        assert_eq!(
+            response["observation"]["debugTraceLimits"]["serializedBytes"],
+            262144
+        );
+        assert_eq!(
+            response["observation"]["debugTraceMethodSchemas"]["debugTrace.read"]["properties"]
+                ["limit"]["maximum"],
+            128
         );
         assert_eq!(
             response["observation"]["capabilities"]["subscriptions"],

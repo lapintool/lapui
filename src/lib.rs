@@ -1,10 +1,14 @@
 pub mod action;
 pub mod action_catalog;
 pub mod changes;
+mod computed_style;
 pub mod control;
+mod debug_trace;
 pub mod demo;
 mod fetch_work;
 mod forms;
+mod frames;
+mod geometry;
 mod host_work;
 mod lifecycle;
 pub mod operation;
@@ -13,7 +17,9 @@ pub mod runtime;
 mod schema;
 mod script_budget;
 mod scripts;
+pub mod shell;
 #[cfg(feature = "software-renderer")]
 pub mod snapshot;
+mod stream_work;
 mod timers;
 mod watch;

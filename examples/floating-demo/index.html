@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Lapui Floating UI</title><style>
+html,body{margin:0;width:100%;min-height:100%;font-family:sans-serif;background:#edf3fb;color:#182b49}
+main{margin:24px;padding:24px;max-width:720px;border:1px solid #cfdaeb;border-radius:12px;background:white}
+h1{margin-top:0;font-size:26px}p{line-height:1.5}
+#stage{position:relative;height:280px;overflow:hidden;border:2px solid #a4b9d9;background:#f8faff}
+button{padding:10px 16px;border:1px solid #a4b9d9;border-radius:6px;cursor:pointer;background:#edf3fb}
+#anchor{position:absolute;left:24px;top:100px;width:100px;height:42px;box-sizing:border-box}
+#popover{position:absolute;left:0;top:0;display:none;box-sizing:border-box;width:220px;height:90px;padding:12px;border:1px solid #a4b9d9;border-radius:8px;background:#d7e5ff}
+#popover p{margin:0 0 8px}#accept{padding:6px 12px;background:white}
+.controls{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}
+.field{display:flex;align-items:center;gap:12px;margin:12px 0}label{min-width:150px}input{width:270px;padding:8px;border:1px solid #c7d6eb;border-radius:4px;background:white}
+</style></head><body><main>
+<h1>Floating UI positioning</h1><p>A real Floating UI DOM bundle positions the popover against the native CSS layout. Its autoUpdate follows viewport and element size changes; edge cases exercise flip and shift.</p>
+<div id="stage"><button id="anchor">Open</button><div id="popover"><p>Positioned by Floating UI.</p><button id="accept">Accept</button></div></div>
+<div class="controls"><button id="center">Center anchor</button><button id="edge">Bottom-right edge</button><button id="left-edge">Left edge</button><button id="resize-anchor">Resize anchor</button><button id="reposition">Reposition</button><button id="close">Close</button></div>
+<div class="field"><label for="status">Status</label><input id="status" readonly value="Closed"></div>
+<div class="field"><label for="placement">Placement</label><input id="placement" readonly value="None"></div>
+<div class="field"><label for="coordinates">Local x / y</label><input id="coordinates" readonly></div>
+<div class="field"><label for="bounds">Within stage</label><input id="bounds" readonly value="Waiting"></div>
+<div class="field"><label for="style-width">Computed width</label><input id="style-width" readonly></div>
+<script src="dist/app.js"></script></main></body></html>

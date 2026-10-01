@@ -40,6 +40,8 @@ cargo run --release --locked
 
 [表单示例](guide/forms.md)包含复选框、独立单选组、标签激活、禁用 fieldset、只读输入和键盘交互。无需 Node 或构建步骤：`cargo run --release --locked -- --html examples/forms-demo/index.html --watch`。
 
+[本地表单提交示例](examples/form-submit-demo/README.md)支持提交/重置、字符串 FormData 和基础约束校验，并向 AI 控件接口提供相同的校验状态：`cargo run --release --locked -- --html examples/form-submit-demo/index.html --watch`。范围与限制见[表单文档](guide/forms.md)。
+
 [变更订阅示例](examples/changes-demo/README.md)让界面和本机客户端共享 Rust 状态：`cargo run --release --locked -- --html examples/changes-demo/index.html`。支持暂停/恢复、带游标的有界历史与丢失后的快照恢复，详见[订阅指南](guide/changes.md)。
 
 运行包含中文搜索、文件详情、共享改名动作、对象版本冲突、扫描进度与取消的内存工具示例：
@@ -51,6 +53,10 @@ cargo run --release --locked -- --demo files
 示例不会修改磁盘文件。自定义 Rust 后端、操作 ID 和有界追踪见[宿主动作指南](guide/host-actions.md)。
 
 AI 客户端可通过 `actions.list` 分页发现动作、`actions.describe` 按需读取 schema、`actions.check` 查询业务阻塞原因。Rust 作用域支持临时动作随所有者或文档关闭而注销，见[动作发现与生命周期](guide/action-discovery.md)。
+
+动画与布局测量示例不需要构建步骤：`cargo run --release --locked -- --html examples/animation-demo/index.html`。支持 requestAnimationFrame、取消、暂停/继续及 CSS 像素边界测量；具体边界见[任务调度](guide/scheduling.md)与[布局测量](guide/geometry.md)。可滚动列表示例：`cargo run --release --locked -- --html examples/scroll-demo/index.html`。
+
+[Floating UI 弹层示例](examples/floating-demo/README.md)使用真实 DOM 定位库及原生计算样式、布局几何：`cargo run --release --locked -- --html examples/floating-demo/index.html`。已验证选定的 offset、flip、shift 场景；弹层打开时，库自身的 autoUpdate 会跟随窗口和锚点尺寸变化。支持范围见[计算样式](guide/computed-styles.md)。
 
 ## 项目文档
 

@@ -87,3 +87,39 @@ The included React 19.2.0 production bundle needs no Node.js at runtime. Rebuild
 ```powershell
 cargo test --locked react_dom_bundle_mounts_updates_controlled_input_lists_effects_and_rust_action
 ```
+
+## Run the animation and measurement example
+
+```powershell
+cargo run --release --locked -- --html examples/animation-demo/index.html
+```
+
+Start, pause, resume and reset a frame-driven marker. The example reports callback count, progress and measured marker/track geometry. Resizing changes the track layout; the next animation/measurement callback refreshes the geometry readout. See [scheduling](scheduling.md) and [layout measurements](geometry.md). No frontend build step is needed.
+
+
+## Run the scrolling example
+
+```powershell
+cargo run --release --locked -- --html examples/scroll-demo/index.html
+```
+
+Down/Right, End and Home change the native list offset; selecting a row updates the interface. Readouts show client dimensions, content extent and last-row geometry. Resize and query again to see current layout. See [scrolling and geometry](geometry.md#element-and-viewport-scrolling) for notification and smooth-scroll limits.
+
+
+## Run the Floating UI example
+
+```powershell
+cargo run --release --locked -- --html examples/floating-demo/index.html
+```
+
+Open the popover, move its anchor to either edge, and accept/close it. The included Floating UI DOM 1.8.0 bundle uses its actual middleware against native CSS/geometry. Resize the window or click Resize anchor; the library’s autoUpdate follows these selected size changes through window listeners and ResizeObserver. [Example setup and focused tests](../examples/floating-demo/README.md) include reproducible bundle rebuilds and license notices.
+
+## Run the local form submission example
+
+```powershell
+cargo run --release --locked -- --html examples/form-submit-demo/index.html --watch
+```
+
+Edit required fields, validate, submit and reset. Submission reads string FormData
+and invokes the Rust counter action; AI fill/check/activate use the same form
+constraints. [Form semantics and limits](forms.md) describe unsupported types and navigation.

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Lapui animation frames</title>
+  <style>
+    html, body { margin: 0; width: 100%; min-height: 100%; background: #edf3fb; color: #182b49; font-family: sans-serif; }
+    main { margin: 24px; max-width: 720px; padding: 24px; border: 1px solid #cfdaeb; border-radius: 12px; background: white; }
+    h1 { margin-top: 0; font-size: 26px; }
+    p { line-height: 1.5; }
+    #track { position: relative; width: 100%; height: 48px; border: 1px solid #c7d6eb; background: #e6effb; border-radius: 8px; margin: 20px 0; }
+    #dot { position: absolute; top: 8px; left: 0; width: 32px; height: 32px; border-radius: 8px; background: #3668d6; }
+    .field { display: flex; align-items: center; gap: 12px; margin: 12px 0; }
+    label { min-width: 160px; }
+    input { box-sizing: border-box; width: 220px; padding: 8px; border: 1px solid #c7d6eb; border-radius: 4px; background: white; }
+    button { padding: 10px 20px; margin-right: 8px; border: 1px solid #a4b9d9; border-radius: 6px; cursor: pointer; background: #edf3fb; }
+    button:disabled { cursor: default; color: #7e8ba0; }
+  </style>
+</head>
+<body><main>
+  <h1>Animation frames</h1>
+  <p>The marker moves using rendering-opportunity callbacks. Pause and resume keep its position; resize the window to change the track width.</p>
+  <div id="track"><div id="dot"></div></div>
+  <div class="field"><label for="duration">Duration (100–5000 ms)</label><input id="duration" value="1200"></div>
+  <div class="field"><label for="phase">Status</label><input id="phase" readonly value="Ready"></div>
+  <div class="field"><label for="progress">Progress</label><input id="progress" readonly value="0%"></div>
+  <div class="field"><label for="frames">Callbacks</label><input id="frames" readonly value="0"></div>
+  <div class="field"><label for="geometry">Marker x / track width</label><input id="geometry" readonly value="Waiting for layout"></div>
+  <button id="start">Start</button><button id="pause" disabled>Pause</button><button id="resume" disabled>Resume</button><button id="reset">Reset</button>
+  <script src="app.js"></script>
+</main></body></html>

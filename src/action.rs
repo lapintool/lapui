@@ -831,6 +831,11 @@ impl ActionRegistry {
         Ok(())
     }
 
+    /// Read only the application revision without cloning exposed state.
+    pub fn version(&self) -> u64 {
+        self.inner.state.lock().unwrap().version
+    }
+
     pub fn observe(&self) -> Observation {
         let state = self.inner.state.lock().unwrap();
         Self::observation(&state)
