@@ -17,6 +17,7 @@
     if(current!==previous)globalThis.__lapui_record_page_change?.(target,property);
   };
   const valueMode=target=>target.tagName==='TEXTAREA'||target.tagName==='INPUT'&&textTypes.has(target.type);
+  const sensitiveValue=target=>target.type==='password'||String(target.getAttribute('autocomplete')||'').split(/\s+/).some(token=>['current-password','new-password','one-time-code','cc-number','cc-csc','cc-exp','cc-exp-month','cc-exp-year'].includes(token.toLowerCase()));
   const state=target=>{let value=states.get(target);if(!value){value={dirty:false,checkedDirty:false,user:false,custom:''};states.set(target,value);}return value;};
   const numberPattern=/^-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
   const number=text=>numberPattern.test(text)&&Number.isFinite(Number(text))?Number(text):NaN;
@@ -326,8 +327,8 @@
       item.formRef=target.form?.__ref??null;
       try{
         item.willValidate=candidate(target);item.validity=validation(target);
-        if(target.type!=='password')item.validationMessage=message(target);
-        if(valueMode(target)&&target.type!=='password')item.value=target.value;
+        if(!sensitiveValue(target))item.validationMessage=message(target);
+        if(valueMode(target)&&!sensitiveValue(target))item.value=target.value;
       }catch(error){if(error.name!=='NotSupportedError')throw error;item.validationAvailable=false;}
     }
     return snapshot;

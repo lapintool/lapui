@@ -7208,6 +7208,8 @@ mod tests {
             <p style="display:none">CSS 隐藏内容</p>
             <p style="visibility:hidden">不可见内容</p>
             <input id="secret" type="password" value="do-not-leak">
+            <input id="otp" aria-label="验证码" autocomplete="one-time-code" value="otp-do-not-leak">
+            <input id="card" aria-label="银行卡号" autocomplete="cc-number" value="card-do-not-leak">
             <input id="query" aria-label="搜索" value="可见值">
             </main></body></html>"#;
         let (mut doc, _) =
@@ -7242,6 +7244,18 @@ mod tests {
             .iter()
             .any(|item| item["id"] == "query"));
         assert!(!next.to_string().contains("do-not-leak"));
+        let full = control_request(
+            &mut doc,
+            json!({"method":"pageSnapshot","documentEpoch":first["documentEpoch"],"limit":64}),
+        )
+        .unwrap();
+        assert!(!full.to_string().contains("otp-do-not-leak"));
+        assert!(!full.to_string().contains("card-do-not-leak"));
+        assert!(full.to_string().contains("可见值"));
+        let controls = control_request(&mut doc, json!({"method":"controls"})).unwrap();
+        assert!(!controls.to_string().contains("otp-do-not-leak"));
+        assert!(!controls.to_string().contains("card-do-not-leak"));
+        assert!(controls.to_string().contains("可见值"));
         let stale = control_request(
             &mut doc,
             json!({"method":"pageSnapshot","documentEpoch":999999,"limit":1}),
