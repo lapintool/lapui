@@ -5,7 +5,8 @@
 
 use crate::{
     action::ActionRegistry, control::DocumentController, control_wait::wait_for_control_with,
-    reload::ReloadHandle, render_wait::wait_for_render_with,
+    page_change_wait::wait_for_page_changes_with, reload::ReloadHandle,
+    render_wait::wait_for_render_with,
 };
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -212,6 +213,22 @@ struct PageChangesInput {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WaitForPageChangesInput {
+    document_epoch: u64,
+    #[schemars(length(min = 1, max = 256))]
+    cursor: String,
+    #[serde(default = "default_observe_page_size")]
+    #[schemars(range(min = 1, max = 64))]
+    limit: u8,
+    #[serde(default)]
+    #[schemars(range(max = 4000))]
+    timeout_ms: Option<u16>,
+    #[schemars(length(min = 1, max = 128))]
+    wait_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 enum OperationCommand {
     Status,
@@ -267,6 +284,7 @@ fn app_capabilities() -> Vec<&'static str> {
             "semantic_controls",
             "page_observation",
             "page_changes",
+            "page_change_wait",
             "screenshot",
             "registered_actions",
             "diagnostics",
@@ -279,6 +297,7 @@ fn app_capabilities() -> Vec<&'static str> {
             "semantic_controls",
             "page_observation",
             "page_changes",
+            "page_change_wait",
             "registered_actions",
             "diagnostics",
             "quickjs_memory_usage",
@@ -395,6 +414,44 @@ impl LapuiMcpServer {
         let controller = self.controller();
         match tokio::task::spawn_blocking(move || {
             controller.request(request, Duration::from_secs(5))
+        })
+        .await
+        {
+            Ok(Ok(value)) => mcp_result(value),
+            Ok(Err(error)) => {
+                mcp_result(json!({"ok":false,"code":error.code,"message":error.message}))
+            }
+            Err(error) => {
+                mcp_result(json!({"ok":false,"code":"adapter_failure","message":error.to_string()}))
+            }
+        }
+    }
+
+    #[tool(
+        description = "Wait from a page_changes cursor for the next bounded batch of value-free DOM/control changes, a resync signal, or timeout. A reload returns stale_document. This is a semantic journal wait and does not confirm layout, rendering, or physical presentation."
+    )]
+    async fn page_wait_for_changes(
+        &self,
+        Parameters(input): Parameters<WaitForPageChangesInput>,
+    ) -> CallToolResult {
+        let guard = match WaitGuard::register(&input.wait_id) {
+            Ok(guard) => guard,
+            Err(error) => {
+                return mcp_result(json!({"ok":false,"code":error.code,"message":error.message}))
+            }
+        };
+        let request = json!({"documentEpoch":input.document_epoch,"cursor":input.cursor,
+            "limit":input.limit,"timeoutMs":input.timeout_ms,"waitId":input.wait_id});
+        let epoch = input.document_epoch;
+        let controller = self.controller();
+        match tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            wait_for_page_changes_with(&request, |cursor, limit, timeout| {
+                controller.request(
+                    json!({"method":"pageChanges","documentEpoch":epoch,"cursor":cursor,"limit":limit}),
+                    timeout,
+                )
+            })
         })
         .await
         {
@@ -859,6 +916,7 @@ mod tests {
                 "page_observe",
                 "page_reload",
                 "page_screenshot",
+                "page_wait_for_changes",
                 "page_wait_for_control",
                 "page_wait_for_render",
                 "runtime_memory_usage"
@@ -898,6 +956,17 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("documentEpoch")));
+        let page_wait = tools
+            .iter()
+            .find(|tool| tool.name == "page_wait_for_changes")
+            .unwrap();
+        let wait_schema = serde_json::to_value(&page_wait.input_schema).unwrap();
+        for required in ["documentEpoch", "cursor", "waitId"] {
+            assert!(wait_schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(required)));
+        }
     }
 
     #[test]

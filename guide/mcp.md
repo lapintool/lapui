@@ -52,6 +52,7 @@ The initial tool set is deliberately small:
 | `page_controls` | Read the current visible semantic controls and their state. |
 | `page_observe` | Read a bounded, paged hierarchy of rendered elements, names, text, bounds, and control state. |
 | `page_changes` | Read a bounded cursor-based journal of bridge DOM and control-event changes. |
+| `page_wait_for_changes` | Wait from a journal cursor for changes or a resynchronization signal. |
 | `page_screenshot` | Return the current viewport as a bounded PNG image block. |
 | `page_control` | Activate, fill, check, focus a control, or scroll a rendered element using its current reference and document epoch. |
 | `page_reload` | Reload the trusted local document source; prior page references become stale. |
@@ -81,6 +82,13 @@ and continue from the returned cursor. This journal does not include DOM edits
 performed directly by native Rust code and is not the application-state
 `changes` feed. Other IDL property assignments without one of these tracked
 form properties or an `input`/`change` event are not journal entries.
+`page_wait_for_changes` accepts a cursor returned by `page_changes` and waits
+for a batch, resynchronization requirement, document reload, or bounded timeout.
+It shares the four-active-wait limit and four-second maximum with the other
+page waits. A returned batch is still only a semantic change journal; it does
+not imply that layout or rendering has completed. The adapter currently checks
+the journal on a short interval, so callers should prefer this wait over
+repeated external tool polling but should not treat it as a native push stream.
 `page_wait_for_control` requires exactly one `id` or current `ref`, and exactly
 one `equals` or `contains` condition. Supported fields are `value`, `checked`,
 `focused`, `enabled`, `name`, and `role`; values are checked against their
