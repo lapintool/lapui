@@ -1,0 +1,107 @@
+# Model Context Protocol
+
+Lapui can expose the current local UI over stdio. For sessions that need to
+survive a client disconnect, run the UI separately and attach a restartable
+stdio adapter to it.
+
+```sh
+lapui --html ./index.html --debug-trace --mcp-stdio
+```
+
+Configure the host to launch that command using its stdio MCP transport. Keep
+all diagnostics on stderr: stdout is reserved for MCP protocol messages. In
+MCP mode Lapui does not start the separate loopback control socket.
+
+To keep the UI alive when the MCP host restarts its child process, start the
+window separately and assign it a bridge id:
+
+```sh
+lapui --demo files --mcp-bridge-id files-demo
+```
+
+Configure the MCP host to launch a new adapter process with:
+
+```sh
+lapui mcp-stdio files-demo
+```
+
+The UI binds an ephemeral `127.0.0.1` port and stores a 256-bit random
+capability in the current user's private Lapui state directory. The adapter
+authenticates before forwarding MCP bytes. At most four adapters may connect at
+once. The descriptor is removed when the UI exits. Bridge ids contain only
+ASCII letters, digits, hyphens and underscores. A stale descriptor left by a
+forced process kill prevents reuse of that id; confirm the old app has exited
+before removing the descriptor. `--mcp-stdio` remains useful for single-session
+launches; use bridge mode when a client must reconnect to the same window.
+
+## Trust and data
+
+The MCP connection inherits the trust of the local host that launches the
+process; the stdio transport does not add authentication or per-tool user
+consent. That host can read visible page text and ordinary control values and
+can invoke every action the application registered for the running window.
+Password control values are omitted, but other fields and page text are not
+secret-filtered. Avoid rendering credentials or other secrets in AI-visible UI
+content, and only configure a trusted local MCP host.
+
+The initial tool set is deliberately small:
+
+| Tool | Purpose |
+| --- | --- |
+| `app_describe` | Describe Lapui and the enabled semantic capabilities. |
+| `page_controls` | Read the current visible semantic controls and their state. |
+| `page_observe` | Read a bounded, paged hierarchy of rendered elements, names, text, bounds, and control state. |
+| `page_screenshot` | Return the current viewport as a bounded PNG image block. |
+| `page_control` | Activate, fill, check, focus a control, or scroll a rendered element using its current reference and document epoch. |
+| `page_reload` | Reload the trusted local document source; prior page references become stale. |
+| `page_wait_for_control` | Wait for a visible semantic control to match a bounded value or state condition. |
+| `page_wait_for_render` | Wait for the frame causally linked to a control mutation to return from the renderer. |
+| `page_diagnostics` | Read script/runtime and network diagnostics. |
+| `actions_list` | Discover registered business actions, with bounded pagination. |
+| `actions_describe` | Read the selected action’s exact input and output schemas. |
+| `action_invoke` | Invoke one registered action with retry deduplication and optional stale-version protection. |
+| `operation` | Read, wait for, or request cancellation of a registered asynchronous operation. |
+| `changes` | Read a baseline or wait for bounded, resumable application changes. |
+
+The tools reuse the existing action catalog and document controller. Page
+observation is a pre-order projection of rendered elements with a hard scan,
+page, text, and 24 KiB structured-result budget; it filters `hidden`,
+`aria-hidden`, `display:none`, and `visibility:hidden` subtrees and never copies
+arbitrary attributes. `nextAfter` cursors are only valid against the current
+tree, so clients must restart after page mutations.
+`page_wait_for_control` requires exactly one `id` or current `ref`, and exactly
+one `equals` or `contains` condition. Supported fields are `value`, `checked`,
+`focused`, `enabled`, `name`, and `role`; values are checked against their
+semantic type. The wait is bounded to four seconds and shares a four-wait
+concurrency limit with render waits. It observes control state only, without
+claiming a frame was painted.
+`page_wait_for_render` requires `--debug-trace` and the `debugTraceSequence`
+returned by a successful `page_control` mutation. It waits for the causally
+linked frame and resolved layout to return from the renderer, with a maximum
+four-second timeout and at most four concurrent waits. The result does not
+confirm physical presentation by the native window or operating system.
+Screenshot requests paint one rendering opportunity with the software
+renderer at the current physical viewport size and scale, without resizing the
+window. PNG payloads are capped at 4 MiB; the result identifies CPU rendering
+but does not acknowledge presentation by the native window or operating system.
+The tools do not expose arbitrary JavaScript evaluation, arbitrary DOM access,
+or process discovery. The bridge is the only listener and is authenticated and
+loopback-only. The official Python MCP SDK 1.30.0 smoke covers one combined
+workflow: Chinese page observation, semantic and causal waits, conflict/draft
+recovery, verified rename, scan, reload with stale-ref rejection, adapter
+disconnect/reconnect, and recovery of the same operation and changes. This is
+one Windows release scenario, not broad platform or long-running reliability
+evidence; the adapter remains an early integration.
+
+## Current limitations
+
+The adapter is an early implementation. It uses the MCP Rust SDK and stdio
+transport; the SDK smoke covers a representative workflow and reconnecting to
+the same running application after a client disconnect. Tools return JSON in both
+`structuredContent` and a readable text block; tool errors set `isError` and
+include the runtime error code. Declared output schemas are not yet published
+for these tools. Action calls require a stable `requestId` and return the
+committed version plus action result without copying the full application
+state. Writes based on an observed state should pass `expectedVersion`. If a result exceeds the response budget, Lapui returns
+`outcome_unknown` with the request ID; inspect state or operation status and
+never retry the side effect under a new ID.

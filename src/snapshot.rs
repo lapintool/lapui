@@ -16,20 +16,55 @@ pub fn render_rgba(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, String> {
+    validate_dimensions(width, height, 16 * 1024 * 1024)?;
+    document.poll(None);
+    document
+        .inner_mut()
+        .set_viewport(Viewport::new(width, height, 1.0, ColorScheme::Light));
+    render_current_layout(document, width, height, 1.0)
+}
+
+/// Paint the current physical viewport without changing its size or scale.
+/// This does not confirm that the native window presented the returned pixels.
+pub fn render_current_rgba(document: &mut LapuiDocument) -> Result<(u32, u32, Vec<u8>), String> {
+    document.poll(None);
+    render_current_rgba_without_poll(document)
+}
+
+pub(crate) fn render_current_rgba_without_poll(
+    document: &mut LapuiDocument,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let viewport = document.inner().viewport().clone();
+    let (width, height) = viewport.window_size;
+    validate_dimensions(width, height, 4 * 1024 * 1024)?;
+    let scale = viewport.scale_f64();
+    let pixels = render_current_layout(document, width, height, scale)?;
+    Ok((width, height, pixels))
+}
+
+fn validate_dimensions(width: u32, height: u32, max_pixels: u64) -> Result<(), String> {
     if width == 0
         || height == 0
         || width > 8192
         || height > 8192
-        || u64::from(width) * u64::from(height) > 16 * 1024 * 1024
+        || u64::from(width) * u64::from(height) > max_pixels
     {
-        return Err("snapshot dimensions must be 1..8192 and at most 16 megapixels".into());
+        return Err(format!(
+            "snapshot dimensions must be 1..8192 and at most {} megapixels",
+            max_pixels / (1024 * 1024)
+        ));
     }
-    document.poll(None);
+    Ok(())
+}
+
+fn render_current_layout(
+    document: &mut LapuiDocument,
+    width: u32,
+    height: u32,
+    scale: f64,
+) -> Result<Vec<u8>, String> {
     let frame = document.frame_trace("image");
     let measured = frame.sequence().is_some();
-    document
-        .inner_mut()
-        .set_viewport(Viewport::new(width, height, 1.0, ColorScheme::Light));
     document.animation_frame();
     document.rendering_update();
     let layout_time = document.layout_animation_time();
@@ -44,7 +79,7 @@ pub fn render_rgba(
     renderer.render_to_vec(
         |painter| {
             let start = measured.then(Instant::now);
-            blitz_paint::paint_scene(painter, &mut dom, 1.0, width, height, 0, 0);
+            blitz_paint::paint_scene(painter, &mut dom, scale, width, height, 0, 0);
             scene_millis = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
         },
         &mut pixels,

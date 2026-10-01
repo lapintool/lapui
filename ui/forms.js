@@ -3,6 +3,7 @@
   const limits=JSON.parse(__lapui_form_limits);
   const states=new WeakMap(), collections=new WeakMap(), validityViews=new WeakMap();
   const busySubmit=new WeakSet(), busyReset=new WeakSet(), dataState=new WeakMap();
+  const optionStates=new WeakMap();
   const proto=Element.prototype, descriptor=name=>Object.getOwnPropertyDescriptor(proto,name);
   const oldValue=descriptor('value'), oldChecked=descriptor('checked'), oldText=descriptor('textContent'), oldHTML=descriptor('innerHTML');
   const oldSet=proto.setAttribute, oldRemove=proto.removeAttribute, oldClone=proto.cloneNode;
@@ -14,6 +15,18 @@
   const state=target=>{let value=states.get(target);if(!value){value={dirty:false,checkedDirty:false,user:false,custom:''};states.set(target,value);}return value;};
   const numberPattern=/^-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
   const number=text=>numberPattern.test(text)&&Number.isFinite(Number(text))?Number(text):NaN;
+  const selectOptions=select=>select.querySelectorAll('option');
+  const owningSelect=option=>{for(let parent=option.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='SELECT')return parent;return null;};
+  const optionState=option=>{let value=optionStates.get(option);if(!value){const selected=option.hasAttribute('selected');value={default:selected,dirty:false};optionStates.set(option,value);}return value;};
+  const setSelected=(select,option)=>{const options=selectOptions(select);if(!options.includes(option))return false;for(const candidate of options){optionState(candidate).dirty=true;if(candidate===option)oldSet.call(candidate,'selected','');else oldRemove.call(candidate,'selected');}return true;};
+  Object.defineProperty(proto,'selected',{configurable:true,get(){return this.tagName==='OPTION'&&this.hasAttribute('selected');},set(value){
+    if(this.tagName!=='OPTION')return;const select=owningSelect(this);
+    if(Boolean(value)&&select&&!select.multiple)setSelected(select,this);
+    else {optionState(this).dirty=true;if(Boolean(value))oldSet.call(this,'selected','');else oldRemove.call(this,'selected');}
+  }});
+  Object.defineProperty(proto,'defaultSelected',{configurable:true,get(){return this.tagName==='OPTION'&&optionState(this).default;},set(value){if(this.tagName==='OPTION'){const own=optionState(this);own.default=Boolean(value);if(!own.dirty){if(own.default)oldSet.call(this,'selected','');else oldRemove.call(this,'selected');}}}});
+  Object.defineProperty(proto,'selectedIndex',{configurable:true,get(){if(this.tagName!=='SELECT')return undefined;const options=selectOptions(this),selected=options.findIndex(option=>option.selected);return selected>=0?selected:(options.length?0:-1);},set(value){if(this.tagName!=='SELECT')return;if(this.multiple)throw new DOMException('Multiple select is unsupported','NotSupportedError');value=Math.trunc(Number(value));const options=selectOptions(this);if(value<0||value>=options.length)throw new DOMException('Unmatched select index is unsupported','NotSupportedError');for(let index=0;index<options.length;index++)options[index].selected=index===value;}});
+  Object.defineProperty(proto,'options',{configurable:true,get(){return this.tagName==='SELECT'?selectOptions(this):undefined;}});
   const sanitize=(target,value)=>{
     value=String(value);
     if(target.tagName==='TEXTAREA')return value.replace(/\r\n?/g,'\n');
@@ -31,11 +44,21 @@
   },set(value){this.setAttribute('type',String(value));}});
   const defaults=target=>target.tagName==='TEXTAREA'?oldText.get.call(target):target.getAttribute('value')||'';
   Object.defineProperty(proto,'value',{configurable:true,get(){
+    if(this.tagName==='OPTION')return this.hasAttribute('value')?this.getAttribute('value'):this.textContent.trim().replace(/\s+/g,' ');
+    if(this.tagName==='SELECT'){const options=selectOptions(this),selected=options.find(option=>option.selected)||options[0];return selected?selected.value:'';}
     if(!valueMode(this))return oldValue.get.call(this);
     const own=state(this);
     if(!own.dirty){const desired=sanitize(this,defaults(this));if(__lapui_get_value(this.__ref)!==desired)__lapui_set_value(this.__ref,desired);}
     return sanitize(this,__lapui_get_value(this.__ref));
   },set(value){
+    if(this.tagName==='SELECT'){
+      if(this.multiple)throw new DOMException('Multiple select is unsupported','NotSupportedError');
+      const desired=String(value),options=selectOptions(this),option=options.find(item=>item.value===desired);
+      if(!option)throw new DOMException('Unmatched select value is unsupported','NotSupportedError');
+      setSelected(this,option);
+      __lapui_set_value(this.__ref,desired);return;
+    }
+    if(this.tagName==='OPTION'){this.setAttribute('value',String(value));return;}
     if(this.tagName==='BUTTON'){this.setAttribute('value',String(value));return;}
     if(!valueMode(this)){oldValue.set.call(this,value);return;}
     const own=state(this);own.dirty=true;own.user=false;
@@ -110,7 +133,8 @@
     const own=state(target), result=Object.fromEntries(flags.map(name=>[name,false]));
     result.customError=Boolean(own.custom);
     if(candidate(target)){
-      if(target.tagName==='SELECT'||target.tagName==='INPUT'&&!textTypes.has(target.type)&&!['checkbox','radio','submit','image'].includes(target.type))throw new DOMException('Validation for this native control type is not implemented','NotSupportedError');
+      if(target.tagName==='SELECT'&&target.multiple)throw new DOMException('Multiple select is unsupported','NotSupportedError');
+      if(target.tagName==='INPUT'&&!textTypes.has(target.type)&&!['checkbox','radio','submit','image'].includes(target.type))throw new DOMException('Validation for this native control type is not implemented','NotSupportedError');
       const value=target.value, kind=target.type;
       if(target.required){
         if(kind==='checkbox')result.valueMissing=!target.checked;
@@ -219,10 +243,15 @@
     try{
       if(JSON.parse(__lapui_dispatch('reset',this.__ref,__lapui_event_path(this.__ref))).defaultPrevented)return;
       const items=controls(this);
-      if(items.some(item=>item.tagName==='SELECT'||item.tagName==='INPUT'&&['file','date','month','week','time','datetime-local','range','color'].includes(item.type)))throw new DOMException('Reset for this native control type is not implemented','NotSupportedError');
+      if(items.some(item=>item.tagName==='INPUT'&&['file','date','month','week','time','datetime-local','range','color'].includes(item.type)))throw new DOMException('Reset for this native control type is not implemented','NotSupportedError');
       for(const item of items){
         const own=state(item);own.dirty=false;own.user=false;own.checkedDirty=false;
         if(valueMode(item))__lapui_set_value(item.__ref,sanitize(item,defaults(item)));
+        else if(item.tagName==='SELECT'){
+          const options=selectOptions(item);
+          for(const option of options){const own=optionState(option);if(own.default)oldSet.call(option,'selected','');else oldRemove.call(option,'selected');own.dirty=false;}
+          if(!item.multiple&&!options.some(option=>option.selected)&&options[0])oldSet.call(options[0],'selected','');
+        }
         else if(item.tagName==='INPUT'&&['checkbox','radio'].includes(item.type))__lapui_set_checked(item.__ref,item.defaultChecked);
       }
     }finally{busyReset.delete(this);}
@@ -237,7 +266,7 @@
         let inDatalist=false;for(let parent=item.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DATALIST')inDatalist=true;
         if(inDatalist||item.tagName==='BUTTON'&&item!==submitter||item.tagName==='INPUT'&&['button','reset','submit','image'].includes(item.type)&&item!==submitter)continue;
         if(item.tagName==='INPUT'&&['checkbox','radio'].includes(item.type)&&!item.checked)continue;
-        if(item.tagName==='SELECT'||item.tagName==='INPUT'&&['file','image'].includes(item.type))throw new DOMException('This native control has no supported FormData entry','NotSupportedError');
+        if(item.tagName==='SELECT'&&item.multiple||item.tagName==='INPUT'&&['file','image'].includes(item.type))throw new DOMException('This native control has no supported FormData entry','NotSupportedError');
         this.append(item.name,item.value);
       }
       __lapui_dispatch('formdata',form.__ref,__lapui_event_path(form.__ref),'{}',{formData:this});
@@ -255,6 +284,15 @@
     forEach(callback,thisArg){if(typeof callback!=='function')throw new TypeError('Callback must be a function');for(const [name,value] of this.entries())callback.call(thisArg,value,name,this);}
   }
   globalThis.__lapui_form_click=(target,path,event)=>{
+    if(target?.tagName==='OPTION'&&!event.defaultPrevented){
+      const select=owningSelect(target);
+      if(select&&__lapui_is_enabled(select.__ref)){
+        if(select.multiple)throw new DOMException('Multiple select is unsupported','NotSupportedError');
+        const changed=!target.selected;setSelected(select,target);
+        select.focus();
+        if(changed)for(const type of ['input','change'])__lapui_dispatch(type,select.__ref,__lapui_event_path(select.__ref));
+      }
+    }
     const button=path.find(item=>item?.tagName==='BUTTON'||item?.tagName==='INPUT'&&['submit','reset','image'].includes(item.type));
     if(!button||!button.form||!['submit','reset','image'].includes(button.type))return false;
     if(!event.defaultPrevented&&__lapui_is_enabled(button.__ref)){

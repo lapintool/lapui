@@ -73,6 +73,7 @@
   };
   globalThis.__lapui_rendering_update=()=>{
     let changed=__lapui_render_window_notifications();
+    changed=__lapui_intersection_update()||changed;
     if(!observers.size)return changed;
     const scale=__lapui_viewport()[2], deadline=performance.now()+limits.deliverySliceMillis;
     let depth=0;

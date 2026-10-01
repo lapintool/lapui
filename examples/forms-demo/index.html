@@ -10,6 +10,7 @@
     section,form,fieldset{box-sizing:border-box;background:white;border:1px solid #c9d2dd;border-radius:8px;margin:16px 0;padding:16px}
     fieldset[disabled]{background:#e5e9ef}legend{padding:0 8px;font-weight:bold}
     label{display:block;margin:10px 0;line-height:1.6}input[type=text]{padding:8px;width:240px;max-width:100%;border:1px solid #a6b4c6;border-radius:4px}
+    select{display:block;width:240px;max-width:100%;padding:8px;border:1px solid #a6b4c6;border-radius:4px;background:white;color:inherit}
     button{padding:10px 18px;background:#2459c4;color:white;border:0;border-radius:6px;cursor:pointer;font-size:16px}
     .status{padding:12px;background:#e4ecfc;border-radius:6px;overflow-wrap:anywhere}
   </style>
@@ -23,6 +24,10 @@
   </section>
   <form id="first-form">
     <strong>First form — choice</strong>
+    <label>Preferred contact</label>
+    <select id="first-select" name="contact" hidden><option value="email" selected>Email</option><option value="signal">Signal</option></select>
+    <div class="choice" role="listbox" aria-label="Preferred contact"><button id="first-contact-email" type="button" role="option" aria-selected="true" data-contact="email">Email</button><button id="first-contact-signal" type="button" role="option" aria-selected="false" data-contact="signal">Signal</button></div>
+    <p id="contact-state" role="status">Contact: email</p>
     <label><input id="first-a" type="radio" name="choice" value="A" checked> First A</label>
     <label><input id="first-b" type="radio" name="choice" value="B"> First B</label>
     <p id="first-state" role="status">First choice: A</p>
@@ -48,6 +53,13 @@
     for(const prefix of ['first','second']) for(const suffix of ['a','b']) {
       const input=byId(prefix+'-'+suffix);
       input.onchange=()=>byId(prefix+'-state').textContent=(prefix==='first'?'First':'Second')+' choice: '+input.value;
+    }
+    const contact=byId('first-select'),contactOptions=[...document.querySelectorAll('[data-contact]')];
+    function syncContact(){for(const option of contactOptions)option.setAttribute('aria-selected',String(option.getAttribute('data-contact')===contact.value));byId('contact-state').textContent='Contact: '+contact.value;}
+    contact.addEventListener('change',syncContact);
+    for(const option of contactOptions){
+      option.onclick=()=>{contact.value=option.getAttribute('data-contact');syncContact();__lapui_dispatch('input',contact.__ref,__lapui_event_path(contact.__ref));__lapui_dispatch('change',contact.__ref,__lapui_event_path(contact.__ref));};
+      option.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const index=contactOptions.indexOf(option),next=event.key==='Home'?0:event.key==='End'?contactOptions.length-1:Math.max(0,Math.min(contactOptions.length-1,index+(event.key==='ArrowLeft'?-1:1)));contactOptions[next].focus();lapui.activate(contactOptions[next].__ref);});
     }
     byId('unlock').onchange=()=>byId('locked-fields').disabled=!byId('unlock').checked;
     const render=observation=>byId('counter-state').textContent='Counter: '+observation.count;

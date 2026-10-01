@@ -37,4 +37,40 @@ The window driver spaces both animation and observation opportunities by at leas
 
 Custom/offscreen hosts set the viewport, call `animation_frame()` followed by `rendering_update()`, then resolve/paint using `layout_animation_time()`. The `_at(css_animation_seconds)` variants accept the host's CSS clock. CPU snapshots perform both updates once; they do not wait for arbitrary asynchronous application work.
 
-The [Floating UI example](../examples/floating-demo/README.md) now calls the actual library's default autoUpdate while open and cleans up when closed. Window resizing and the Resize anchor button trigger its own listeners and ResizeObserver callback. Selected viewport/element cases are tested alongside offset/flip/shift. IntersectionObserver and layout-shift detection remain unsupported; Floating UI disables that optional path when the API is absent. Animation-frame tracking is an opt-in library mode and is not enabled in this example. This does not establish broad component-library compatibility.
+The [Floating UI example](../examples/floating-demo/README.md) now calls the actual library's default autoUpdate while open and cleans up when closed. Window resizing and the Resize anchor button trigger its own listeners and ResizeObserver callback. Selected viewport/element cases are tested alongside offset/flip/shift. The viewport-only IntersectionObserver subset below does not implement layout-shift detection; animation-frame tracking is opt-in and is not enabled in this example. This does not establish broad component-library compatibility.
+
+## Viewport intersection observations
+
+`IntersectionObserver` is available for viewport-relative layout visibility checks:
+
+```js
+const observer = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    if (entry.isIntersecting) loadPreview(entry.target);
+  }
+}, { rootMargin: '100px 0px', threshold: [0, 0.5, 1] });
+observer.observe(document.querySelector('.preview'));
+```
+
+The observer samples Blitz `getBoundingClientRect()` geometry during the existing rendering update. `root` must be `null` (the viewport); element roots throw `NotSupportedError`. `rootMargin` accepts up to four `px` or `%` values; percentages resolve against the viewport width. Initial observations are delivered once, then entries are delivered when intersection state changes or a configured threshold is crossed. Entry rectangles and ratios are CSS-pixel layout measurements, not proof that pixels were shown.
+
+This is a geometric viewport subset. It does not apply overflow clipping from ancestor elements, nested scroll roots, opacity/occlusion, `trackVisibility`, `scrollMargin`, or Intersection Observer v2 visibility checks. An element covered by another element can still report `isIntersecting: true`. The feature is suitable for simple viewport-triggered component behavior, not security, analytics viewability, or complete browser compatibility.
+
+At most 128 observers and 1,024 combined target registrations are allowed per document, with at most 256 thresholds per observer and root-margin values bounded by the reported rendering observer limits. Disconnect or unobserve targets when components close. The existing per-callback script deadline applies; native layout and the overall rendering opportunity are not hard real-time bounded.
+
+## DOM mutation observations
+
+`MutationObserver` batches supported DOM changes and invokes its callback at the next Promise-job checkpoint:
+
+```js
+const observer = new MutationObserver((records) => {
+  for (const record of records) console.log(record.type, record.target);
+});
+observer.observe(document.querySelector('#results'), {
+  subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style']
+});
+```
+
+The current bridge reports attribute/style changes, child insertion/removal/moves, `innerHTML` replacement, text-node changes and text-content replacement through its DOM wrappers. It supports `subtree`, `attributeFilter`, `attributeOldValue`, `characterDataOldValue`, `takeRecords()`, `disconnect()` and reconfiguration of an existing target. Records and node-list snapshots are immutable objects. A single-text-child update may be reported as `characterData` because Lapui can retain that native text node; `lapui.batch()` coalesces text/style reports by target until the batch closes.
+
+Each document allows at most 128 observers, 1,024 observed targets and 4,096 queued records across observers. Excess records are dropped with one `mutation-observer` diagnostic per document. Disconnected subtrees are not observed for subsequent edits, attribute namespaces and transient-subtree delivery are unsupported, and mutations performed directly by native Rust code do not enter this JS observer stream. This subset is useful for app-owned component updates; it is not full MutationObserver conformance or a replacement for the external MCP application/business change feed.

@@ -175,3 +175,22 @@ pub(crate) fn resize_sample(doc: &BaseDocument, id: NodeId) -> Vec<f64> {
     );
     sample
 }
+
+/// [has layout box, x, y, width, height] in viewport-relative CSS pixels.
+/// IntersectionObserver uses the same authoritative layout rectangle exposed
+/// by getBoundingClientRect; ancestor clipping/occlusion are not represented.
+pub(crate) fn intersection_sample(doc: &BaseDocument, id: NodeId) -> Vec<f64> {
+    if !has_boxes(doc, id) {
+        return vec![0.0; 5];
+    }
+    let Some(rect) = doc.get_client_bounding_rect(id) else {
+        return vec![0.0; 5];
+    };
+    vec![
+        1.0,
+        rect.x,
+        rect.y,
+        rect.width.max(0.0),
+        rect.height.max(0.0),
+    ]
+}

@@ -4,17 +4,145 @@ use blitz::shell::{create_default_event_loop, BlitzShellProxy, WindowConfig};
 use connection_pool::ConnectionPool;
 use lapui::action::{ActionError, ActionRegistry};
 use lapui::control::DocumentController;
+use lapui::control_wait::wait_for_control_with;
 use lapui::reload::{DocumentSource, ReloadDocument, ReloadHandle};
+#[cfg(test)]
+use lapui::render_wait::consume_render_trace_page;
+use lapui::render_wait::wait_for_render_with;
 use lapui::runtime::LapuiDocument;
 use lapui::shell::LapuiApplication;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc::Sender, Mutex, OnceLock};
 use std::time::Duration;
 
 const MAX_CONTROL_REQUEST_BYTES: usize = 64 * 1024;
+const MAX_CONTROL_WAIT: Duration = Duration::from_secs(4);
+const MAX_ACTIVE_WAITS: usize = 4;
+
+#[derive(Default)]
+struct WaitRegistry {
+    active: Mutex<HashMap<String, std::sync::Arc<AtomicBool>>>,
+}
+
+struct ActiveWait<'a> {
+    registry: &'a WaitRegistry,
+    id: String,
+}
+
+impl Drop for ActiveWait<'_> {
+    fn drop(&mut self) {
+        self.registry.active.lock().unwrap().remove(&self.id);
+    }
+}
+
+impl WaitRegistry {
+    fn register(
+        &self,
+        id: &str,
+    ) -> Result<(std::sync::Arc<AtomicBool>, ActiveWait<'_>), ActionError> {
+        if id.is_empty() || id.len() > 128 {
+            return Err(ActionError::new(
+                "invalid_request",
+                "waitId must be 1..128 bytes",
+            ));
+        }
+        let mut active = self.active.lock().unwrap();
+        if active.len() >= MAX_ACTIVE_WAITS {
+            return Err(ActionError::new(
+                "wait_busy",
+                "maximum active waits reached",
+            ));
+        }
+        if active.contains_key(id) {
+            return Err(ActionError::new(
+                "wait_conflict",
+                "waitId is already active",
+            ));
+        }
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        active.insert(id.to_owned(), cancelled.clone());
+        Ok((
+            cancelled,
+            ActiveWait {
+                registry: self,
+                id: id.to_owned(),
+            },
+        ))
+    }
+
+    fn cancel(&self, id: &str) -> bool {
+        if let Some(cancelled) = self.active.lock().unwrap().get(id) {
+            cancelled.store(true, Ordering::Release);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn wait_registry() -> &'static WaitRegistry {
+    static REGISTRY: OnceLock<WaitRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(WaitRegistry::default)
+}
+
+fn cancel_wait(request: &Value) -> Result<Value, ActionError> {
+    let fields = request
+        .as_object()
+        .ok_or_else(|| ActionError::new("invalid_request", "cancelWait requires an object"))?;
+    if fields
+        .keys()
+        .any(|key| !["method", "waitId"].contains(&key.as_str()))
+    {
+        return Err(ActionError::new(
+            "invalid_request",
+            "unknown cancelWait field",
+        ));
+    }
+    let id = request
+        .get("waitId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= 128)
+        .ok_or_else(|| ActionError::new("invalid_request", "waitId must be 1..128 bytes"))?;
+    if wait_registry().cancel(id) {
+        Ok(json!({"status":"cancel_requested","waitId":id}))
+    } else {
+        Err(ActionError::new("unknown_wait", "waitId is not active"))
+    }
+}
+
+fn wait_for_control(
+    controller: &DocumentController,
+    request: &Value,
+) -> Result<Value, ActionError> {
+    let wait_id = request
+        .get("waitId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ActionError::new("invalid_request", "waitId is required"))?;
+    let (cancelled, _active) = wait_registry().register(wait_id)?;
+    wait_for_control_with(
+        request,
+        |timeout| controller.request(json!({"method":"controls"}), timeout),
+        || cancelled.load(Ordering::Acquire),
+    )
+}
+
+fn wait_for_render(controller: &DocumentController, request: &Value) -> Result<Value, ActionError> {
+    let wait_id = request
+        .get("waitId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ActionError::new("invalid_request", "waitId is required"))?;
+    let (cancelled, _active) = wait_registry().register(wait_id)?;
+    wait_for_render_with(
+        request,
+        |command, timeout| controller.request(command, timeout),
+        || cancelled.load(Ordering::Acquire),
+    )
+}
 
 fn respond(
     stream: &mut TcpStream,
@@ -52,7 +180,10 @@ fn respond(
                     "trace",
                     "operation",
                     "cancelOperation",
+                    "cancelWait",
                     "controls",
+                    "waitForControl",
+                    "waitForRender",
                     "diagnostics",
                     "networkStatus",
                     "activate",
@@ -80,6 +211,7 @@ fn respond(
                         "asynchronousOperations": true,
                         "operationCancellation": true,
                         "operationWaiting": true,
+                        "controlWaitMaximumMs": MAX_CONTROL_WAIT.as_millis(),
                         "subscriptions": true,
                         "controlChangeStream": false,
                         "frameEvents": false,
@@ -88,6 +220,12 @@ fn respond(
                         "physicalPresentationAck": false,
                         "durableRecovery": false,
                         "controlSnapshot": true,
+                        "controlConditionWait": true,
+                        "waitCancellation": true,
+                        "activeWaitLimit": MAX_ACTIVE_WAITS,
+                        "controlWaitBoundary": "semantic_snapshot_only",
+                        "renderWait": true,
+                        "renderWaitBoundary": "renderer_returned_only",
                         "controlMutations": true,
                         "scriptDiagnostics": true,
                         "networkStreamStatus": true,
@@ -121,7 +259,25 @@ fn respond(
                         "waitMs":{"type":"integer","minimum":0,"maximum":1000,"default":1000}
                     }},
                     "controlConnectionLimits":{"workers":connection_pool::WORKERS,"queued":connection_pool::QUEUE},
-                "controlMethodSchemas": control_method_schemas(),
+                    "controlMethodSchemas": control_method_schemas(),
+                    "waitForControlSchema": {"type":"object","additionalProperties":false,"required":["method","documentEpoch","field","waitId"],
+                        "allOf":[
+                            {"oneOf":[{"required":["id"],"not":{"required":["ref"]}},{"required":["ref"],"not":{"required":["id"]}}]},
+                            {"oneOf":[{"required":["equals"],"not":{"required":["contains"]}},{"required":["contains"],"not":{"required":["equals"]}}]}],
+                        "properties":{
+                        "method":{"const":"waitForControl"},"documentEpoch":{"type":"integer","minimum":1},
+                        "id":{"type":"string","minLength":1,"maxLength":128},"ref":{"type":"string","minLength":1,"maxLength":256},
+                        "field":{"enum":["value","checked","focused","enabled","name","role"]},
+                        "equals":{"type":["string","boolean"]},"contains":{"type":"string","minLength":1,"maxLength":256},
+                        "waitId":{"type":"string","minLength":1,"maxLength":128},
+                        "timeoutMs":{"type":"integer","minimum":0,"maximum":4000,"default":1000}}},
+                    "waitForRenderSchema":{"type":"object","additionalProperties":false,"required":["method","documentEpoch","afterSequence","waitId"],"properties":{
+                        "method":{"const":"waitForRender"},"documentEpoch":{"type":"integer","minimum":1},
+                        "afterSequence":{"type":"integer","minimum":1,"description":"debugTraceSequence returned by a control mutation"},
+                        "waitId":{"type":"string","minLength":1,"maxLength":128},
+                        "timeoutMs":{"type":"integer","minimum":0,"maximum":4000,"default":1000}}},
+                    "cancelWaitSchema":{"type":"object","additionalProperties":false,"required":["method","waitId"],"properties":{
+                        "method":{"const":"cancelWait"},"waitId":{"type":"string","minLength":1,"maxLength":128}}},
                 "reloadMethodSchema": {"type":"object","required":["method","documentEpoch"],"additionalProperties":false,"properties":{"method":{"const":"reload"},"documentEpoch":{"type":"integer","minimum":1}}}
                 }))
             }
@@ -146,6 +302,9 @@ fn respond(
                     .map_err(|error| ActionError::new("invalid_request", error.to_string()))?;
                 actions.subscribe_changes(request).map(|page| json!(page))
             }
+            Some("waitForControl") => wait_for_control(controller, &request),
+            Some("waitForRender") => wait_for_render(controller, &request),
+            Some("cancelWait") => cancel_wait(&request),
             Some(method @ ("operation" | "cancelOperation")) => {
                 let id = request
                     .get("operationId")
@@ -363,7 +522,7 @@ fn run_client(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("Lapui {}\n\nRun: lapui [--demo files | --html <index.html> [--js <bundle.js>]]\n     [--renderer cpu|gpu] [--watch] [--debug-trace]\nExport current state: lapui [app options] --snapshot <image.png> [--width <pixels> --height <pixels>]\nClient: lapui client <address> describe|observe|increment|controls|diagnostics|network-status|trace|debug-trace <documentEpoch>|actions\n        lapui client <address> describe-action <action-id>\n        lapui client <address> changes [cursor]\n        lapui client <address> reload|reload-status\n        lapui client <address> operation|cancel-operation <operation-id>\n        lapui client <address> request-file <request.json>\n\nCPU drawing and PNG export require the software-renderer feature (enabled by default).\n--watch uses local files and a window; it performs full document reloads.\nThe control address is printed when the window starts. Snapshots do not wait for all asynchronous work.", env!("CARGO_PKG_VERSION"));
+        println!("Lapui {}\n\nRun: lapui [--demo files | --html <index.html> [--js <bundle.js>]]\n     [--renderer cpu|gpu] [--watch] [--debug-trace] [--mcp-stdio | --mcp-bridge-id <id>]\nMCP stdio adapter: lapui mcp-stdio <bridge-id>\nExport current state: lapui [app options] --snapshot <image.png> [--width <pixels> --height <pixels>]\nClient: lapui client <address> describe|observe|increment|controls|diagnostics|network-status|trace|debug-trace <documentEpoch>|actions\n        lapui client <address> describe-action <action-id>\n        lapui client <address> changes [cursor]\n        lapui client <address> reload|reload-status\n        lapui client <address> operation|cancel-operation <operation-id>\n        lapui client <address> request-file <request.json>\n\n--mcp-stdio serves the current local UI over MCP stdio; stdout is reserved for the protocol.\n--mcp-bridge-id exposes an authenticated, loopback-only MCP bridge for reconnectable stdio adapters.\nCPU drawing and PNG export require the software-renderer feature (enabled by default).\n--watch uses local files and a window; it performs full document reloads.\nThe control address is printed when the window starts. Snapshots do not wait for all asynchronous work.", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if args.get(1).is_some_and(|arg| arg == "--version") {
@@ -377,12 +536,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.get(4).map(String::as_str),
         );
     }
+    if args.get(1).is_some_and(|arg| arg == "mcp-stdio") {
+        let id = args.get(2).ok_or("mcp-stdio requires a bridge id")?;
+        if args.len() != 3 {
+            return Err("mcp-stdio accepts exactly one bridge id".into());
+        }
+        lapui::mcp_bridge::run_stdio(id)
+            .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+        return Ok(());
+    }
 
     let mut html_path: Option<PathBuf> = None;
     let mut js_path: Option<PathBuf> = None;
     let mut demo_files = false;
     let mut watch_files = false;
     let mut debug_trace = false;
+    let mut mcp_stdio = false;
+    let mut mcp_bridge_id: Option<String> = None;
     let mut software_renderer = cfg!(feature = "software-renderer");
     let mut snapshot_path: Option<PathBuf> = None;
     let mut snapshot_width = 1000u32;
@@ -393,6 +563,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match args[index].as_str() {
             "--watch" => watch_files = true,
             "--debug-trace" => debug_trace = true,
+            "--mcp-stdio" => mcp_stdio = true,
+            "--mcp-bridge-id" => {
+                index += 1;
+                mcp_bridge_id = Some(
+                    args.get(index)
+                        .ok_or("--mcp-bridge-id requires an id")?
+                        .clone(),
+                );
+            }
             "--snapshot" => {
                 index += 1;
                 snapshot_path = Some(
@@ -446,6 +625,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if demo_files && (html_path.is_some() || js_path.is_some()) {
         return Err("--demo cannot be combined with --html or --js".into());
+    }
+    if mcp_stdio && mcp_bridge_id.is_some() {
+        return Err("--mcp-stdio and --mcp-bridge-id are mutually exclusive".into());
+    }
+    if snapshot_path.is_some() && (mcp_stdio || mcp_bridge_id.is_some()) {
+        return Err(
+            "MCP transports require a running window and cannot be combined with --snapshot".into(),
+        );
     }
     if snapshot_dimensions_given && snapshot_path.is_none() {
         return Err("--width and --height apply only to --snapshot".into());
@@ -512,7 +699,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = (snapshot_width, snapshot_height);
     let (proxy, events) = shell.ok_or("missing window event queue")?;
     let event_loop = event_loop.ok_or("missing window event loop")?;
-    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let listener = if mcp_stdio || mcp_bridge_id.is_some() {
+        None
+    } else {
+        Some(TcpListener::bind("127.0.0.1:0")?)
+    };
     let (mut document, reload) = ReloadDocument::new(
         document,
         notify,
@@ -520,31 +711,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         actions.clone(),
         Some(proxy.clone()),
     );
+    let _mcp_bridge = mcp_bridge_id
+        .as_deref()
+        .map(|id| lapui::mcp_bridge::start(reload.clone(), actions.clone(), id))
+        .transpose()
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
     if watch_files {
         document.watch()?;
     }
-    println!("LAPUI_CONTROL={}", listener.local_addr()?);
-    let pool_reload = reload.clone();
-    let pool = ConnectionPool::new(move |mut stream| {
-        let endpoint = pool_reload.endpoint();
-        if let Err(err) = respond(
-            &mut stream,
-            &actions,
-            &endpoint.notify,
-            &endpoint.controller,
-            Some(&pool_reload),
-        ) {
-            eprintln!("Control request failed: {err}");
-        }
-    })?;
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => pool.submit(stream),
-                Err(err) => eprintln!("Control connection failed: {err}"),
+    if let Some(listener) = listener {
+        println!("LAPUI_CONTROL={}", listener.local_addr()?);
+        let pool_reload = reload.clone();
+        let pool_actions = actions.clone();
+        let pool = ConnectionPool::new(move |mut stream| {
+            let endpoint = pool_reload.endpoint();
+            if let Err(err) = respond(
+                &mut stream,
+                &pool_actions,
+                &endpoint.notify,
+                &endpoint.controller,
+                Some(&pool_reload),
+            ) {
+                eprintln!("Control request failed: {err}");
             }
-        }
-    });
+        })?;
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => pool.submit(stream),
+                    Err(err) => eprintln!("Control connection failed: {err}"),
+                }
+            }
+        });
+    }
+    if mcp_stdio {
+        let mcp_reload = reload.clone();
+        let mcp_actions = actions.clone();
+        std::thread::Builder::new()
+            .name("lapui-mcp-stdio".into())
+            .spawn(move || {
+                if let Err(error) = lapui::mcp::serve_stdio(mcp_reload, mcp_actions) {
+                    eprintln!("MCP stdio server stopped: {error}");
+                }
+            })?;
+    }
 
     if software_renderer {
         #[cfg(feature = "software-renderer")]
@@ -570,6 +780,202 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wait_for_control_matches_a_semantic_condition_and_bounds_requests() {
+        let request = json!({"method":"waitForControl","documentEpoch":7,"id":"scan-status",
+            "field":"name","contains":"扫描完成","timeoutMs":500,"waitId":"condition-match-test"});
+        let mut reads = 0;
+        let result = wait_for_control_with(
+            &request,
+            |_| {
+                reads += 1;
+                Ok(
+                    json!({"documentEpoch":7,"controls":[{"id":"scan-status","name":
+                if reads == 1 {"扫描中"} else {"扫描完成"}}]}),
+                )
+            },
+            || false,
+        )
+        .unwrap();
+        assert_eq!(result["status"], "matched");
+        assert_eq!(result["boundary"], "semantic_control_snapshot");
+        assert_eq!(result["physicalPresentation"], "unsupported");
+        assert!(reads >= 2);
+
+        let immediate = json!({"method":"waitForControl","documentEpoch":7,"ref":"node:7:2:1",
+            "field":"name","equals":"done","timeoutMs":0,"waitId":"condition-timeout-test"});
+        let timeout = wait_for_control_with(
+            &immediate,
+            |_| Ok(json!({"documentEpoch":7,"controls":[{"ref":"node:7:2:1","name":"busy"}]})),
+            || false,
+        )
+        .unwrap();
+        assert_eq!(timeout["status"], "timed_out");
+        assert_eq!(timeout["control"]["name"], "busy");
+
+        let invalid = json!({"method":"waitForControl","documentEpoch":7,"id":"x","ref":"node:7:2:1",
+            "field":"name","equals":"done"});
+        assert_eq!(
+            wait_for_control_with(
+                &invalid,
+                |_| panic!("invalid request must not poll"),
+                || false
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+        let invalid_condition = json!({"method":"waitForControl","documentEpoch":7,"id":"x",
+            "field":"name","equals":"done","contains":"done"});
+        assert_eq!(
+            wait_for_control_with(
+                &invalid_condition,
+                |_| panic!("invalid request must not poll"),
+                || false
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+    }
+
+    #[test]
+    fn cancel_wait_cancels_an_active_condition_and_releases_its_identifier() {
+        let wait_id = format!("cancel-test-{}", std::process::id());
+        let (cancelled, active) = wait_registry().register(&wait_id).unwrap();
+        let request = json!({"method":"waitForControl","documentEpoch":7,"id":"scan-status",
+            "field":"name","equals":"done","timeoutMs":3000,"waitId":wait_id});
+        let result = wait_for_control_with(
+            &request,
+            |_| {
+                assert_eq!(
+                    cancel_wait(&json!({"method":"cancelWait","waitId":wait_id})).unwrap()
+                        ["status"],
+                    "cancel_requested"
+                );
+                Ok(json!({"documentEpoch":7,"controls":[{"id":"scan-status","name":"busy"}]}))
+            },
+            || cancelled.load(Ordering::Acquire),
+        )
+        .unwrap_err();
+        assert_eq!(result.code, "wait_cancelled");
+        drop(active);
+        assert_eq!(
+            cancel_wait(&json!({"method":"cancelWait","waitId":wait_id}))
+                .unwrap_err()
+                .code,
+            "unknown_wait"
+        );
+    }
+
+    #[test]
+    fn render_trace_wait_requires_a_frame_caused_by_the_requested_control() {
+        let records = vec![
+            json!({"sequence":10,"kind":"control","phase":"start","parentSequence":null,"data":{}}),
+            json!({"sequence":11,"kind":"control","phase":"end","parentSequence":10,"data":{}}),
+            json!({"sequence":12,"kind":"host_request","phase":"instant","parentSequence":10,"data":{}}),
+            json!({"sequence":13,"kind":"completion","phase":"start","parentSequence":12,"data":{}}),
+            json!({"sequence":14,"kind":"completion","phase":"end","parentSequence":13,"data":{}}),
+            json!({"sequence":15,"kind":"frame","phase":"start","parentSequence":null,"data":{"causes":[14]}}),
+            json!({"sequence":16,"kind":"layout","phase":"start","parentSequence":15,"data":{}}),
+            json!({"sequence":17,"kind":"layout","phase":"end","parentSequence":16,"data":{"outcome":"resolved"}}),
+            json!({"sequence":18,"kind":"frame","phase":"end","parentSequence":15,"data":{"outcome":"renderer_returned"}}),
+        ];
+        let mut parents = std::collections::HashMap::new();
+        let mut frames = std::collections::HashSet::new();
+        let mut layout_parents = std::collections::HashMap::new();
+        let mut resolved_layouts = std::collections::HashSet::new();
+        let result = consume_render_trace_page(
+            &records,
+            10,
+            &mut parents,
+            &mut frames,
+            &mut layout_parents,
+            &mut resolved_layouts,
+        )
+        .unwrap();
+        assert_eq!(result["sequence"], 18);
+        assert_eq!(result["data"]["outcome"], "renderer_returned");
+
+        let unrelated = vec![
+            json!({"sequence":20,"kind":"frame","phase":"start","parentSequence":null,"data":{"causes":[5]}}),
+            json!({"sequence":21,"kind":"frame","phase":"end","parentSequence":20,"data":{"outcome":"renderer_returned"}}),
+        ];
+        assert!(consume_render_trace_page(
+            &unrelated,
+            10,
+            &mut parents,
+            &mut frames,
+            &mut layout_parents,
+            &mut resolved_layouts,
+        )
+        .is_none());
+        let missing_layout = vec![
+            json!({"sequence":22,"kind":"frame","phase":"start","parentSequence":null,"data":{"causes":[14]}}),
+            json!({"sequence":23,"kind":"frame","phase":"end","parentSequence":22,"data":{"outcome":"renderer_returned"}}),
+        ];
+        assert!(consume_render_trace_page(
+            &missing_layout,
+            10,
+            &mut parents,
+            &mut frames,
+            &mut layout_parents,
+            &mut resolved_layouts,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn wait_for_render_reports_only_causally_linked_renderer_return() {
+        let request = json!({"method":"waitForRender","documentEpoch":7,"afterSequence":10,
+            "timeoutMs":100,"waitId":"render-match-test"});
+        let mut calls = 0;
+        let result = wait_for_render_with(&request, |command, _| {
+            calls += 1;
+            assert_eq!(command["afterSequence"], 9);
+            Ok(json!({"documentEpoch":7,"enabled":true,"session":2,"resyncRequired":false,
+                "nextSequence":18,"latestSequence":18,"records":[
+                    {"sequence":10,"kind":"control","phase":"start","parentSequence":null,"data":{}},
+                    {"sequence":11,"kind":"control","phase":"end","parentSequence":10,"data":{}},
+                    {"sequence":12,"kind":"host_request","phase":"instant","parentSequence":10,"data":{}},
+                    {"sequence":13,"kind":"completion","phase":"start","parentSequence":12,"data":{}},
+                    {"sequence":14,"kind":"completion","phase":"end","parentSequence":13,"data":{}},
+                    {"sequence":15,"kind":"frame","phase":"start","parentSequence":null,"data":{"causes":[14]}},
+                    {"sequence":16,"kind":"layout","phase":"start","parentSequence":15,"data":{}},
+                    {"sequence":17,"kind":"layout","phase":"end","parentSequence":16,"data":{"outcome":"resolved"}},
+                    {"sequence":18,"kind":"frame","phase":"end","parentSequence":15,"data":{"outcome":"renderer_returned"}}
+                ]}))
+        }, || false)
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(result["status"], "rendered");
+        assert_eq!(result["frameSequence"], 18);
+        assert_eq!(result["physicalPresentation"], "unknown");
+
+        let disabled = wait_for_render_with(
+            &request,
+            |_, _| Ok(json!({"documentEpoch":7,"enabled":false})),
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(disabled.code, "unsupported_capability");
+
+        let ahead = json!({"method":"waitForRender","documentEpoch":7,"afterSequence":99,
+            "timeoutMs":0,"waitId":"render-ahead-test"});
+        let invalid_root = wait_for_render_with(
+            &ahead,
+            |_, _| {
+                Ok(
+                    json!({"documentEpoch":7,"enabled":true,"session":2,"resyncRequired":false,
+                "nextSequence":0,"latestSequence":0,"records":[]}),
+                )
+            },
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(invalid_root.code, "invalid_request");
+    }
 
     #[test]
     fn tcp_action_discovery_availability_and_scope_retirement_use_shared_registry() {
@@ -844,7 +1250,10 @@ mod tests {
                 "trace",
                 "operation",
                 "cancelOperation",
+                "cancelWait",
                 "controls",
+                "waitForControl",
+                "waitForRender",
                 "diagnostics",
                 "networkStatus",
                 "activate",
@@ -864,6 +1273,43 @@ mod tests {
             true
         );
         assert_eq!(response["observation"]["capabilities"]["debugTrace"], true);
+        assert_eq!(
+            response["observation"]["capabilities"]["controlConditionWait"],
+            true
+        );
+        assert_eq!(
+            response["observation"]["capabilities"]["controlWaitMaximumMs"],
+            4000
+        );
+        assert_eq!(
+            response["observation"]["capabilities"]["waitCancellation"],
+            true
+        );
+        assert_eq!(
+            response["observation"]["capabilities"]["activeWaitLimit"],
+            4
+        );
+        assert_eq!(response["observation"]["capabilities"]["renderWait"], true);
+        assert_eq!(
+            response["observation"]["capabilities"]["renderWaitBoundary"],
+            "renderer_returned_only"
+        );
+        assert_eq!(
+            response["observation"]["waitForRenderSchema"]["properties"]["afterSequence"]
+                ["minimum"],
+            1
+        );
+        assert_eq!(
+            response["observation"]["cancelWaitSchema"]["properties"]["waitId"]["maxLength"],
+            128
+        );
+        assert_eq!(
+            response["observation"]["waitForControlSchema"]["properties"]["field"]["enum"]
+                .as_array()
+                .unwrap()
+                .len(),
+            6
+        );
         assert_eq!(
             response["observation"]["capabilities"]["physicalPresentationAck"],
             false

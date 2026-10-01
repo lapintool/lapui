@@ -34,3 +34,25 @@ through successful submissions; diagnostics were empty. The public example uses
 explicit text/number field heights; complete browser intrinsic control sizing and
 physical typing/IME behavior remain unverified. An exported CPU image was also
 inspected with all initial fields and actions visible.
+
+The Windows release CPU file-tool window also passed its structured-control smoke:
+an AI rename preserved the human draft, the stale save reported a conflict, refresh
+allowed the user's new name to save, retry reused the same scan operation, and the
+final file/action state matched the expected versions with six trace records and no
+diagnostics. These calls use the local TCP control interface; they do not verify
+physical typing, pointer input, or screen presentation.
+
+The same smoke also exercised `waitForControl` cancellation: a deliberately
+unmatchable condition was canceled through `cancelWait`, and the waiting client
+returned `wait_cancelled`. A control-triggered `waitForRender` returned only after
+the causally linked layout resolved and the renderer returned; physical presentation
+remained unknown.
+
+The single-select follow-up passed in a Windows release window. A visible button
+listbox updates a hidden single-select form value through the same JS/default path;
+the control snapshot reports option roles and selected state, form submission
+includes the selected value, and the Rust counter action completes with no script
+diagnostics. The bundled offscreen image was visually inspected at 900×1000 and the
+listbox is visible with its selected option and no clipping. This is structured
+control and CPU snapshot evidence, not physical mouse/keyboard or native popup
+verification.

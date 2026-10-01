@@ -38,7 +38,9 @@ const HTML: &str = include_str!("../ui/index.html");
 const SCRIPT: &str = include_str!("../ui/app.js");
 const BRIDGE: &str = include_str!("../ui/bridge.js");
 const RESIZE_OBSERVER: &str = include_str!("../ui/resize-observer.js");
+const INTERSECTION_OBSERVER: &str = include_str!("../ui/intersection-observer.js");
 const FORM_BRIDGE: &str = include_str!("../ui/forms.js");
+const MUTATION_OBSERVER: &str = include_str!("../ui/mutation-observer.js");
 
 struct LocalDirectoryNetProvider {
     root: PathBuf,
@@ -119,7 +121,7 @@ enum DomMutation {
     RemoveStyle(String, String),
 }
 
-fn resolve_node_ref(doc: &BaseDocument, reference: &str) -> Option<NodeId> {
+pub(crate) fn resolve_node_ref(doc: &BaseDocument, reference: &str) -> Option<NodeId> {
     if let Some(raw) = reference.strip_prefix("node:") {
         let (document_id, raw) = raw.split_once(':')?;
         if document_id.parse::<usize>().ok()? != doc.id() {
@@ -414,6 +416,15 @@ fn apply_mutations(dom: &Rc<RefCell<BaseDocument>>, mutations: Vec<DomMutation>)
 }
 
 fn control_snapshot(doc: &BaseDocument) -> Value {
+    control_snapshot_filtered(doc, None)
+}
+
+fn control_snapshot_for_nodes(doc: &BaseDocument, nodes: &[NodeId]) -> Value {
+    let included = nodes.iter().copied().collect::<HashSet<_>>();
+    control_snapshot_filtered(doc, Some(&included))
+}
+
+fn control_snapshot_filtered(doc: &BaseDocument, included: Option<&HashSet<NodeId>>) -> Value {
     fn attr<'a>(element: &'a blitz::dom::ElementData, name: &str) -> Option<&'a str> {
         element
             .attrs
@@ -426,6 +437,7 @@ fn control_snapshot(doc: &BaseDocument) -> Value {
         id: NodeId,
         controls: &mut Vec<Value>,
         labels: &HashMap<NodeId, String>,
+        included: Option<&HashSet<NodeId>>,
     ) {
         let Some(node) = doc.get_node(id) else { return };
         if let Some(element) = node.data.downcast_element() {
@@ -452,7 +464,11 @@ fn control_snapshot(doc: &BaseDocument) -> Value {
                     "a" if attr(element, "href").is_some() => Some("link".into()),
                     _ => None,
                 });
-            if let Some(role) = role {
+            let hidden =
+                attr(element, "hidden").is_some() || attr(element, "aria-hidden") == Some("true");
+            if let Some(role) =
+                role.filter(|_| !hidden && included.is_none_or(|included| included.contains(&id)))
+            {
                 let html_id = attr(element, "id");
                 let name = attr(element, "aria-labelledby")
                     .and_then(|references| {
@@ -513,11 +529,19 @@ fn control_snapshot(doc: &BaseDocument) -> Value {
                         control["value"] = json!(value);
                     }
                 }
+                if let Some(selected) = attr(element, "aria-selected").and_then(|value| match value
+                {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                }) {
+                    control["selected"] = json!(selected);
+                }
                 controls.push(control);
             }
         }
         for child in node.children.iter().copied() {
-            visit(doc, child, controls, labels);
+            visit(doc, child, controls, labels, included);
         }
     }
     let mut controls = Vec::new();
@@ -526,6 +550,7 @@ fn control_snapshot(doc: &BaseDocument) -> Value {
         doc.root_node().id,
         &mut controls,
         &crate::forms::label_names(doc),
+        included,
     );
     json!({ "documentEpoch": doc.id(), "controls": controls })
 }
@@ -774,6 +799,8 @@ impl LapuiDocument {
     /// Preview observation bounds; not a hard frame or native-layout budget.
     pub fn rendering_limits() -> Value {
         json!({"resizeObservers":128,"resizeTargets":1024,"scrollTargets":1024,
+            "intersectionObservers":128,"intersectionTargets":1024,"intersectionThresholds":256,"intersectionMarginPx":1000000,
+            "mutationObservers":128,"mutationTargets":1024,"mutationRecords":4096,
             "deliveryPasses":32,"deliverySliceMillis":CHECKPOINT_SLICE.as_millis()})
     }
 
@@ -829,7 +856,14 @@ impl LapuiDocument {
     }
 
     fn semantic_controls(&self) -> Value {
-        let mut snapshot = control_snapshot(&self.dom.borrow());
+        self.enrich_semantic_controls(control_snapshot(&self.dom.borrow()))
+    }
+
+    fn semantic_controls_for_nodes(&self, doc: &BaseDocument, nodes: &[NodeId]) -> Value {
+        self.enrich_semantic_controls(control_snapshot_for_nodes(doc, nodes))
+    }
+
+    fn enrich_semantic_controls(&self, mut snapshot: Value) -> Value {
         if self.script_budget.interrupted() {
             snapshot["validationAvailable"] = json!(false);
             return snapshot;
@@ -855,7 +889,7 @@ impl LapuiDocument {
         }
     }
 
-    fn execute_control_command(&self, request: &Value) -> Result<Value, ActionError> {
+    fn execute_control_command(&mut self, request: &Value) -> Result<Value, ActionError> {
         let failure = |code: &str, message: &str| ActionError {
             code: code.into(),
             message: message.into(),
@@ -928,6 +962,118 @@ impl LapuiDocument {
         }
         if method == "controls" {
             return Ok(self.semantic_controls());
+        }
+        if method == "scroll" {
+            let allowed = ["method", "documentEpoch", "ref", "x", "y", "relative"];
+            if request
+                .as_object()
+                .unwrap()
+                .keys()
+                .any(|key| !allowed.contains(&key.as_str()))
+            {
+                return Err(failure("invalid_request", "unknown scroll field"));
+            }
+            if request.get("documentEpoch").and_then(Value::as_u64)
+                != Some(self.dom.borrow().id() as u64)
+            {
+                return Err(failure(
+                    "stale_document",
+                    "scroll requires the current documentEpoch",
+                ));
+            }
+            let reference = request
+                .get("ref")
+                .and_then(Value::as_str)
+                .ok_or_else(|| failure("invalid_request", "canonical element ref is required"))?;
+            let id = resolve_node_ref(&self.dom.borrow(), reference).ok_or_else(|| {
+                failure(
+                    "stale_reference",
+                    "scroll target is no longer in this document",
+                )
+            })?;
+            if !crate::geometry::has_boxes(&self.dom.borrow(), id) {
+                return Err(failure(
+                    "control_unavailable",
+                    "scroll target has no rendered box",
+                ));
+            }
+            let coordinate = |name: &str| -> Result<Option<f64>, ActionError> {
+                let Some(value) = request.get(name) else {
+                    return Ok(None);
+                };
+                let value = value
+                    .as_f64()
+                    .filter(|value| value.is_finite() && value.abs() <= 100_000.0)
+                    .ok_or_else(|| {
+                        failure(
+                            "invalid_request",
+                            "scroll coordinates must be finite and within 100000 CSS pixels",
+                        )
+                    })?;
+                Ok(Some(value))
+            };
+            let x = coordinate("x")?;
+            let y = coordinate("y")?;
+            if x.is_none() && y.is_none() {
+                return Err(failure("invalid_request", "scroll requires x or y"));
+            }
+            let relative = match request.get("relative") {
+                None => true,
+                Some(Value::Bool(value)) => *value,
+                Some(_) => return Err(failure("invalid_request", "relative must be a boolean")),
+            };
+            let mut dom = self.dom.borrow_mut();
+            let scrolled = crate::geometry::scroll(&mut dom, id, x, y, relative);
+            return Ok(
+                json!({"documentEpoch":dom.id(),"ref":reference,"scrolled":scrolled,"metrics":crate::geometry::metrics(&dom,id)}),
+            );
+        }
+        if method == "pageSnapshot" {
+            return crate::ai_snapshot::page_snapshot(&self.dom.borrow(), request, |doc, nodes| {
+                self.semantic_controls_for_nodes(doc, nodes)
+            });
+        }
+        if method == "screenshot" {
+            if request
+                .as_object()
+                .is_none_or(|fields| fields.keys().any(|key| key != "method"))
+            {
+                return Err(failure(
+                    "invalid_request",
+                    "screenshot accepts only the method field",
+                ));
+            }
+            #[cfg(feature = "software-renderer")]
+            {
+                use base64::Engine;
+                use image::ImageEncoder;
+                const MAX_PNG_BYTES: usize = 4 * 1024 * 1024;
+                let (width, height, rgba) = crate::snapshot::render_current_rgba_without_poll(self)
+                    .map_err(|message| failure("screenshot_unavailable", &message))?;
+                let mut png = Vec::new();
+                image::codecs::png::PngEncoder::new(&mut png)
+                    .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
+                    .map_err(|error| failure("screenshot_failed", &error.to_string()))?;
+                if png.len() > MAX_PNG_BYTES {
+                    return Err(failure(
+                        "screenshot_too_large",
+                        "PNG image exceeds the 4 MiB MCP screenshot limit",
+                    ));
+                }
+                return Ok(json!({
+                    "documentEpoch":self.dom.borrow().id(),
+                    "width":width,
+                    "height":height,
+                    "boundary":"cpu_rendered",
+                    "physicalPresentation":"not_confirmed",
+                    "pngBase64":base64::engine::general_purpose::STANDARD.encode(png)
+                }));
+            }
+            #[cfg(not(feature = "software-renderer"))]
+            return Err(failure(
+                "unsupported_capability",
+                "MCP screenshots require the software-renderer feature",
+            ));
         }
         if method == "networkStatus" {
             return Ok(
@@ -1259,6 +1405,22 @@ impl LapuiDocument {
                     let doc = resize_dom.borrow();
                     let samples: serde_json::Map<String,Value> = references.into_iter().filter_map(|reference| {
                         resolve_node_ref(&doc, &reference).map(|id| (reference, json!(crate::geometry::resize_sample(&doc,id))))
+                    }).collect();
+                    Value::Object(samples).to_string()
+                }))?;
+                let intersection_dom = dom.clone();
+                let intersection_frames = frames.clone();
+                let intersection_batch = mutation_batch.clone();
+                globals.set("__lapui_intersection_samples", Func::from(move |references: Vec<String>| -> String {
+                    if references.len() > 2048 { return "{}".into(); }
+                    flush_layout(&intersection_dom, &intersection_batch, &intersection_frames);
+                    let doc = intersection_dom.borrow();
+                    let samples: serde_json::Map<String,Value> = references.into_iter().map(|reference| {
+                        let sample = resolve_node_ref(&doc, &reference).map_or_else(
+                            || vec![0.0; 5],
+                            |id| crate::geometry::intersection_sample(&doc, id),
+                        );
+                        (reference, json!(sample))
                     }).collect();
                     Value::Object(samples).to_string()
                 }))?;
@@ -1641,6 +1803,47 @@ impl LapuiDocument {
                             crate::forms::set_value(&mut doc,id,&value)
                         }
                     }),
+                )?;
+                let selection_dom = dom.clone();
+                globals.set(
+                    "__lapui_get_selection",
+                    Func::from(move |reference: String| -> String {
+                        let doc = selection_dom.borrow();
+                        resolve_node_ref(&doc, &reference)
+                            .and_then(|id| crate::forms::selection(&doc, id))
+                            .map_or_else(
+                                || "null".to_owned(),
+                                |(start, end, direction)| {
+                                    json!([start, end, direction]).to_string()
+                                },
+                            )
+                    }),
+                )?;
+                let selection_dom = dom.clone();
+                globals.set(
+                    "__lapui_set_selection",
+                    Func::from(
+                        move |reference: String,
+                              start: i64,
+                              end: i64,
+                              direction: String|
+                              -> bool {
+                            if start < 0 || end < 0 {
+                                return false;
+                            }
+                            let mut doc = selection_dom.borrow_mut();
+                            let Some(id) = resolve_node_ref(&doc, &reference) else {
+                                return false;
+                            };
+                            crate::forms::set_selection(
+                                &mut doc,
+                                id,
+                                start as usize,
+                                end as usize,
+                                &direction,
+                            )
+                        },
+                    ),
                 )?;
                 globals.set(
                     "__lapui_get_checked",
@@ -2455,7 +2658,9 @@ impl LapuiDocument {
                 )?;
                 script_budget.run(STARTUP_LIMIT, || ctx.eval::<(), _>(BRIDGE))?;
                 script_budget.run(STARTUP_LIMIT, || ctx.eval::<(), _>(RESIZE_OBSERVER))?;
+                script_budget.run(STARTUP_LIMIT, || ctx.eval::<(), _>(INTERSECTION_OBSERVER))?;
                 script_budget.run(STARTUP_LIMIT, || ctx.eval::<(), _>(FORM_BRIDGE))?;
+                script_budget.run(STARTUP_LIMIT, || ctx.eval::<(), _>(MUTATION_OBSERVER))?;
                 for script in &startup_scripts {
                     if script_budget.interrupted() { break; }
                     let result = script_budget.run(STARTUP_LIMIT, || -> rquickjs::Result<()> {
@@ -3538,16 +3743,16 @@ mod tests {
         let result=doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"(()=>{
             const form=document.getElementById('form'),name=document.getElementById('name');name.value='current';
             let rejected=0;try{form.reset();}catch(e){if(e.name==='NotSupportedError')rejected++;}
-            if(name.value!=='current')throw Error('partial reset');
-            try{new FormData(form);}catch(e){if(e.name==='NotSupportedError')rejected++;}
-            if(rejected!==2)throw Error('unsupported native type');document.getElementById('select').remove();
+            if(name.value!=='initial'||form.elements.namedItem('choice').value!=='One')throw Error('select reset');
+            if(new FormData(form).get('choice')!=='One')throw Error('select FormData');
+            if(rejected!==0)throw Error('supported select rejected');document.getElementById('select').remove();
             const data=new FormData();for(let i=0;i<1024;i++)data.append('name',String(i));
             try{data.append('overflow','value');}catch(e){if(e instanceof RangeError)rejected++;}
             if([...data].length!==1024)throw Error('partial FormData append');
             try{data.set('name','x'.repeat(2097152));}catch(e){if(e instanceof RangeError)rejected++;}
             if(data.get('name')!=='0'||data.getAll('name').length!==1024)throw Error('partial FormData set');
             try{new FormData().append('file','text','filename');}catch(e){if(e.name==='NotSupportedError')rejected++;}
-            if(rejected!==5)throw Error('limits');
+            if(rejected!==3)throw Error('limits');
             const fallback=document.getElementById('fallback');fallback.value='fallback text';if(fallback.value!=='fallback text')throw Error('invalid type default');
             const area=document.getElementById('area');area.firstChild.nodeValue='Changed default';if(area.value!=='Changed default')throw Error('child text default');
             const inserted=document.createElement('div');inserted.innerHTML='<textarea id="inserted">Inserted text</textarea>';document.body.append(inserted);
@@ -3898,6 +4103,250 @@ mod tests {
     }
 
     #[test]
+    fn mutation_observer_batches_attribute_character_and_child_changes() {
+        let html = "<html><body><main id='root'><p id='child'>old</p></main></body></html>";
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, r#"
+              globalThis.root=document.getElementById('root');
+              globalThis.child=document.getElementById('child');
+              globalThis.deliveries=[];
+              globalThis.observer=new MutationObserver(function(records,owner){
+                if(this!==owner)throw new Error('wrong callback receiver');
+                deliveries.push(records);
+              });
+              observer.observe(root,{subtree:true,childList:true,attributes:true,characterData:true,
+                attributeOldValue:true,characterDataOldValue:true,attributeFilter:['data-x','style']});
+            "#).unwrap();
+        doc.js_context.with(|ctx|ctx.eval::<(),_>(r#"
+          child.setAttribute('data-x','one');child.setAttribute('data-x','two');
+          child.style.width='20px';child.firstChild.nodeValue='new';
+          globalThis.added=document.createElement('span');added.id='added';root.appendChild(added);
+          globalThis.callbacksBeforeCheckpoint=deliveries.length;
+          globalThis.taken=observer.takeRecords();
+          globalThis.takenSummary=taken.map(item=>[
+            item instanceof MutationRecord,item.type,item.target.id||item.target.nodeName,item.attributeName,
+            item.oldValue,item.addedNodes.map(node=>node.id),item.removedNodes.length,
+            item.previousSibling?.id||null,item.nextSibling?.id||null,Object.isFrozen(item)
+          ]);
+        "#)).unwrap();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("callbacksBeforeCheckpoint"))
+                .unwrap(),
+            0
+        );
+        let taken: Value = serde_json::from_str(
+            &doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("JSON.stringify(takenSummary)"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(taken.as_array().unwrap().len(), 5);
+        assert_eq!(taken[0][1], "attributes");
+        assert_eq!(taken[0][3], "data-x");
+        assert_eq!(taken[0][4], Value::Null);
+        assert_eq!(taken[1][1], "attributes");
+        assert_eq!(taken[1][4], "one");
+        assert_eq!(taken[2][1], "attributes");
+        assert_eq!(taken[2][3], "style");
+        assert_eq!(taken[3][1], "characterData");
+        assert_eq!(taken[3][2], "#text");
+        assert_eq!(taken[3][4], "old");
+        assert_eq!(taken[4][1], "childList");
+        assert_eq!(taken[4][2], "root");
+        assert_eq!(taken[4][5][0], "added");
+        assert_eq!(taken[4][7], "child");
+        assert!(taken
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|record| record[0] == true && record[9] == true));
+        doc.poll(None);
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("deliveries.length"))
+                .unwrap(),
+            0
+        );
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("child.setAttribute('data-x','three')"))
+            .unwrap();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("deliveries.length"))
+                .unwrap(),
+            0
+        );
+        doc.poll(None);
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>("deliveries.length===1&&deliveries[0].length===1&&deliveries[0][0].oldValue==='two'")).unwrap());
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("child.innerHTML='<b id=\"html-child\">markup</b>'"))
+            .unwrap();
+        doc.poll(None);
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>("deliveries.length===2&&deliveries[1].length===1&&deliveries[1][0].type==='childList'&&deliveries[1][0].target===child&&deliveries[1][0].addedNodes[0].id==='html-child'&&deliveries[1][0].removedNodes.length===1")).unwrap());
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>(
+                    "lapui.batch(()=>{child.style.height='12px';child.textContent='batched'})",
+                )
+            })
+            .unwrap();
+        doc.poll(None);
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>("deliveries.length===3&&deliveries[2].length===2&&deliveries[2][0].type==='attributes'&&deliveries[2][0].attributeName==='style'&&deliveries[2][1].type==='childList'")).unwrap());
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("added.remove()"))
+            .unwrap();
+        doc.poll(None);
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>("deliveries.length===4&&deliveries[3].length===1&&deliveries[3][0].type==='childList'&&deliveries[3][0].removedNodes[0]===added")).unwrap());
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn mutation_observer_validates_options_and_reclaims_capacity() {
+        let (doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            "<html><body><div id='target'></div></body></html>",r#"
+            globalThis.target=document.getElementById('target');globalThis.invalid=0;globalThis.range=0;
+            for(const options of [{},{attributes:false,attributeOldValue:true},{characterData:false,characterDataOldValue:true}]){
+              try{new MutationObserver(()=>{}).observe(target,options)}catch(error){if(error instanceof TypeError)invalid++}
+            }
+            globalThis.all=Array.from({length:128},()=>new MutationObserver(()=>{}));
+            all.forEach(observer=>observer.observe(target,{childList:true}));
+            globalThis.replacement=new MutationObserver(()=>{});
+            try{replacement.observe(target,{childList:true})}catch(error){range=error instanceof RangeError}
+            all[0].disconnect();replacement.observe(target,{childList:true});
+            "#).unwrap();
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>("invalid===3&&range"))
+            .unwrap());
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>(
+                    "all.forEach(observer=>observer.disconnect());replacement.disconnect()",
+                )
+            })
+            .unwrap();
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn intersection_observer_tracks_viewport_thresholds_and_readonly_entries() {
+        let html = "<html><head><style>html,body{margin:0}#target{position:absolute;left:0;top:180px;width:40px;height:40px}</style></head><body><div id='target'></div></body></html>";
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            html,
+            r#"
+              globalThis.target=document.getElementById('target');globalThis.entries=[];
+              globalThis.observer=new IntersectionObserver(function(batch,owner){
+                if(this!==owner)throw new Error('wrong callback receiver');
+                entries.push(...batch);
+              },{rootMargin:'10% 0%',threshold:[1,.5,0,.5]});
+              observer.observe(target);
+            "#,
+        )
+        .unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(100, 200, 1.0, ColorScheme::Light));
+        assert!(doc.rendering_update());
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("entries.length"))
+                .unwrap(),
+            1
+        );
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"
+            entries[0] instanceof IntersectionObserverEntry && entries[0].target===target &&
+            observer.root===null && observer.thresholds.join(',')==='0,0.5,1' &&
+            observer.rootMargin==='10% 0% 10% 0%' && entries[0].isIntersecting &&
+            Math.abs(entries[0].intersectionRatio-.75)<.001 && entries[0].rootBounds.y===-10 &&
+            entries[0].rootBounds.height===220 && entries[0].intersectionRect.height===30 &&
+            Object.isFrozen(entries[0]) && (()=>{try{entries[0].time=-1;return false}catch{return true}})()
+        "#)).unwrap());
+        assert!(!doc.rendering_update());
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("target.style.top='190px'"))
+            .unwrap();
+        assert!(doc.rendering_update());
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("entries.length"))
+                .unwrap(),
+            2
+        );
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>(
+                "Math.abs(entries[1].intersectionRatio-.5)<.001 && entries[1].isIntersecting"
+            ))
+            .unwrap());
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("target.style.top='200px'"))
+            .unwrap();
+        assert!(!doc.rendering_update());
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("entries.length"))
+                .unwrap(),
+            2
+        );
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("target.style.top='240px'"))
+            .unwrap();
+        assert!(doc.rendering_update());
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<usize, _>("entries.length"))
+                .unwrap(),
+            3
+        );
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx
+                .eval::<bool, _>("!entries[2].isIntersecting && entries[2].intersectionRatio===0"))
+            .unwrap());
+        assert!(!doc.rendering_update());
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn intersection_observer_validates_options_and_reclaims_capacity() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body><div id='target'></div></body></html>",
+            r#"
+              globalThis.target=document.getElementById('target');globalThis.typeErrors=0;globalThis.rangeErrors=0;globalThis.notSupported=0;
+              for(const options of [{root:target},{rootMargin:'2em'},{threshold:-1},{threshold:[0,2]}]){
+                try{new IntersectionObserver(()=>{},options)}catch(error){
+                  if(error instanceof TypeError||error instanceof SyntaxError)typeErrors++;
+                  else if(error instanceof RangeError)rangeErrors++;
+                  else if(error.name==='NotSupportedError')notSupported++;
+                }
+              }
+              const emptyThreshold=new IntersectionObserver(()=>{},{threshold:[]});
+              globalThis.all=Array.from({length:128},()=>new IntersectionObserver(()=>{}));
+              all.forEach(observer=>observer.observe(target));
+              globalThis.replacement=new IntersectionObserver(()=>{});globalThis.capacityError=false;
+              try{replacement.observe(target)}catch(error){capacityError=error instanceof RangeError}
+              all[0].disconnect();replacement.observe(target);
+            "#,
+        )
+        .unwrap();
+        assert!(doc.rendering_update());
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>("typeErrors===1&&rangeErrors===2&&notSupported===1&&emptyThreshold.thresholds[0]===0&&capacityError&&replacement.takeRecords().length===0")).unwrap());
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>(
+                    "all.forEach(observer=>observer.disconnect());replacement.disconnect()",
+                )
+            })
+            .unwrap();
+        assert!(!doc.rendering_update());
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
     fn resize_observers_deliver_deeper_changes_and_defer_self_resize_loops() {
         let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,
             "<html><body><div id='outer' style='width:100px;height:100px'><div id='child' style='width:50px;height:20px'></div></div></body></html>",r#"
@@ -4153,6 +4602,13 @@ mod tests {
         let (mut doc, _) =
             LapuiDocument::new_with_local_source(ActionRegistry::default(), None, &html, "", &root)
                 .unwrap();
+        doc.js_context.with(|ctx|ctx.eval::<(),_>(r#"
+          globalThis.__intersectionConstructors=[];
+          const OriginalIntersectionObserver=IntersectionObserver;
+          globalThis.IntersectionObserver=class extends OriginalIntersectionObserver{
+            constructor(callback,options){__intersectionConstructors.push(options||{});super(callback,options)}
+          };
+        "#)).unwrap();
         doc.inner_mut()
             .set_viewport(Viewport::new(900, 850, 1.0, ColorScheme::Light));
         fn field(doc: &LapuiDocument, id: &str) -> String {
@@ -4199,6 +4655,7 @@ mod tests {
         assert_eq!(field(&doc, "bounds"), "Yes");
         assert_eq!(field(&doc, "coordinates"), "24.0 / 150.0");
         assert_eq!(field(&doc, "style-width"), "220px");
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>("__intersectionConstructors.length>=2 && __intersectionConstructors.at(-1).root===undefined")).unwrap(), "Floating UI should retry its viewport-root observer after element-root rejection");
         #[cfg(feature = "software-renderer")]
         {
             let pixels = crate::snapshot::render_rgba(&mut doc, 900, 850).unwrap();
@@ -6290,6 +6747,233 @@ mod tests {
     }
 
     #[test]
+    fn single_select_properties_formdata_validation_ai_and_click_share_selection() {
+        let (doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body><form id='form'><label for='choice'>Choice</label><select id='choice' name='choice' required><option value='a'>Alpha</option><option value='b' selected>Beta</option></select></form></body></html>",
+            r#"
+              const form=document.getElementById('form'),select=document.getElementById('choice');
+              if(select.value!=='b'||select.selectedIndex!==1||select.options.length!==2||!select.options[1].defaultSelected)throw Error('parsed selection');
+              try{select.value='missing';throw Error('unmatched value accepted');}catch(error){if(error.message==='unmatched value accepted'||error.name!=='NotSupportedError')throw error;}
+              try{select.selectedIndex=-1;throw Error('unmatched index accepted');}catch(error){if(error.message==='unmatched index accepted'||error.name!=='NotSupportedError')throw error;}
+              if(select.value!=='b'||select.selectedIndex!==1)throw Error('rejected selection partially changed state');
+              let changes=0;select.addEventListener('change',()=>changes++);
+              select.selectedIndex=0;if(select.value!=='a'||!select.options[0].selected||select.options[1].selected)throw Error('selectedIndex write');
+              if(!form.checkValidity()||new FormData(form).get('choice')!=='a')throw Error('selected option form value');
+              form.reset();if(select.value!=='b'||select.selectedIndex!==1)throw Error('select reset to default');
+              if(!lapui.fill(select.__ref,'a')||select.value!=='a'||new FormData(form).get('choice')!=='a')throw Error('AI select');
+              __lapui_dispatch('keydown',select.__ref,__lapui_event_path(select.__ref),'{}',{key:'ArrowDown'});
+              if(select.value!=='b'||changes!==2)throw Error('keyboard option selection');
+              if(!lapui.activate(select.options[1].__ref)||select.value!=='b'||changes!==2)throw Error('option click selection');
+            "#,
+        )
+        .unwrap();
+        assert!(doc.script_diagnostics.borrow().is_empty());
+        let snapshot = control_snapshot(&doc.dom.borrow());
+        let choice = snapshot["controls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|control| control["id"] == "choice")
+            .unwrap();
+        assert_eq!(choice["value"], "b");
+        assert_eq!(choice["role"], "combobox");
+    }
+
+    #[test]
+    fn form_demo_listbox_projects_selection_and_hides_its_form_backing_select() {
+        let html = include_str!("../examples/forms-demo/index.html");
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        let snapshot = control_request(&mut doc, json!({"method":"controls"})).unwrap();
+        let controls = snapshot["controls"].as_array().unwrap();
+        assert!(!controls
+            .iter()
+            .any(|control| control["id"] == "first-select"));
+        assert_eq!(
+            controls
+                .iter()
+                .find(|control| control["id"] == "first-contact-email")
+                .unwrap()["selected"],
+            true
+        );
+        let target = controls
+            .iter()
+            .find(|control| control["id"] == "first-contact-signal")
+            .unwrap();
+        assert_eq!(target["role"], "option");
+        let request = json!({"method":"activate","documentEpoch":snapshot["documentEpoch"],"ref":target["ref"]});
+        let response = control_request(&mut doc, request).unwrap();
+        assert!(response["dispatchErrors"].as_array().unwrap().is_empty());
+        let controls = response["controls"].as_array().unwrap();
+        assert_eq!(
+            controls
+                .iter()
+                .find(|control| control["id"] == "contact-state")
+                .unwrap()["name"],
+            "Contact: signal"
+        );
+        assert_eq!(
+            controls
+                .iter()
+                .find(|control| control["id"] == "first-contact-signal")
+                .unwrap()["selected"],
+            true
+        );
+        assert_eq!(
+            controls
+                .iter()
+                .find(|control| control["id"] == "first-contact-email")
+                .unwrap()["selected"],
+            false
+        );
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>("const signal=document.getElementById('first-contact-signal');__lapui_dispatch('keydown',signal.__ref,__lapui_event_path(signal.__ref),'{}',{key:'ArrowLeft'});")
+            })
+            .unwrap();
+        let controls = control_snapshot(&doc.dom.borrow());
+        let controls = controls["controls"].as_array().unwrap();
+        assert_eq!(
+            controls
+                .iter()
+                .find(|control| control["id"] == "contact-state")
+                .unwrap()["name"],
+            "Contact: email"
+        );
+        assert_eq!(
+            controls
+                .iter()
+                .find(|control| control["id"] == "first-contact-email")
+                .unwrap()["selected"],
+            true
+        );
+        assert_eq!(
+            controls
+                .iter()
+                .find(|control| control["id"] == "first-contact-signal")
+                .unwrap()["selected"],
+            false
+        );
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn ai_page_snapshot_is_hierarchical_paged_bounded_and_redacts_passwords() {
+        let html = r#"<!doctype html><html><body><main id="app"><h1>本地工具</h1>
+            <button id="submit"><span>提交任务</span></button>
+            <div aria-hidden="true"><p>隐藏的秘密</p></div>
+            <p style="display:none">CSS 隐藏内容</p>
+            <p style="visibility:hidden">不可见内容</p>
+            <input id="secret" type="password" value="do-not-leak">
+            <input id="query" aria-label="搜索" value="可见值">
+            </main></body></html>"#;
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        doc.dom.borrow_mut().resolve(0.0);
+        let first = control_request(&mut doc, json!({"method":"pageSnapshot","limit":5})).unwrap();
+        assert_eq!(first["documentEpoch"], doc.dom.borrow().id());
+        assert_eq!(first["items"].as_array().unwrap().len(), 5);
+        let items = first["items"].as_array().unwrap();
+        let heading = items.iter().find(|item| item["id"] == "app").unwrap();
+        assert_eq!(heading["tag"], "main");
+        assert_eq!(heading["role"], "main");
+        let button = items.iter().find(|item| item["id"] == "submit").unwrap();
+        assert_eq!(button["role"], "button");
+        assert_eq!(button["name"], "提交任务");
+        assert!(button["bounds"]["width"].is_number());
+        assert!(!first.to_string().contains("隐藏的秘密"));
+        assert!(!first.to_string().contains("CSS 隐藏内容"));
+        assert!(!first.to_string().contains("不可见内容"));
+        assert!(!first.to_string().contains("do-not-leak"));
+        assert_eq!(first["nextAfter"], button["ref"]);
+
+        let next = control_request(
+            &mut doc,
+            json!({"method":"pageSnapshot","documentEpoch":first["documentEpoch"],"afterRef":first["nextAfter"],"limit":16}),
+        ).unwrap();
+        assert!(next["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == "query"));
+        assert!(!next.to_string().contains("do-not-leak"));
+        let stale = control_request(
+            &mut doc,
+            json!({"method":"pageSnapshot","documentEpoch":999999,"limit":1}),
+        )
+        .unwrap_err();
+        assert_eq!(stale.code, "stale_document");
+        let stale_cursor = control_request(
+            &mut doc,
+            json!({"method":"pageSnapshot","afterRef":"node:stale:999","limit":1}),
+        )
+        .unwrap_err();
+        assert_eq!(stale_cursor.code, "stale_cursor");
+    }
+
+    #[cfg(feature = "software-renderer")]
+    #[test]
+    fn screenshot_command_returns_a_bounded_png_without_changing_viewport() {
+        use base64::Engine;
+
+        let html = r#"<!doctype html><html><body><main style="background:#f00;width:100%;height:100%"><h1>Screenshot</h1></main></body></html>"#;
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(320, 200, 1.5, ColorScheme::Light));
+        doc.inner_mut().resolve(0.0);
+        let before = doc.inner().viewport().clone();
+        let screenshot = control_request(&mut doc, json!({"method":"screenshot"})).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(screenshot["pngBase64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(screenshot["width"], 320);
+        assert_eq!(screenshot["height"], 200);
+        assert_eq!(screenshot["boundary"], "cpu_rendered");
+        assert_eq!(screenshot["physicalPresentation"], "not_confirmed");
+        assert_eq!(screenshot["documentEpoch"], doc.dom.borrow().id());
+        assert_eq!(doc.inner().viewport(), &before);
+    }
+
+    #[test]
+    fn structured_scroll_checks_epoch_reference_and_coordinate_budget() {
+        let html = r#"<html><body><div id="scroller" style="width:120px;height:40px;overflow:auto">
+            <div style="width:1000px;height:400px">content</div></div></body></html>"#;
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(400, 300, 1.0, ColorScheme::Light));
+        doc.dom.borrow_mut().resolve(0.0);
+        let node = doc.dom.borrow().get_element_by_id("scroller").unwrap();
+        let reference = canonical_node_ref(doc.dom.borrow().id(), node);
+        let epoch = doc.dom.borrow().id();
+        let response = control_request(
+            &mut doc,
+            json!({"method":"scroll","documentEpoch":epoch,"ref":reference,"y":30}),
+        )
+        .unwrap();
+        assert!(response["scrolled"].as_bool().unwrap());
+        assert!(response["metrics"][1].as_f64().unwrap() > 0.0);
+        let stale = control_request(
+            &mut doc,
+            json!({"method":"scroll","documentEpoch":epoch+1,"ref":reference,"y":30}),
+        )
+        .unwrap_err();
+        assert_eq!(stale.code, "stale_document");
+        let excessive = control_request(
+            &mut doc,
+            json!({"method":"scroll","documentEpoch":epoch,"ref":reference,"x":100001}),
+        )
+        .unwrap_err();
+        assert_eq!(excessive.code, "invalid_request");
+    }
+
+    #[test]
     fn form_radio_ownership_and_property_updates_preserve_attributes_and_other_controls() {
         let html = r#"<html><body>
           <form id="one"><input id="a" type="radio" name="choice" checked><input id="b" type="radio" name="choice"><input id="checkbox" type="checkbox" name="choice" checked></form>
@@ -6758,6 +7442,71 @@ mod tests {
             )
         });
         assert_eq!(observed.unwrap(), r#"["日本語",1]"#);
+    }
+
+    #[test]
+    fn text_selection_uses_dom_utf16_offsets_and_ime_commit_replaces_selection() {
+        let html = r#"<!doctype html><html><body><input id="text"><textarea id="notes"></textarea><input id="number" type="number"></body></html>"#;
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>(r#"
+                  const input=document.getElementById('text');
+                  input.value='A😀中Z';
+                  input.setSelectionRange(1,4,'backward');
+                  const notes=document.getElementById('notes');
+                  notes.value='文字';notes.selectionStart=1;
+                  globalThis.selectionState=[input.selectionStart,input.selectionEnd,input.selectionDirection,
+                    notes.selectionStart,notes.selectionEnd];
+                  input.setSelectionRange(1,4,'none');globalThis.selectionNone=input.selectionDirection;
+                  input.setSelectionRange(1,4,'backward');
+                  try { document.getElementById('number').setSelectionRange(0,1); }
+                  catch (error) { globalThis.selectionError=error.name; }
+                "#)
+            })
+            .unwrap();
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("JSON.stringify(selectionState)"))
+                .unwrap(),
+            "[1,4,\"backward\",1,1]"
+        );
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("selectionError"))
+                .unwrap(),
+            "InvalidStateError"
+        );
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("selectionNone"))
+                .unwrap(),
+            "none"
+        );
+        let input = doc.dom.borrow().get_element_by_id("text").unwrap();
+        doc.dom.borrow_mut().set_focus_to(input);
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>(
+                    "globalThis.selectionInputs=0;document.getElementById('text').addEventListener('input',()=>selectionInputs++)",
+                )
+            })
+            .unwrap();
+        doc.handle_ui_event(UiEvent::Ime(blitz::traits::events::BlitzImeEvent::Commit(
+            "X".to_owned(),
+        )));
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| {
+                    ctx.eval::<String, _>(
+                        "JSON.stringify([document.getElementById('text').value,document.getElementById('text').selectionStart,document.getElementById('text').selectionEnd,document.getElementById('text').selectionDirection,selectionInputs])",
+                    )
+                })
+                .unwrap(),
+            r#"["AXZ",2,2,"none",1]"#
+        );
+        assert!(doc.script_diagnostics.borrow().is_empty());
     }
 
     #[test]

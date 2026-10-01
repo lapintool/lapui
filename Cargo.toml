@@ -18,19 +18,22 @@ software-renderer = ["dep:anyrender_vello_cpu", "dep:image"]
 anyrender_vello = "=0.14.0"
 anyrender_vello_cpu = { version = "=0.17.0", optional = true, default-features = false, features = ["softbuffer_window_renderer"] }
 anyrender = "=0.13.0"
+base64 = "=0.23.1"
 blitz-paint = { version = "=0.3.0-beta.2", default-features = false }
 image = { version = "=0.25.10", optional = true, default-features = false, features = ["png"] }
 blitz = { version = "=0.3.0-beta.2", default-features = false, features = ["net"] }
 blitz-dom = { version = "=0.3.0-beta.2", default-features = false, features = ["system-fonts"] }
 futures-util = { version = "=0.3.34", features = ["sink"] }
+getrandom = "=0.3.4"
 keyboard-types = "=0.7.0"
 notify = "=8.2.0"
 rquickjs = { version = "=0.14.0", features = ["loader"] }
+rmcp = { version = "=3.5.0", default-features = false, features = ["server", "macros", "transport-io", "transport-async-rw"] }
 reqwest = { version = "=0.13.5", default-features = false, features = ["native-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 style = { package = "stylo", version = "=0.20.0" }
-tokio = { version = "=1.53.1", features = ["macros", "net", "rt", "time"] }
+tokio = { version = "=1.53.1", features = ["macros", "net", "rt", "time", "io-util", "io-std"] }
 tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["connect", "native-tls"] }
 winit = { version = "=0.31.0-beta.2", default-features = false }
 

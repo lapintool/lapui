@@ -6,6 +6,7 @@
   }
   const elements = new Map();
   const rectValues = new WeakMap();
+  const selectionDirections = new WeakMap();
   class DOMRectReadOnly {
     constructor(x = 0, y = 0, width = 0, height = 0) { rectValues.set(this, [Number(x), Number(y), Number(width), Number(height)]); }
     get x() { return rectValues.get(this)[0]; }
@@ -302,6 +303,42 @@
     }
     get checked() { return __lapui_get_checked(this.__ref); }
     set checked(value) { __lapui_set_checked(this.__ref, Boolean(value)); }
+    get selectionStart() { return this._textSelection()[0]; }
+    set selectionStart(value) { this.setSelectionRange(value, this.selectionEnd); }
+    get selectionEnd() { return this._textSelection()[1]; }
+    set selectionEnd(value) { this.setSelectionRange(this.selectionStart, value); }
+    get selectionDirection() { return this._textSelection()[2]; }
+    _textSelection() {
+      const type = this.type.toLowerCase();
+      if (this.tagName !== 'TEXTAREA'
+          && !(this.tagName === 'INPUT' && ['text','search','tel','url','password'].includes(type))) {
+        throw new DOMException('Text selection is unavailable for this control type', 'InvalidStateError');
+      }
+      const selection = JSON.parse(__lapui_get_selection(this.__ref)) || [0, 0, 'none'];
+      const requested = selectionDirections.get(this);
+      if (requested && requested.start === selection[0] && requested.end === selection[1]) {
+        selection[2] = requested.direction;
+      } else {
+        selectionDirections.delete(this);
+      }
+      return selection;
+    }
+    setSelectionRange(start, end, direction = 'none') {
+      this._textSelection();
+      direction = String(direction);
+      if (!['none','forward','backward'].includes(direction)) throw new TypeError('Invalid selection direction');
+      const length = this.value.length;
+      const offset = value => {
+        const number = Number(value);
+        return Number.isFinite(number) ? Math.max(0, Math.min(length, Math.trunc(number))) : 0;
+      };
+      start = offset(start);
+      end = Math.max(start, offset(end));
+      if (!__lapui_set_selection(this.__ref, start, end, direction)) {
+        throw new DOMException('The control cannot be selected', 'InvalidStateError');
+      }
+      selectionDirections.set(this, { start, end, direction });
+    }
     get isConnected() { return __lapui_is_connected(this.__ref); }
     getBoundingClientRect() { return new DOMRect(...__lapui_bounding_rect(this.__ref)); }
     get offsetLeft() { return __lapui_offset_metrics(this.__ref)[0]; }
@@ -1012,8 +1049,13 @@
       reference = String(reference);
       const target = getElement(reference);
       if (!target || target.hasAttribute('readonly') || target.getAttribute('aria-readonly') === 'true') return false;
-      if (target.tagName !== 'TEXTAREA' && !(target.tagName === 'INPUT' && ['text', 'password', 'email', 'number', 'search', 'tel', 'url'].includes((target.getAttribute('type') || 'text').toLowerCase()))) return false;
-      if (!__lapui_is_enabled(reference) || !__lapui_set_value(reference, String(value))) return false;
+      if (target.tagName !== 'SELECT' && target.tagName !== 'TEXTAREA' && !(target.tagName === 'INPUT' && ['text', 'password', 'email', 'number', 'search', 'tel', 'url'].includes((target.getAttribute('type') || 'text').toLowerCase()))) return false;
+      if (!__lapui_is_enabled(reference)) return false;
+      if (target.tagName === 'SELECT') {
+        if (target.multiple) return false;
+        target.value = String(value);
+      }
+      else if (!__lapui_set_value(reference, String(value))) return false;
       const path = __lapui_event_path(reference);
       __lapui_dispatch('input', reference, path);
       __lapui_dispatch('change', reference, path);
@@ -1213,6 +1255,21 @@
             const backwards = ['ArrowLeft', 'ArrowUp'].includes(event.key);
             const next = group[(current + (backwards ? -1 : 1) + group.length) % group.length];
             next.focus(); lapui.activate(next.__ref);
+          }
+        }
+      } else if (target?.tagName === 'SELECT' && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
+        keyboardDefault = true;
+        if (!event.defaultPrevented) {
+          const options = target.options.filter(option => !option.disabled && !option.parentElement?.disabled);
+          const current = options.findIndex(option => option.selected);
+          const backwards = ['ArrowLeft', 'ArrowUp'].includes(event.key);
+          const base = current >= 0 ? current : backwards ? options.length : -1;
+          const next = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1
+            : Math.max(0, Math.min(options.length - 1, base + (backwards ? -1 : 1)));
+          if (options[next]) {
+            options[next].selected = true;
+            __lapui_dispatch('input', targetId, __lapui_event_path(targetId));
+            __lapui_dispatch('change', targetId, __lapui_event_path(targetId));
           }
         }
       }

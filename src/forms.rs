@@ -25,6 +25,7 @@ pub(crate) fn value(doc: &BaseDocument, id: NodeId) -> Option<String> {
         .text_input_data()
         .map(|input| input.editor.text().to_string())
         .or_else(|| tag(doc, id, "textarea").then(|| doc.get_node(id).unwrap().text_content()))
+        .or_else(|| tag(doc, id, "select").then(|| selected_option_value(doc, id)))
         .or_else(|| attr(doc, id, "value").map(str::to_owned))
         .or_else(|| {
             (tag(doc, id, "input")
@@ -33,6 +34,131 @@ pub(crate) fn value(doc: &BaseDocument, id: NodeId) -> Option<String> {
                 }))
             .then(|| "on".to_owned())
         })
+}
+
+fn option_ids(doc: &BaseDocument, select: NodeId) -> Vec<NodeId> {
+    subtree(doc, select)
+        .into_iter()
+        .skip(1)
+        .filter(|id| tag(doc, *id, "option"))
+        .collect()
+}
+
+fn option_value(doc: &BaseDocument, option: NodeId) -> String {
+    attr(doc, option, "value")
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            doc.get_node(option)
+                .map_or_else(String::new, |node| node.text_content().trim().to_owned())
+        })
+}
+
+fn selected_option_value(doc: &BaseDocument, select: NodeId) -> String {
+    let options = option_ids(doc, select);
+    let selected = options
+        .iter()
+        .copied()
+        .find(|option| attr(doc, *option, "selected").is_some())
+        .or_else(|| (!options.is_empty()).then_some(options[0]));
+    selected.map_or_else(String::new, |option| option_value(doc, option))
+}
+
+fn supports_text_selection(doc: &BaseDocument, id: NodeId) -> bool {
+    tag(doc, id, "textarea")
+        || (tag(doc, id, "input")
+            && matches!(
+                input_kind(doc, id).as_str(),
+                "text" | "search" | "tel" | "url" | "password"
+            ))
+}
+
+fn byte_to_utf16(text: &str, byte: usize) -> usize {
+    text.char_indices()
+        .take_while(|(index, _)| *index < byte)
+        .map(|(_, character)| character.len_utf16())
+        .sum()
+}
+
+fn utf16_to_byte(text: &str, index: usize, round_up: bool) -> usize {
+    let mut units = 0;
+    for (byte, character) in text.char_indices() {
+        if index <= units {
+            return byte;
+        }
+        let next_units = units + character.len_utf16();
+        if index < next_units {
+            return if round_up {
+                byte + character.len_utf8()
+            } else {
+                byte
+            };
+        }
+        units = next_units;
+    }
+    text.len()
+}
+
+/// Returns input selection offsets in UTF-16 code units, as used by the DOM.
+pub(crate) fn selection(doc: &BaseDocument, id: NodeId) -> Option<(usize, usize, &'static str)> {
+    if !supports_text_selection(doc, id) {
+        return None;
+    }
+    let editor = doc
+        .get_node(id)?
+        .data
+        .downcast_element()?
+        .text_input_data()?
+        .editor
+        .as_ref();
+    let text = editor.raw_text();
+    let selection = editor.raw_selection();
+    let range = selection.text_range();
+    let direction = if selection.is_collapsed() {
+        "none"
+    } else if selection.anchor().index() > selection.focus().index() {
+        "backward"
+    } else {
+        "forward"
+    };
+    Some((
+        byte_to_utf16(text, range.start),
+        byte_to_utf16(text, range.end),
+        direction,
+    ))
+}
+
+/// Sets the selected text range using DOM UTF-16 offsets and Parley byte indices.
+pub(crate) fn set_selection(
+    doc: &mut BaseDocument,
+    id: NodeId,
+    start: usize,
+    end: usize,
+    direction: &str,
+) -> bool {
+    if !supports_text_selection(doc, id) || !matches!(direction, "none" | "forward" | "backward") {
+        return false;
+    }
+    let Some(text) = doc
+        .get_node(id)
+        .and_then(|node| node.data.downcast_element())
+        .and_then(|element| element.text_input_data())
+        .map(|input| input.editor.raw_text().to_owned())
+    else {
+        return false;
+    };
+    let length = text.encode_utf16().count();
+    let start = start.min(length);
+    let end = end.min(length).max(start);
+    let start_byte = utf16_to_byte(&text, start, false);
+    let end_byte = utf16_to_byte(&text, end, true);
+    let (anchor, focus) = if direction == "backward" {
+        (end_byte, start_byte)
+    } else {
+        (start_byte, end_byte)
+    };
+    doc.with_text_input(id, |mut driver| driver.select_byte_range(anchor, focus));
+    doc.shell_provider.request_redraw();
+    true
 }
 
 fn input_kind(doc: &BaseDocument, id: NodeId) -> String {
@@ -46,7 +172,8 @@ fn input_kind(doc: &BaseDocument, id: NodeId) -> String {
 }
 
 pub(crate) fn supports_value_write(doc: &BaseDocument, id: NodeId) -> bool {
-    tag(doc, id, "textarea")
+    tag(doc, id, "select")
+        || tag(doc, id, "textarea")
         || (tag(doc, id, "input")
             && matches!(
                 input_kind(doc, id).as_str(),
@@ -361,6 +488,26 @@ pub(crate) fn controls(doc: &BaseDocument, form: NodeId) -> Vec<NodeId> {
 
 /// Property writes update the native editor without rewriting default attributes.
 pub(crate) fn set_value(doc: &mut BaseDocument, id: NodeId, value: &str) -> bool {
+    if tag(doc, id, "select") {
+        let options = option_ids(doc, id);
+        let selected = options
+            .iter()
+            .copied()
+            .find(|option| option_value(doc, *option) == value);
+        let Some(selected) = selected else {
+            return true;
+        };
+        for option in options {
+            let selected_attr = QualName::new(None, blitz::dom::ns!(), LocalName::from("selected"));
+            if option == selected {
+                doc.mutate().set_attribute(option, selected_attr, "");
+            } else {
+                doc.mutate().clear_attribute(option, selected_attr);
+            }
+        }
+        doc.shell_provider.request_redraw();
+        return true;
+    }
     if !supports_value_write(doc, id) {
         return false;
     }
