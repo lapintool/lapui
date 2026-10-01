@@ -463,6 +463,9 @@ fn control_snapshot_filtered(doc: &BaseDocument, included: Option<&HashSet<NodeI
         included: Option<&HashSet<NodeId>>,
     ) {
         let Some(node) = doc.get_node(id) else { return };
+        if crate::geometry::is_hidden_self(doc, id) {
+            return;
+        }
         if let Some(element) = node.data.downcast_element() {
             let tag = element.name.local.to_string();
             let input_type = attr(element, "type").unwrap_or("").to_ascii_lowercase();
@@ -487,10 +490,8 @@ fn control_snapshot_filtered(doc: &BaseDocument, included: Option<&HashSet<NodeI
                     "a" if attr(element, "href").is_some() => Some("link".into()),
                     _ => None,
                 });
-            let hidden =
-                attr(element, "hidden").is_some() || attr(element, "aria-hidden") == Some("true");
             if let Some(role) =
-                role.filter(|_| !hidden && included.is_none_or(|included| included.contains(&id)))
+                role.filter(|_| included.is_none_or(|included| included.contains(&id)))
             {
                 let html_id = attr(element, "id");
                 let name = attr(element, "aria-labelledby")
@@ -600,6 +601,7 @@ pub struct LapuiDocument {
     proxy: Option<BlitzShellProxy>,
     gc_requested: Rc<Cell<bool>>,
     frames: Rc<RefCell<Frames>>,
+    mutation_batch: Rc<RefCell<MutationBatch>>,
 }
 
 impl Drop for LapuiDocument {
@@ -900,6 +902,7 @@ impl LapuiDocument {
     }
 
     fn semantic_controls(&self) -> Value {
+        flush_layout(&self.dom, &self.mutation_batch, &self.frames);
         self.enrich_semantic_controls(control_snapshot(&self.dom.borrow()))
     }
 
@@ -1073,6 +1076,7 @@ impl LapuiDocument {
             );
         }
         if method == "pageSnapshot" {
+            flush_layout(&self.dom, &self.mutation_batch, &self.frames);
             return crate::ai_snapshot::page_snapshot(&self.dom.borrow(), request, |doc, nodes| {
                 self.semantic_controls_for_nodes(doc, nodes)
             });
@@ -1300,6 +1304,7 @@ impl LapuiDocument {
             .get("ref")
             .and_then(Value::as_str)
             .ok_or_else(|| failure("invalid_request", "canonical control ref is required"))?;
+        flush_layout(&self.dom, &self.mutation_batch, &self.frames);
         let snapshot = control_snapshot(&self.dom.borrow());
         if snapshot["documentEpoch"].as_u64() != Some(epoch) {
             return Err(failure(
@@ -1591,6 +1596,8 @@ impl LapuiDocument {
         let invoke_waker = waker.clone();
         let invoke_proxy = proxy.clone();
         let controls_dom = dom.clone();
+        let controls_batch = mutation_batch.clone();
+        let controls_frames = frames.clone();
         let streams = Rc::new(RefCell::new(None::<StreamWork>));
         let fetch_requests = Arc::new(Mutex::new(HashMap::<i32, Cancellation>::new()));
         js_context
@@ -2498,6 +2505,7 @@ impl LapuiDocument {
                 globals.set(
                     "__lapui_controls",
                     Func::from(move || -> String {
+                        flush_layout(&controls_dom, &controls_batch, &controls_frames);
                         serde_json::to_string(&control_snapshot(&controls_dom.borrow()))
                             .unwrap_or_else(|_| "{\"controls\":[]}".into())
                     }),
@@ -3042,6 +3050,7 @@ impl LapuiDocument {
             proxy,
             gc_requested,
             frames,
+            mutation_batch,
         };
         document.stop_faulted_script();
         Ok((document, external_tx))
@@ -8243,7 +8252,7 @@ mod tests {
 
     #[test]
     fn dom_focus_api_tracks_active_element_and_dispatches_focus_events() {
-        let html = r#"<!doctype html><html><head><style>#css-hidden{display:none}#visibility-hidden{visibility:hidden}</style></head><body><input id="first"><input id="second"><input id="disabled" disabled><input id="hidden-attr" hidden><input id="aria-hidden" aria-hidden="true"><input id="css-hidden"><input id="visibility-hidden"><div id="plain"></div></body></html>"#;
+        let html = r#"<!doctype html><html><head><style>#css-hidden{display:none}#visibility-hidden{visibility:hidden}</style></head><body><input id="first"><input id="second"><input id="disabled" disabled><input id="hidden-attr" hidden><input id="aria-hidden" aria-hidden="true"><input id="css-hidden"><input id="visibility-hidden"><div id="hidden-parent" hidden><input id="hidden-descendant"></div><div id="plain"></div></body></html>"#;
         let (mut doc, _) =
             LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
         doc.inner_mut()
@@ -8271,17 +8280,21 @@ mod tests {
                   if (document.activeElement !== document.body) throw new Error('non-focusable element received focus');
                   document.getElementById('disabled').focus();
                   if (document.activeElement !== document.body || lapui.focus('disabled')) throw new Error('disabled control received focus');
-                  for (const id of ['hidden-attr', 'aria-hidden', 'css-hidden', 'visibility-hidden']) {
+                  const hiddenIds = ['hidden-attr', 'aria-hidden', 'css-hidden', 'visibility-hidden', 'hidden-descendant'];
+                  for (const id of hiddenIds) {
                     document.getElementById(id).focus();
                     if (document.activeElement !== document.body) throw new Error(`${id} DOM focus succeeded`);
                     if (lapui.focus(id)) throw new Error(`${id} AI focus succeeded`);
                   }
+                  if (lapui.controls().controls.some(control => hiddenIds.includes(control.id))) throw new Error('hidden controls leaked into the semantic snapshot');
                   const cssHidden = document.getElementById('css-hidden');
                   cssHidden.style.display = 'block';
                   if (!lapui.focus(cssHidden.__ref)) throw new Error('visible CSS control did not receive AI focus');
+                  if (!lapui.controls().controls.some(control => control.id === 'css-hidden')) throw new Error('visible CSS control was omitted from the semantic snapshot');
                   cssHidden.blur();
                   cssHidden.style.display = 'none';
                   if (lapui.focus(cssHidden.__ref)) throw new Error('same-turn display:none mutation was not applied before AI focus');
+                  if (lapui.controls().controls.some(control => control.id === 'css-hidden')) throw new Error('same-turn hidden CSS control leaked into the semantic snapshot');
                   const detached = document.createElement('input');
                   detached.focus();
                   if (document.activeElement !== document.body) throw new Error('detached control received focus');
@@ -8322,6 +8335,34 @@ mod tests {
             result,
             r#"["first:focus","first:focusin","first:bubble-in","first:blur","first:focusout","first:bubble-out","second:focus","second:focusin","second:bubble-in","second:blur","second:focusout","second:bubble-out"]"#
         );
+        let page = control_request(&mut doc, json!({"method":"pageSnapshot"})).unwrap();
+        for id in [
+            "hidden-attr",
+            "aria-hidden",
+            "css-hidden",
+            "visibility-hidden",
+            "hidden-descendant",
+        ] {
+            assert!(!page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["id"] == id));
+        }
+        let controls = control_request(&mut doc, json!({"method":"controls"})).unwrap();
+        for id in [
+            "hidden-attr",
+            "aria-hidden",
+            "css-hidden",
+            "visibility-hidden",
+            "hidden-descendant",
+        ] {
+            assert!(!controls["controls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|control| control["id"] == id));
+        }
     }
 
     #[test]
