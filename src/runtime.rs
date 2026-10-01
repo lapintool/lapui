@@ -7257,12 +7257,12 @@ mod tests {
             .borrow_mut()
             .set_viewport(Viewport::new(800, 900, 1.0, ColorScheme::Light));
         doc.dom.borrow_mut().resolve(0.0);
-        let tab = || {
+        let tab = |modifiers| {
             UiEvent::KeyDown(BlitzKeyEvent {
                 key: Key::Tab,
                 code: Code::Tab,
                 location: Location::Standard,
-                modifiers: Modifiers::empty(),
+                modifiers,
                 is_auto_repeating: false,
                 is_composing: false,
                 state: KeyState::Pressed,
@@ -7272,14 +7272,41 @@ mod tests {
         doc.js_context
             .with(|ctx| ctx.eval::<(), _>("document.getElementById('agree').focus()"))
             .unwrap();
-        doc.handle_ui_event(tab());
+        doc.handle_ui_event(tab(Modifiers::empty()));
         assert_eq!(
             doc.js_context
                 .with(|ctx| ctx.eval::<String, _>("document.activeElement.id"))
                 .unwrap(),
             "first-contact-email"
         );
-        doc.handle_ui_event(tab());
+        doc.handle_ui_event(tab(Modifiers::empty()));
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("document.activeElement.id"))
+                .unwrap(),
+            "first-a"
+        );
+        doc.handle_ui_event(tab(Modifiers::empty()));
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("document.activeElement.id"))
+                .unwrap(),
+            "second-a"
+        );
+        doc.handle_ui_event(tab(Modifiers::SHIFT));
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("document.activeElement.id"))
+                .unwrap(),
+            "first-a"
+        );
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>("document.getElementById('first-a').checked=false;document.getElementById('first-b').checked=false;document.getElementById('agree').focus();")
+            })
+            .unwrap();
+        doc.handle_ui_event(tab(Modifiers::empty()));
+        doc.handle_ui_event(tab(Modifiers::empty()));
         assert_eq!(
             doc.js_context
                 .with(|ctx| ctx.eval::<String, _>("document.activeElement.id"))

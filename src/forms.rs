@@ -433,15 +433,40 @@ pub(crate) fn read_only(doc: &BaseDocument, id: NodeId) -> bool {
         && (attr(doc, id, "readonly").is_some() || attr(doc, id, "aria-readonly") == Some("true"))
 }
 
+fn focusable_for_tab(doc: &BaseDocument, id: NodeId) -> bool {
+    let Some(node) = doc.get_node(id) else {
+        return false;
+    };
+    node.is_focussable()
+        && node.has_boxes()
+        && !crate::geometry::is_hidden(doc, id)
+        && enabled(doc, id)
+        && attr(doc, id, "tabindex")
+            .and_then(|value| value.parse::<i32>().ok())
+            .is_none_or(|index| index >= 0)
+}
+
+fn is_radio_tab_stop(doc: &BaseDocument, id: NodeId) -> bool {
+    if !tag(doc, id, "input")
+        || !attr(doc, id, "type").is_some_and(|kind| kind.eq_ignore_ascii_case("radio"))
+    {
+        return true;
+    }
+    let eligible = radio_group(doc, id)
+        .into_iter()
+        .filter(|member| focusable_for_tab(doc, *member))
+        .collect::<Vec<_>>();
+    let stop = eligible
+        .iter()
+        .copied()
+        .find(|member| checked(doc, *member) == Some(true))
+        .or_else(|| eligible.first().copied());
+    stop == Some(id)
+}
+
 pub(crate) fn focus_step(doc: &mut BaseDocument, reverse: bool) {
     let eligible = |node: &blitz::dom::Node| {
-        node.is_focussable()
-            && node.has_boxes()
-            && !crate::geometry::is_hidden(doc, node.id)
-            && enabled(doc, node.id)
-            && attr(doc, node.id, "tabindex")
-                .and_then(|value| value.parse::<i32>().ok())
-                .is_none_or(|index| index >= 0)
+        focusable_for_tab(doc, node.id) && is_radio_tab_stop(doc, node.id)
     };
     let next = if let Some(current) = doc.get_focussed_node_id().and_then(|id| doc.get_node(id)) {
         if reverse {
