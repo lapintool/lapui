@@ -59,7 +59,7 @@ Supported checks include required text/single-select/checkbox/form-scoped radio 
 
 `checkValidity()` dispatches cancelable, non-bubbling invalid events. `reportValidity()` also focuses the first invalid control whose event was not canceled; it does not display a native validation popup. Messages are basic English strings. Full validity-state, number precision and localized reporting conformance are not claimed.
 
-Both `lapui.controls()` and TCP controls report the same `formRef`, `willValidate`, validity flags, message and sanitized current value for supported controls. Password values and validation messages are omitted. Unsupported validation is marked `validationAvailable: false`. While scripting is suspended, TCP returns the native semantic snapshot with a top-level `validationAvailable: false`; reload is required to resume checks. This is a selected semantic projection, not a full accessibility tree or browser :valid/:invalid styling implementation.
+Both `lapui.controls()` and TCP controls report the same `formRef`, `willValidate`, validity flags, message and sanitized current value for supported controls. They omit controls under `hidden`, `aria-hidden="true"`, computed `display:none`, and `visibility:hidden/collapse` on the control or an ancestor; reads resolve pending style/layout changes first. Password values and validation messages are omitted. Unsupported validation is marked `validationAvailable: false`. While scripting is suspended, TCP returns the native semantic snapshot with a top-level `validationAvailable: false`; reload is required to resume checks. This is a selected semantic projection, not a full accessibility tree or browser :valid/:invalid styling implementation.
 
 ## String FormData and bounds
 
