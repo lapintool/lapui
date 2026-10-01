@@ -7248,6 +7248,48 @@ mod tests {
     }
 
     #[test]
+    fn native_tab_navigation_skips_hidden_controls_and_unselected_roving_options() {
+        use blitz::traits::events::{BlitzKeyEvent, KeyState};
+        let html = include_str!("../examples/forms-demo/index.html");
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.dom
+            .borrow_mut()
+            .set_viewport(Viewport::new(800, 900, 1.0, ColorScheme::Light));
+        doc.dom.borrow_mut().resolve(0.0);
+        let tab = || {
+            UiEvent::KeyDown(BlitzKeyEvent {
+                key: Key::Tab,
+                code: Code::Tab,
+                location: Location::Standard,
+                modifiers: Modifiers::empty(),
+                is_auto_repeating: false,
+                is_composing: false,
+                state: KeyState::Pressed,
+                text: None,
+            })
+        };
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("document.getElementById('agree').focus()"))
+            .unwrap();
+        doc.handle_ui_event(tab());
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("document.activeElement.id"))
+                .unwrap(),
+            "first-contact-email"
+        );
+        doc.handle_ui_event(tab());
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("document.activeElement.id"))
+                .unwrap(),
+            "first-a"
+        );
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
     fn ai_page_snapshot_is_hierarchical_paged_bounded_and_redacts_passwords() {
         let html = r#"<!doctype html><html><body><main id="app"><h1>本地工具</h1>
             <button id="submit"><span>提交任务</span></button>

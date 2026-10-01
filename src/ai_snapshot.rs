@@ -54,18 +54,7 @@ impl CandidateCollector<'_> {
         let Some(node) = self.doc.get_node(id) else {
             return;
         };
-        let element = node.element_data();
-        let locally_hidden = element.is_some_and(|element| {
-            attr(element, "hidden").is_some() || attr(element, "aria-hidden") == Some("true")
-        }) || node.primary_styles().is_some_and(|style| {
-            style.clone_display().is_none()
-                || matches!(
-                    style.clone_visibility(),
-                    style::computed_values::visibility::T::Hidden
-                        | style::computed_values::visibility::T::Collapse
-                )
-        });
-        let hidden = inherited_hidden || locally_hidden;
+        let hidden = inherited_hidden || geometry::is_hidden_self(self.doc, id);
         let cursor_or_ancestor = self.cursor_id == Some(id) || self.cursor_ancestors.contains(&id);
         let needs_bounds = self.after_ref.is_none() || self.cursor_found || cursor_or_ancestor;
         let visible_box = needs_bounds
@@ -118,19 +107,7 @@ fn bounded_text(doc: &BaseDocument, root: blitz::traits::node_id::NodeId) -> Str
             return;
         }
         let Some(node) = doc.get_node(id) else { return };
-        if node.element_data().is_some_and(|element| {
-            attr(element, "hidden").is_some() || attr(element, "aria-hidden") == Some("true")
-        }) {
-            return;
-        }
-        if node.primary_styles().is_some_and(|style| {
-            style.clone_display().is_none()
-                || matches!(
-                    style.clone_visibility(),
-                    style::computed_values::visibility::T::Hidden
-                        | style::computed_values::visibility::T::Collapse
-                )
-        }) {
+        if geometry::is_hidden_self(doc, id) {
             return;
         }
         if let blitz::dom::NodeData::Text(text) = &node.data {

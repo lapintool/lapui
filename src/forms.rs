@@ -437,6 +437,7 @@ pub(crate) fn focus_step(doc: &mut BaseDocument, reverse: bool) {
     let eligible = |node: &blitz::dom::Node| {
         node.is_focussable()
             && node.has_boxes()
+            && !crate::geometry::is_hidden(doc, node.id)
             && enabled(doc, node.id)
             && attr(doc, node.id, "tabindex")
                 .and_then(|value| value.parse::<i32>().ok())

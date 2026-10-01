@@ -27,6 +27,39 @@ pub(crate) fn has_boxes(doc: &BaseDocument, id: NodeId) -> bool {
     true
 }
 
+pub(crate) fn is_hidden(doc: &BaseDocument, id: NodeId) -> bool {
+    let mut current = Some(id);
+    while let Some(current_id) = current {
+        let Some(node) = doc.get_node(current_id) else {
+            return true;
+        };
+        if is_hidden_self(doc, current_id) {
+            return true;
+        }
+        current = node.parent;
+    }
+    false
+}
+
+pub(crate) fn is_hidden_self(doc: &BaseDocument, id: NodeId) -> bool {
+    let Some(node) = doc.get_node(id) else {
+        return true;
+    };
+    node.element_data().is_some_and(|element| {
+        element
+            .attr(blitz::dom::LocalName::from("hidden"))
+            .is_some()
+            || element.attr(blitz::dom::LocalName::from("aria-hidden")) == Some("true")
+    }) || node.primary_styles().is_some_and(|style| {
+        style.clone_display().is_none()
+            || matches!(
+                style.clone_visibility(),
+                style::computed_values::visibility::T::Hidden
+                    | style::computed_values::visibility::T::Collapse
+            )
+    })
+}
+
 pub(crate) fn metrics(doc: &BaseDocument, id: NodeId) -> Vec<f64> {
     if !has_boxes(doc, id) {
         return vec![0.0; 8];
