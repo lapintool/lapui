@@ -93,6 +93,13 @@ struct ActionInput {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RuntimeMemoryInput {
+    #[serde(default)]
+    collect_garbage: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ActionReferenceInput {
     #[schemars(length(min = 1, max = 128))]
     action: String,
@@ -250,6 +257,7 @@ fn app_capabilities() -> Vec<&'static str> {
             "screenshot",
             "registered_actions",
             "diagnostics",
+            "quickjs_memory_usage",
         ]
     }
     #[cfg(not(feature = "software-renderer"))]
@@ -259,6 +267,7 @@ fn app_capabilities() -> Vec<&'static str> {
             "page_observation",
             "registered_actions",
             "diagnostics",
+            "quickjs_memory_usage",
         ]
     }
 }
@@ -531,6 +540,32 @@ impl LapuiMcpServer {
     }
 
     #[tool(
+        description = "Read QuickJS runtime allocation and heap counters. Set collectGarbage only when a diagnostic cycle collection is intended; this runs on the UI thread. These counters exclude Rust, DOM, renderer, GPU, and process allocator-retained memory."
+    )]
+    async fn runtime_memory_usage(
+        &self,
+        Parameters(input): Parameters<RuntimeMemoryInput>,
+    ) -> CallToolResult {
+        let controller = self.controller();
+        match tokio::task::spawn_blocking(move || {
+            controller.request(
+                json!({"method":"runtime.memoryUsage","collectGarbage":input.collect_garbage}),
+                Duration::from_secs(5),
+            )
+        })
+        .await
+        {
+            Ok(Ok(value)) => mcp_result(value),
+            Ok(Err(error)) => {
+                mcp_result(json!({"ok":false,"code":error.code,"message":error.message}))
+            }
+            Err(error) => {
+                mcp_result(json!({"ok":false,"code":"adapter_failure","message":error.to_string()}))
+            }
+        }
+    }
+
+    #[tool(
         description = "Activate, fill, check, or focus a semantic control, or scroll a rendered element. Use the current documentEpoch and canonical ref from page_observe/page_controls; stale references are rejected."
     )]
     async fn page_control(&self, Parameters(input): Parameters<ControlInput>) -> CallToolResult {
@@ -783,7 +818,8 @@ mod tests {
                 "page_reload",
                 "page_screenshot",
                 "page_wait_for_control",
-                "page_wait_for_render"
+                "page_wait_for_render",
+                "runtime_memory_usage"
             ]
         );
         assert!(!names
@@ -802,6 +838,15 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("integer")));
+        let memory_tool = tools
+            .iter()
+            .find(|tool| tool.name == "runtime_memory_usage")
+            .unwrap();
+        let memory_schema = serde_json::to_value(&memory_tool.input_schema).unwrap();
+        assert_eq!(
+            memory_schema["properties"]["collectGarbage"]["type"],
+            "boolean"
+        );
     }
 
     #[test]

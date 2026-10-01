@@ -24,6 +24,7 @@ image = { version = "=0.25.10", optional = true, default-features = false, featu
 blitz = { version = "=0.3.0-beta.2", default-features = false, features = ["net"] }
 blitz-dom = { version = "=0.3.0-beta.2", default-features = false, features = ["system-fonts"] }
 futures-util = { version = "=0.3.34", features = ["sink"] }
+fontique = "=0.11.1"
 getrandom = "=0.3.4"
 keyboard-types = "=0.7.0"
 notify = "=8.2.0"

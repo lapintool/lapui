@@ -4,6 +4,7 @@ use crate::action::{ActionError, ActionRegistry};
 use crate::control::{self, DocumentController, DocumentRequest};
 use crate::runtime::LapuiDocument;
 use crate::watch::{WatchSignal, WatchTarget};
+use blitz::dom::FontContext;
 use blitz::dom::{DocGuard, DocGuardMut, Document};
 use blitz::shell::{BlitzShellEvent, BlitzShellProxy};
 use blitz::traits::events::UiEvent;
@@ -52,12 +53,31 @@ impl DocumentSource {
         actions: ActionRegistry,
         proxy: Option<BlitzShellProxy>,
     ) -> Result<(LapuiDocument, mpsc::Sender<Result<Value, String>>), String> {
+        self.load_with_font_context(actions, proxy, LapuiDocument::new_font_context())
+    }
+
+    pub fn load_with_font_context(
+        &self,
+        actions: ActionRegistry,
+        proxy: Option<BlitzShellProxy>,
+        font_context: FontContext,
+    ) -> Result<(LapuiDocument, mpsc::Sender<Result<Value, String>>), String> {
         match self {
-            Self::Embedded { html, script } => {
-                LapuiDocument::new_with_source(actions, proxy, html, script)
-            }
+            Self::Embedded { html, script } => LapuiDocument::new_with_source_and_font_context(
+                actions,
+                proxy,
+                html,
+                script,
+                font_context,
+            ),
             Self::EmbeddedWithScript { html, script } => {
-                LapuiDocument::new_with_source(actions, proxy, html, &read_source(script)?)
+                LapuiDocument::new_with_source_and_font_context(
+                    actions,
+                    proxy,
+                    html,
+                    &read_source(script)?,
+                    font_context,
+                )
             }
             Self::Local { html, script } => {
                 let html_file = html.canonicalize().map_err(|error| error.to_string())?;
@@ -68,12 +88,13 @@ impl DocumentSource {
                     .map(read_source)
                     .transpose()?
                     .unwrap_or_default();
-                LapuiDocument::new_with_local_source(
+                LapuiDocument::new_with_local_source_and_font_context(
                     actions,
                     proxy,
                     &html_text,
                     &script_text,
                     app_root,
+                    font_context,
                 )
             }
         }
@@ -113,6 +134,7 @@ impl ReloadHandle {
 pub struct ReloadDocument {
     document: LapuiDocument,
     source: DocumentSource,
+    font_context: FontContext,
     actions: ActionRegistry,
     proxy: Option<BlitzShellProxy>,
     endpoint: Arc<Mutex<DocumentEndpoint>>,
@@ -133,6 +155,24 @@ impl ReloadDocument {
         source: DocumentSource,
         actions: ActionRegistry,
         proxy: Option<BlitzShellProxy>,
+    ) -> (Self, ReloadHandle) {
+        Self::new_with_font_context(
+            document,
+            notify,
+            source,
+            actions,
+            proxy,
+            LapuiDocument::new_font_context(),
+        )
+    }
+
+    pub fn new_with_font_context(
+        document: LapuiDocument,
+        notify: mpsc::Sender<Result<Value, String>>,
+        source: DocumentSource,
+        actions: ActionRegistry,
+        proxy: Option<BlitzShellProxy>,
+        font_context: FontContext,
     ) -> (Self, ReloadHandle) {
         let epoch = Arc::new(AtomicUsize::new(document.inner().id()));
         let waker: Arc<Mutex<Option<Waker>>> = Arc::new(Mutex::new(None));
@@ -164,6 +204,7 @@ impl ReloadDocument {
             Self {
                 document,
                 source,
+                font_context,
                 actions,
                 proxy,
                 endpoint,
@@ -267,7 +308,11 @@ impl ReloadDocument {
         // are represented by the new document's diagnostics, as on first launch.
         let (mut new_document, notify) = self
             .source
-            .load(self.actions.clone(), self.proxy.clone())
+            .load_with_font_context(
+                self.actions.clone(),
+                self.proxy.clone(),
+                self.font_context.clone(),
+            )
             .map_err(|message| ActionError::new("reload_failed", message))?;
         let old = self.document.inner();
         let viewport = old.viewport().clone();

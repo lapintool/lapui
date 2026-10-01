@@ -186,6 +186,7 @@ fn respond(
                     "waitForRender",
                     "diagnostics",
                     "networkStatus",
+                    "runtime.memoryUsage",
                     "activate",
                     "fill",
                     "check",
@@ -229,6 +230,7 @@ fn respond(
                         "controlMutations": true,
                         "scriptDiagnostics": true,
                         "networkStreamStatus": true,
+                        "quickJsMemoryUsage": true,
                         "scriptExecutionLimits": true,
                         "registeredActions": true,
                         "scopedActions": true,
@@ -246,6 +248,7 @@ fn respond(
                     "debugTraceLimits": LapuiDocument::debug_trace_limits(),
                     "debugTraceMethodSchemas":debug_trace_schemas(),
                     "networkStreamLimits": LapuiDocument::stream_limits(),
+                    "runtimeMemoryUsageSchema":{"type":"object","additionalProperties":false,"required":["method"],"properties":{"method":{"const":"runtime.memoryUsage"},"collectGarbage":{"type":"boolean","default":false,"description":"Run QuickJS cycle collection before returning an additional post-collection snapshot"}}},
                     "changeSubscriptionLimits": ActionRegistry::change_limits(),
                     "actionCatalogLimits": ActionRegistry::action_limits(),
                     "actionCatalogSchemas": {"actions.list":{"type":"object","additionalProperties":false,"required":["method"],"properties":{
@@ -402,6 +405,7 @@ fn respond(
                 "controls"
                 | "diagnostics"
                 | "networkStatus"
+                | "runtime.memoryUsage"
                 | "activate"
                 | "fill"
                 | "check"
@@ -496,6 +500,7 @@ fn run_client(
         "controls" => json!({"method":"controls"}),
         "diagnostics" => json!({"method":"diagnostics"}),
         "network-status" => json!({"method":"networkStatus"}),
+        "runtime-memory" => json!({"method":"runtime.memoryUsage"}),
         "trace" => json!({"method":"trace"}),
         "debug-trace" => json!({"method":"debugTrace.read","documentEpoch":request_file.ok_or("debug-trace requires the document epoch from controls")?.parse::<u64>()?}),
         "changes" => if let Some(cursor) = request_file { json!({"method":"changes.subscribe","cursor":cursor}) } else { json!({"method":"changes.subscribe"}) },
@@ -510,7 +515,7 @@ fn run_client(
             if bytes.len() > MAX_CONTROL_REQUEST_BYTES { return Err("request file exceeds 64 KiB".into()); }
             serde_json::from_slice(&bytes)?
         }
-        _ => return Err("client command must be describe, observe, actions, describe-action <id>, increment, changes [cursor], trace, controls, diagnostics, network-status, reload, reload-status, operation <id>, cancel-operation <id>, or request-file <path>".into()),
+        _ => return Err("client command must be describe, observe, actions, describe-action <id>, increment, changes [cursor], trace, controls, diagnostics, network-status, runtime-memory, reload, reload-status, operation <id>, cancel-operation <id>, or request-file <path>".into()),
     };
     writeln!(stream, "{request}")?;
     let mut response = String::new();
@@ -522,7 +527,7 @@ fn run_client(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("Lapui {}\n\nRun: lapui [--demo files | --html <index.html> [--js <bundle.js>]]\n     [--renderer cpu|gpu] [--watch] [--debug-trace] [--mcp-stdio | --mcp-bridge-id <id>]\nMCP stdio adapter: lapui mcp-stdio <bridge-id>\nExport current state: lapui [app options] --snapshot <image.png> [--width <pixels> --height <pixels>]\nClient: lapui client <address> describe|observe|increment|controls|diagnostics|network-status|trace|debug-trace <documentEpoch>|actions\n        lapui client <address> describe-action <action-id>\n        lapui client <address> changes [cursor]\n        lapui client <address> reload|reload-status\n        lapui client <address> operation|cancel-operation <operation-id>\n        lapui client <address> request-file <request.json>\n\n--mcp-stdio serves the current local UI over MCP stdio; stdout is reserved for the protocol.\n--mcp-bridge-id exposes an authenticated, loopback-only MCP bridge for reconnectable stdio adapters.\nCPU drawing and PNG export require the software-renderer feature (enabled by default).\n--watch uses local files and a window; it performs full document reloads.\nThe control address is printed when the window starts. Snapshots do not wait for all asynchronous work.", env!("CARGO_PKG_VERSION"));
+        println!("Lapui {}\n\nRun: lapui [--demo files | --html <index.html> [--js <bundle.js>]]\n     [--renderer cpu|gpu] [--watch] [--debug-trace] [--mcp-stdio | --mcp-bridge-id <id>]\nMCP stdio adapter: lapui mcp-stdio <bridge-id>\nExport current state: lapui [app options] --snapshot <image.png> [--width <pixels> --height <pixels>]\nClient: lapui client <address> describe|observe|increment|controls|diagnostics|network-status|runtime-memory|trace|debug-trace <documentEpoch>|actions\n        lapui client <address> describe-action <action-id>\n        lapui client <address> changes [cursor]\n        lapui client <address> reload|reload-status\n        lapui client <address> operation|cancel-operation <operation-id>\n        lapui client <address> request-file <request.json>\n\n--mcp-stdio serves the current local UI over MCP stdio; stdout is reserved for the protocol.\n--mcp-bridge-id exposes an authenticated, loopback-only MCP bridge for reconnectable stdio adapters.\nCPU drawing and PNG export require the software-renderer feature (enabled by default).\n--watch uses local files and a window; it performs full document reloads.\nThe control address is printed when the window starts. Snapshots do not wait for all asynchronous work.", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if args.get(1).is_some_and(|arg| arg == "--version") {
@@ -686,7 +691,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     };
-    let (document, notify) = source.load(actions.clone(), proxy.clone())?;
+    let font_context = LapuiDocument::new_font_context();
+    let (document, notify) =
+        source.load_with_font_context(actions.clone(), proxy.clone(), font_context.clone())?;
     document.configure_debug_trace(debug_trace, false);
     #[cfg(feature = "software-renderer")]
     if let Some(path) = snapshot_path {
@@ -704,12 +711,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Some(TcpListener::bind("127.0.0.1:0")?)
     };
-    let (mut document, reload) = ReloadDocument::new(
+    let (mut document, reload) = ReloadDocument::new_with_font_context(
         document,
         notify,
         source,
         actions.clone(),
         Some(proxy.clone()),
+        font_context,
     );
     let _mcp_bridge = mcp_bridge_id
         .as_deref()
@@ -1256,6 +1264,7 @@ mod tests {
                 "waitForRender",
                 "diagnostics",
                 "networkStatus",
+                "runtime.memoryUsage",
                 "activate",
                 "fill",
                 "check",
@@ -1273,6 +1282,10 @@ mod tests {
             true
         );
         assert_eq!(response["observation"]["capabilities"]["debugTrace"], true);
+        assert_eq!(
+            response["observation"]["capabilities"]["quickJsMemoryUsage"],
+            true
+        );
         assert_eq!(
             response["observation"]["capabilities"]["controlConditionWait"],
             true

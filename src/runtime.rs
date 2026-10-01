@@ -13,13 +13,14 @@ use crate::stream_work::{Data as StreamData, StreamWork};
 use crate::timers::Timers;
 use blitz::dom::{
     BaseDocument, DocGuard, DocGuardMut, Document, DocumentConfig, EventDriver, EventHandler,
-    LocalName, QualName,
+    FontContext, LocalName, QualName,
 };
 use blitz::html::HtmlDocument;
 use blitz::shell::{BlitzShellEvent, BlitzShellProxy};
 use blitz::traits::events::{DomEvent, EventState, UiEvent};
 use blitz::traits::net::{Bytes, NetHandler, NetProvider, Request, Url};
 use blitz::traits::node_id::NodeId;
+use fontique::Blob;
 use rquickjs::{
     context::EvalOptions, function::Func, Context, Exception, FromJs, Function, Module, Runtime,
 };
@@ -819,6 +820,26 @@ impl LapuiDocument {
             "deliveriesPerPoll":16,"deliverySliceMillis":CHECKPOINT_SLICE.as_millis()})
     }
 
+    fn quickjs_memory_usage(runtime: &Runtime) -> Value {
+        let usage = runtime.memory_usage();
+        json!({
+            "allocatorBytes": usage.malloc_size,
+            "allocatorLimitBytes": usage.malloc_limit,
+            "heapUsedBytes": usage.memory_used_size,
+            "allocatorBlocks": usage.malloc_count,
+            "heapObjects": usage.memory_used_count,
+            "atoms": {"count":usage.atom_count,"bytes":usage.atom_size},
+            "strings": {"count":usage.str_count,"bytes":usage.str_size},
+            "objects": {"count":usage.obj_count,"bytes":usage.obj_size},
+            "properties": {"count":usage.prop_count,"bytes":usage.prop_size},
+            "shapes": {"count":usage.shape_count,"bytes":usage.shape_size},
+            "javascriptFunctions": {"count":usage.js_func_count,"bytes":usage.js_func_size,"codeBytes":usage.js_func_code_size,"pc2lineCount":usage.js_func_pc2line_count,"pc2lineBytes":usage.js_func_pc2line_size},
+            "cFunctions": usage.c_func_count,
+            "arrays": {"count":usage.array_count,"fastCount":usage.fast_array_count,"fastElements":usage.fast_array_elements},
+            "binaryObjects": {"count":usage.binary_object_count,"bytes":usage.binary_object_size}
+        })
+    }
+
     fn stop_faulted_script(&self) {
         if !self.script_budget.interrupted() || self.script_stopped.replace(true) {
             return;
@@ -1080,6 +1101,38 @@ impl LapuiDocument {
                 json!({"documentEpoch":self.dom.borrow().id(),"streams":stream_status(&self.streams),"streamLimits":Self::stream_limits()}),
             );
         }
+        if method == "runtime.memoryUsage" {
+            if request.as_object().is_none_or(|fields| {
+                fields
+                    .keys()
+                    .any(|key| !["method", "collectGarbage"].contains(&key.as_str()))
+            }) {
+                return Err(failure(
+                    "invalid_request",
+                    "runtime.memoryUsage accepts only method and collectGarbage",
+                ));
+            }
+            let collect_garbage = request
+                .get("collectGarbage")
+                .map(|value| {
+                    value.as_bool().ok_or_else(|| {
+                        failure("invalid_request", "collectGarbage must be a boolean")
+                    })
+                })
+                .transpose()?
+                .unwrap_or(false);
+            let before = Self::quickjs_memory_usage(&self.js_runtime);
+            if collect_garbage {
+                self.js_runtime.run_gc();
+                let after = Self::quickjs_memory_usage(&self.js_runtime);
+                return Ok(
+                    json!({"documentEpoch":self.dom.borrow().id(),"collectionRequested":true,"beforeCollection":before,"afterCollection":after}),
+                );
+            }
+            return Ok(
+                json!({"documentEpoch":self.dom.borrow().id(),"collectionRequested":false,"usage":before}),
+            );
+        }
         if method == "diagnostics" {
             return Ok(
                 json!({"documentEpoch": self.dom.borrow().id(), "scriptStatus": if self.script_budget.interrupted() { "suspended" } else { "running" }, "errors": &*self.script_diagnostics.borrow()}),
@@ -1214,12 +1267,42 @@ impl LapuiDocument {
         html: &str,
         script: &str,
     ) -> Result<(Self, mpsc::Sender<Result<Value, String>>), String> {
+        Self::new_with_source_and_font_context(
+            actions,
+            proxy,
+            html,
+            script,
+            Self::new_font_context(),
+        )
+    }
+
+    /// Build one application font context that can be shared by document reloads.
+    pub fn new_font_context() -> FontContext {
+        let mut font_context = FontContext::default();
+        font_context
+            .collection
+            .register_fonts(Blob::new(Arc::new(blitz::dom::BULLET_FONT) as _), None);
+        font_context.collection.make_shared();
+        font_context.source_cache.make_shared();
+        font_context
+    }
+
+    pub fn new_with_source_and_font_context(
+        actions: ActionRegistry,
+        proxy: Option<BlitzShellProxy>,
+        html: &str,
+        script: &str,
+        font_context: FontContext,
+    ) -> Result<(Self, mpsc::Sender<Result<Value, String>>), String> {
         Self::new_with_config(
             actions,
             proxy,
             html,
             script,
-            DocumentConfig::default(),
+            DocumentConfig {
+                font_ctx: Some(font_context),
+                ..DocumentConfig::default()
+            },
             None,
         )
     }
@@ -1231,6 +1314,24 @@ impl LapuiDocument {
         script: &str,
         app_root: &Path,
     ) -> Result<(Self, mpsc::Sender<Result<Value, String>>), String> {
+        Self::new_with_local_source_and_font_context(
+            actions,
+            proxy,
+            html,
+            script,
+            app_root,
+            Self::new_font_context(),
+        )
+    }
+
+    pub fn new_with_local_source_and_font_context(
+        actions: ActionRegistry,
+        proxy: Option<BlitzShellProxy>,
+        html: &str,
+        script: &str,
+        app_root: &Path,
+        font_context: FontContext,
+    ) -> Result<(Self, mpsc::Sender<Result<Value, String>>), String> {
         let root = app_root.canonicalize().map_err(|error| {
             format!("could not resolve app root {}: {error}", app_root.display())
         })?;
@@ -1239,6 +1340,7 @@ impl LapuiDocument {
         let config = DocumentConfig {
             base_url: Some(base_url.to_string()),
             net_provider: Some(Arc::new(LocalDirectoryNetProvider { root: root.clone() })),
+            font_ctx: Some(font_context),
             ..DocumentConfig::default()
         };
         Self::new_with_config(actions, proxy, html, script, config, Some(root))
@@ -3334,7 +3436,10 @@ impl Document for LapuiDocument {
                 );
             }
             // Read-only trace queries do not create their own redraw/trace loop.
-            changed |= !matches!(method, "debugTrace.read" | "debugTrace.configure");
+            changed |= !matches!(
+                method,
+                "debugTrace.read" | "debugTrace.configure" | "runtime.memoryUsage"
+            );
             request.finish(result);
         }
         let mut completion_count = 0;
@@ -3446,6 +3551,61 @@ mod tests {
     use cursor_icon::CursorIcon;
     use keyboard_types::{Code, Key, Location, Modifiers};
     use std::time::Duration;
+
+    #[test]
+    fn quickjs_memory_usage_exposes_bounded_heap_counters_and_explicit_collection() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body><p>memory</p></body></html>",
+            "globalThis.__lapui_memory_probe = Array.from({length:4096}, (_, i) => ({i, value:'x'.repeat(64)}));",
+        )
+        .unwrap();
+        let measured = control_request(&mut doc, json!({"method":"runtime.memoryUsage"})).unwrap();
+        assert_eq!(measured["collectionRequested"], false);
+        let usage = &measured["usage"];
+        assert!(usage["allocatorBytes"].as_i64().unwrap() > 0);
+        assert!(usage["heapUsedBytes"].as_i64().unwrap() > 0);
+        assert!(usage["arrays"]["count"].as_i64().unwrap() > 0);
+        assert!(usage["javascriptFunctions"]["count"].as_i64().unwrap() > 0);
+
+        let collected = control_request(
+            &mut doc,
+            json!({"method":"runtime.memoryUsage","collectGarbage":true}),
+        )
+        .unwrap();
+        assert_eq!(collected["collectionRequested"], true);
+        assert!(
+            collected["beforeCollection"]["heapUsedBytes"]
+                .as_i64()
+                .unwrap()
+                > 0
+        );
+        assert!(
+            collected["afterCollection"]["allocatorBytes"]
+                .as_i64()
+                .unwrap()
+                > 0
+        );
+        assert_eq!(
+            control_request(
+                &mut doc,
+                json!({"method":"runtime.memoryUsage","unexpected":true}),
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            control_request(
+                &mut doc,
+                json!({"method":"runtime.memoryUsage","collectGarbage":"yes"}),
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
+    }
 
     #[test]
     fn debug_trace_shared_controls_async_host_frames_privacy_and_configuration_are_coherent() {

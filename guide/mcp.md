@@ -57,6 +57,7 @@ The initial tool set is deliberately small:
 | `page_wait_for_control` | Wait for a visible semantic control to match a bounded value or state condition. |
 | `page_wait_for_render` | Wait for the frame causally linked to a control mutation to return from the renderer. |
 | `page_diagnostics` | Read script/runtime and network diagnostics. |
+| `runtime_memory_usage` | Read QuickJS allocator and heap counters; optionally request cycle collection. |
 | `actions_list` | Discover registered business actions, with bounded pagination. |
 | `actions_describe` | Read the selected action’s exact input and output schemas. |
 | `action_invoke` | Invoke one registered action with retry deduplication and optional stale-version protection. |
@@ -80,6 +81,14 @@ returned by a successful `page_control` mutation. It waits for the causally
 linked frame and resolved layout to return from the renderer, with a maximum
 four-second timeout and at most four concurrent waits. The result does not
 confirm physical presentation by the native window or operating system.
+`runtime_memory_usage` reads QuickJS-ng's `JSMemoryUsage` counters on the UI
+thread. It separates QuickJS allocator bytes and heap-estimated bytes from
+object, string, array, function, and property counts. These counters do not
+include Rust/DOM/renderer allocations, GPU memory, or memory retained by the
+process allocator. By default the tool does not trigger collection. Setting
+`collectGarbage` explicitly runs QuickJS cycle collection and returns snapshots
+before and after; it may pause the UI and does not promise that the OS returns
+freed pages to the system.
 Screenshot requests paint one rendering opportunity with the software
 renderer at the current physical viewport size and scale, without resizing the
 window. PNG payloads are capped at 4 MiB; the result identifies CPU rendering
