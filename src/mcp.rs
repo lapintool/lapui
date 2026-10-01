@@ -15,17 +15,53 @@ use rmcp::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 const MAX_TOOL_RESULT_BYTES: usize = 24 * 1024;
 const MAX_ACTION_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_ACTIVE_WAITS: usize = 4;
 
-static ACTIVE_WAITS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static ACTIVE_WAITS: OnceLock<Mutex<HashMap<String, Arc<WaitToken>>>> = OnceLock::new();
 
-struct WaitGuard(String);
+struct WaitToken {
+    cancelled: AtomicBool,
+    page_change_notifier: Mutex<Option<crate::control::PageChangeNotifier>>,
+}
+
+impl WaitToken {
+    fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            page_change_notifier: Mutex::new(None),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        if let Some(notifier) = self.page_change_notifier.lock().unwrap().as_ref() {
+            notifier.notify();
+        }
+    }
+
+    fn bind_page_change_notifier(&self, notifier: crate::control::PageChangeNotifier) {
+        *self.page_change_notifier.lock().unwrap() = Some(notifier.clone());
+        if self.cancelled.load(Ordering::Acquire) {
+            notifier.notify();
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+
+struct WaitGuard {
+    id: String,
+    token: Arc<WaitToken>,
+}
 
 impl WaitGuard {
     fn register(id: &str) -> Result<Self, crate::action::ActionError> {
@@ -36,7 +72,7 @@ impl WaitGuard {
             ));
         }
         let mut active = ACTIVE_WAITS
-            .get_or_init(|| Mutex::new(HashSet::new()))
+            .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap();
         if active.len() >= MAX_ACTIVE_WAITS {
@@ -45,20 +81,44 @@ impl WaitGuard {
                 "maximum active waits reached",
             ));
         }
-        if !active.insert(id.to_owned()) {
+        if active.contains_key(id) {
             return Err(crate::action::ActionError::new(
                 "wait_conflict",
                 "waitId is already active",
             ));
         }
-        Ok(Self(id.to_owned()))
+        let token = Arc::new(WaitToken::new());
+        active.insert(id.to_owned(), token.clone());
+        Ok(Self {
+            id: id.to_owned(),
+            token,
+        })
+    }
+
+    fn token(&self) -> Arc<WaitToken> {
+        self.token.clone()
+    }
+
+    fn cancel(id: &str) -> bool {
+        let token = ACTIVE_WAITS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned();
+        if let Some(token) = token {
+            token.cancel();
+            true
+        } else {
+            false
+        }
     }
 }
 
 impl Drop for WaitGuard {
     fn drop(&mut self) {
         if let Some(active) = ACTIVE_WAITS.get() {
-            active.lock().unwrap().remove(&self.0);
+            active.lock().unwrap().remove(&self.id);
         }
     }
 }
@@ -180,6 +240,13 @@ struct WaitForControlInput {
     #[serde(default)]
     #[schemars(range(max = 4000))]
     timeout_ms: Option<u16>,
+    #[schemars(length(min = 1, max = 128))]
+    wait_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CancelWaitInput {
     #[schemars(length(min = 1, max = 128))]
     wait_id: String,
 }
@@ -444,18 +511,21 @@ impl LapuiMcpServer {
             "limit":input.limit,"timeoutMs":input.timeout_ms,"waitId":input.wait_id});
         let epoch = input.document_epoch;
         let reload = self.reload.clone();
+        let token = guard.token();
+        let notifier_token = token.clone();
         match tokio::task::spawn_blocking(move || {
             let _guard = guard;
             wait_for_page_changes_with(&request, |cursor, limit, timeout| {
                 let controller = reload.endpoint().controller;
                 let notifier = controller.page_change_notifier();
+                notifier_token.bind_page_change_notifier(notifier.clone());
                 let generation = notifier.generation();
                 let page = controller.request(
                     json!({"method":"pageChanges","documentEpoch":epoch,"cursor":cursor,"limit":limit}),
                     timeout,
                 )?;
                 Ok((page, notifier, generation))
-            })
+            }, || token.is_cancelled())
         })
         .await
         {
@@ -500,12 +570,13 @@ impl LapuiMcpServer {
             request["timeoutMs"] = json!(timeout_ms);
         }
         let controller = self.controller();
+        let token = guard.token();
         match tokio::task::spawn_blocking(move || {
             let _guard = guard;
             wait_for_control_with(
                 &request,
                 |timeout| controller.request(json!({"method":"controls"}), timeout),
-                || false,
+                || token.is_cancelled(),
             )
         })
         .await
@@ -539,12 +610,13 @@ impl LapuiMcpServer {
             request["timeoutMs"] = json!(timeout_ms);
         }
         let controller = self.controller();
+        let token = guard.token();
         match tokio::task::spawn_blocking(move || {
             let _guard = guard;
             wait_for_render_with(
                 &request,
                 |command, timeout| controller.request(command, timeout),
-                || false,
+                || token.is_cancelled(),
             )
         })
         .await
@@ -557,6 +629,24 @@ impl LapuiMcpServer {
                 mcp_result(json!({"ok":false,"code":"adapter_failure","message":error.to_string()}))
             }
         }
+    }
+
+    #[tool(
+        description = "Request cancellation of an active page_wait_for_changes, page_wait_for_control, or page_wait_for_render call by its waitId. The active wait returns wait_cancelled; unknown or completed identifiers return found=false."
+    )]
+    async fn page_cancel_wait(
+        &self,
+        Parameters(input): Parameters<CancelWaitInput>,
+    ) -> CallToolResult {
+        if input.wait_id.is_empty() || input.wait_id.len() > 128 {
+            return mcp_result(
+                json!({"ok":false,"code":"invalid_request","message":"waitId must be 1..128 bytes"}),
+            );
+        }
+        let found = WaitGuard::cancel(&input.wait_id);
+        mcp_result(
+            json!({"found":found,"status":if found{"cancel_requested"}else{"not_found"},"waitId":input.wait_id}),
+        )
     }
 
     #[tool(
@@ -913,6 +1003,7 @@ mod tests {
                 "app_describe",
                 "changes",
                 "operation",
+                "page_cancel_wait",
                 "page_changes",
                 "page_control",
                 "page_controls",
@@ -971,6 +1062,31 @@ mod tests {
                 .unwrap()
                 .contains(&json!(required)));
         }
+        let cancel_wait = tools
+            .iter()
+            .find(|tool| tool.name == "page_cancel_wait")
+            .unwrap();
+        let cancel_schema = serde_json::to_value(&cancel_wait.input_schema).unwrap();
+        assert!(cancel_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("waitId")));
+    }
+
+    #[test]
+    fn cancel_wait_wakes_page_change_waiter_and_releases_wait_id() {
+        let guard = WaitGuard::register("page-cancel-test-unique").unwrap();
+        let token = guard.token();
+        let notifier = crate::control::PageChangeNotifier::default();
+        token.bind_page_change_notifier(notifier.clone());
+        let generation = notifier.generation();
+        let waiter =
+            std::thread::spawn(move || notifier.wait_after(generation, Duration::from_secs(2)));
+        assert!(WaitGuard::cancel("page-cancel-test-unique"));
+        assert!(waiter.join().unwrap());
+        assert!(token.is_cancelled());
+        drop(guard);
+        assert!(!WaitGuard::cancel("page-cancel-test-unique"));
     }
 
     #[test]

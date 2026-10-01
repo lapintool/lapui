@@ -10,6 +10,7 @@ pub fn wait_for_page_changes_with(
         u64,
         Duration,
     ) -> Result<(Value, PageChangeNotifier, u64), ActionError>,
+    mut is_cancelled: impl FnMut() -> bool,
 ) -> Result<Value, ActionError> {
     let invalid = |message: &str| ActionError::new("invalid_request", message);
     let epoch = request
@@ -48,9 +49,21 @@ pub fn wait_for_page_changes_with(
     let deadline = Instant::now() + timeout;
 
     loop {
+        if is_cancelled() {
+            return Err(ActionError::new(
+                "wait_cancelled",
+                "page change wait was cancelled",
+            ));
+        }
         let remaining = deadline.saturating_duration_since(Instant::now());
         let request_timeout = Duration::from_secs(1).min(remaining.max(Duration::from_millis(50)));
         let (page, notifier, generation) = read_changes(cursor, limit, request_timeout)?;
+        if is_cancelled() {
+            return Err(ActionError::new(
+                "wait_cancelled",
+                "page change wait was cancelled",
+            ));
+        }
         if page.get("documentEpoch").and_then(Value::as_u64) != Some(epoch) {
             return Err(ActionError::new(
                 "stale_document",
@@ -77,6 +90,12 @@ pub fn wait_for_page_changes_with(
         // Capture the generation before reading the page so a change between
         // the query and the wait cannot be lost.
         notifier.wait_after(generation, deadline.saturating_duration_since(now));
+        if is_cancelled() {
+            return Err(ActionError::new(
+                "wait_cancelled",
+                "page change wait was cancelled",
+            ));
+        }
     }
 }
 
@@ -112,30 +131,34 @@ mod tests {
             }
             let page = json!({"documentEpoch":7,"records":if call == 0 {vec![]} else {vec![json!({"sequence":4})]},"resyncRequired":false,"sequenceExhausted":false});
             Ok((page, notifier.clone(), generation))
-        })
+        }, || false)
         .unwrap();
         assert_eq!(changed["status"], "changed");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
 
         let resync = wait_for_page_changes_with(&request(0), |_, _, _| {
             Ok((json!({"documentEpoch":7,"records":[],"resyncRequired":true,"sequenceExhausted":false}), PageChangeNotifier::default(), 0))
-        })
+        }, || false)
         .unwrap();
         assert_eq!(resync["status"], "resync_required");
 
         let timeout = wait_for_page_changes_with(&request(0), |_, _, _| {
             Ok((json!({"documentEpoch":7,"records":[],"resyncRequired":false,"sequenceExhausted":false}), PageChangeNotifier::default(), 0))
-        })
+        }, || false)
         .unwrap();
         assert_eq!(timeout["status"], "timed_out");
 
-        let stale = wait_for_page_changes_with(&request(0), |_, _, _| {
-            Ok((
-                json!({"documentEpoch":8,"records":[],"resyncRequired":false}),
-                PageChangeNotifier::default(),
-                0,
-            ))
-        })
+        let stale = wait_for_page_changes_with(
+            &request(0),
+            |_, _, _| {
+                Ok((
+                    json!({"documentEpoch":8,"records":[],"resyncRequired":false}),
+                    PageChangeNotifier::default(),
+                    0,
+                ))
+            },
+            || false,
+        )
         .unwrap_err();
         assert_eq!(stale.code, "stale_document");
     }
@@ -144,7 +167,7 @@ mod tests {
     fn validates_wait_bounds_and_cursor() {
         let mut invalid = request(4001);
         assert_eq!(
-            wait_for_page_changes_with(&invalid, |_, _, _| unreachable!())
+            wait_for_page_changes_with(&invalid, |_, _, _| unreachable!(), || false)
                 .unwrap_err()
                 .code,
             "invalid_request"
@@ -152,7 +175,7 @@ mod tests {
         invalid = request(0);
         invalid["cursor"] = json!("");
         assert_eq!(
-            wait_for_page_changes_with(&invalid, |_, _, _| unreachable!())
+            wait_for_page_changes_with(&invalid, |_, _, _| unreachable!(), || false)
                 .unwrap_err()
                 .code,
             "invalid_request"

@@ -58,6 +58,7 @@ The initial tool set is deliberately small:
 | `page_reload` | Reload the trusted local document source; prior page references become stale. |
 | `page_wait_for_control` | Wait for a visible semantic control to match a bounded value or state condition. |
 | `page_wait_for_render` | Wait for the frame causally linked to a control mutation to return from the renderer. |
+| `page_cancel_wait` | Cancel an active semantic, render, or page-change wait by its wait ID. |
 | `page_diagnostics` | Read script/runtime and network diagnostics. |
 | `runtime_memory_usage` | Read QuickJS allocator and heap counters; optionally request cycle collection. |
 | `actions_list` | Discover registered business actions, with bounded pagination. |
@@ -100,6 +101,9 @@ returned by a successful `page_control` mutation. It waits for the causally
 linked frame and resolved layout to return from the renderer, with a maximum
 four-second timeout and at most four concurrent waits. The result does not
 confirm physical presentation by the native window or operating system.
+`page_cancel_wait` sets a cancellation flag for any active page wait. The wait
+returns `wait_cancelled`; cancellation wakes a blocked page-change wait
+immediately. Unknown or already-completed IDs return `found=false`.
 `runtime_memory_usage` reads QuickJS-ng's `JSMemoryUsage` counters on the UI
 thread. It separates QuickJS allocator bytes and heap-estimated bytes from
 object, string, array, function, and property counts. These counters do not
