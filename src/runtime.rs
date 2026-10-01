@@ -7210,6 +7210,12 @@ mod tests {
             <input id="secret" type="password" value="do-not-leak">
             <input id="otp" aria-label="验证码" autocomplete="one-time-code" value="otp-do-not-leak">
             <input id="card" aria-label="银行卡号" autocomplete="cc-number" value="card-do-not-leak">
+            <input autocomplete="section-login current-password" value="current-password-do-not-leak">
+            <input autocomplete="new-password" value="new-password-do-not-leak">
+            <input autocomplete="cc-csc" value="card-csc-do-not-leak">
+            <input autocomplete="cc-exp" value="card-exp-do-not-leak">
+            <input autocomplete="cc-exp-month" value="card-exp-month-do-not-leak">
+            <input autocomplete="cc-exp-year" value="card-exp-year-do-not-leak">
             <input id="query" aria-label="搜索" value="可见值">
             </main></body></html>"#;
         let (mut doc, _) =
@@ -7249,12 +7255,38 @@ mod tests {
             json!({"method":"pageSnapshot","documentEpoch":first["documentEpoch"],"limit":64}),
         )
         .unwrap();
-        assert!(!full.to_string().contains("otp-do-not-leak"));
-        assert!(!full.to_string().contains("card-do-not-leak"));
+        for sentinel in [
+            "otp-do-not-leak",
+            "card-do-not-leak",
+            "current-password-do-not-leak",
+            "new-password-do-not-leak",
+            "card-csc-do-not-leak",
+            "card-exp-do-not-leak",
+            "card-exp-month-do-not-leak",
+            "card-exp-year-do-not-leak",
+        ] {
+            assert!(
+                !full.to_string().contains(sentinel),
+                "pageSnapshot leaked {sentinel}"
+            );
+        }
         assert!(full.to_string().contains("可见值"));
         let controls = control_request(&mut doc, json!({"method":"controls"})).unwrap();
-        assert!(!controls.to_string().contains("otp-do-not-leak"));
-        assert!(!controls.to_string().contains("card-do-not-leak"));
+        for sentinel in [
+            "otp-do-not-leak",
+            "card-do-not-leak",
+            "current-password-do-not-leak",
+            "new-password-do-not-leak",
+            "card-csc-do-not-leak",
+            "card-exp-do-not-leak",
+            "card-exp-month-do-not-leak",
+            "card-exp-year-do-not-leak",
+        ] {
+            assert!(
+                !controls.to_string().contains(sentinel),
+                "controls leaked {sentinel}"
+            );
+        }
         assert!(controls.to_string().contains("可见值"));
         let stale = control_request(
             &mut doc,
