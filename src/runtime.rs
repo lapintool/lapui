@@ -1054,6 +1054,123 @@ impl LapuiDocument {
                 self.semantic_controls_for_nodes(doc, nodes)
             });
         }
+        if method == "pageChanges" {
+            if request.as_object().is_none_or(|fields| {
+                fields.keys().any(|key| {
+                    !["method", "documentEpoch", "cursor", "limit"].contains(&key.as_str())
+                })
+            }) {
+                return Err(failure(
+                    "invalid_request",
+                    "pageChanges accepts only method, documentEpoch, cursor, and limit",
+                ));
+            }
+            let document_id = self.dom.borrow().id();
+            if request.get("documentEpoch").and_then(Value::as_u64) != Some(document_id as u64) {
+                return Err(failure(
+                    "stale_document",
+                    "pageChanges requires the current documentEpoch",
+                ));
+            }
+            let after_sequence = match request.get("cursor") {
+                None => 0,
+                Some(Value::String(cursor)) => {
+                    let Some((prefix, sequence)) = cursor.rsplit_once(':') else {
+                        return Err(failure("invalid_cursor", "invalid page change cursor"));
+                    };
+                    if prefix != format!("page:{document_id}") {
+                        return Err(failure(
+                            "stale_document",
+                            "page change cursor belongs to a different document",
+                        ));
+                    }
+                    sequence.parse::<u64>().map_err(|_| {
+                        failure("invalid_cursor", "invalid page change cursor sequence")
+                    })?
+                }
+                Some(_) => return Err(failure("invalid_cursor", "cursor must be a string")),
+            };
+            let limit = request
+                .get("limit")
+                .map(|value| {
+                    value
+                        .as_u64()
+                        .ok_or_else(|| failure("invalid_request", "limit must be 1..64"))
+                })
+                .transpose()?
+                .unwrap_or(32);
+            if !(1..=64).contains(&limit) {
+                return Err(failure("invalid_request", "limit must be 1..64"));
+            }
+            let encoded = self
+                .script_budget
+                .run(CALLBACK_LIMIT, || {
+                    self.js_context.with(|ctx| {
+                        let function: Function = ctx.globals().get("__lapui_page_changes")?;
+                        function.call::<_, String>((after_sequence, limit))
+                    })
+                })
+                .map_err(|error| {
+                    failure(
+                        "page_changes_unavailable",
+                        &javascript_error(&self.js_context, &error, &self.script_budget),
+                    )
+                })?;
+            let mut page: Value = serde_json::from_str(&encoded).map_err(|_| {
+                failure(
+                    "page_changes_unavailable",
+                    "invalid page change journal result",
+                )
+            })?;
+            let canonicalize = |value: &mut Value| {
+                if let Some(raw) = value.as_str() {
+                    if let Ok(raw) = raw.parse::<u64>() {
+                        *value = json!(canonical_node_ref(document_id, NodeId::from_u64(raw)));
+                    }
+                }
+            };
+            if let Some(records) = page["records"].as_array_mut() {
+                for record in records {
+                    canonicalize(&mut record["target"]);
+                    for key in ["added", "removed"] {
+                        if let Some(nodes) = record[key].as_array_mut() {
+                            for node in nodes {
+                                canonicalize(node);
+                            }
+                        }
+                    }
+                }
+            }
+            let response_limit = 24 * 1024;
+            while page.to_string().len() > response_limit
+                && page["records"]
+                    .as_array()
+                    .is_some_and(|records| records.len() > 1)
+            {
+                page["records"].as_array_mut().unwrap().pop();
+            }
+            let original_next = page["nextSequence"].as_u64().unwrap_or(after_sequence);
+            let next_sequence = if page["resyncRequired"] == true {
+                original_next
+            } else {
+                page["records"]
+                    .as_array()
+                    .and_then(|records| records.last())
+                    .and_then(|record| record["sequence"].as_u64())
+                    .unwrap_or(after_sequence)
+            };
+            page["hasMore"] =
+                json!(page["latestSequence"].as_u64().unwrap_or(next_sequence) > next_sequence);
+            page["documentEpoch"] = json!(document_id);
+            page["cursor"] = json!(format!("page:{document_id}:{next_sequence}"));
+            if page.to_string().len() > response_limit {
+                return Err(failure(
+                    "response_too_large",
+                    "a single page change record exceeds the 24 KiB result budget",
+                ));
+            }
+            return Ok(page);
+        }
         if method == "screenshot" {
             if request
                 .as_object()
@@ -3438,7 +3555,7 @@ impl Document for LapuiDocument {
             // Read-only trace queries do not create their own redraw/trace loop.
             changed |= !matches!(
                 method,
-                "debugTrace.read" | "debugTrace.configure" | "runtime.memoryUsage"
+                "debugTrace.read" | "debugTrace.configure" | "runtime.memoryUsage" | "pageChanges"
             );
             request.finish(result);
         }
@@ -7073,6 +7190,170 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(stale_cursor.code, "stale_cursor");
+    }
+
+    #[test]
+    fn page_change_journal_is_value_free_cursored_bounded_and_epoch_scoped() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body><main id='app'><p id='status'>ready</p><input id='field'></main></body></html>",
+            "",
+        )
+        .unwrap();
+        let epoch = doc.inner().id() as u64;
+        let baseline = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"limit":8}),
+        )
+        .unwrap();
+        assert_eq!(baseline["latestSequence"], 0);
+        let baseline_cursor = baseline["cursor"].as_str().unwrap().to_owned();
+
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>(
+                    "const status=document.getElementById('status'); status.setAttribute('data-token','never-export-this-value'); status.textContent='updated private text'; const button=document.createElement('button'); button.id='new-action'; button.textContent='Run'; document.getElementById('app').appendChild(button);",
+                )
+            })
+            .unwrap();
+        drain_jobs(&doc.js_runtime, &doc.script_budget).unwrap();
+        let first = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"cursor":baseline_cursor,"limit":1}),
+        )
+        .unwrap();
+        assert_eq!(first["records"].as_array().unwrap().len(), 1);
+        assert_eq!(first["hasMore"], true);
+        assert!(first["records"][0]["target"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("node:{epoch}:")));
+        assert!(!first.to_string().contains("never-export-this-value"));
+        assert!(!first.to_string().contains("updated private text"));
+
+        let mut cursor = first["cursor"].as_str().unwrap().to_owned();
+        let mut records = first["records"].as_array().unwrap().clone();
+        while first["hasMore"] == true && records.len() < 8 {
+            let next = control_request(
+                &mut doc,
+                json!({"method":"pageChanges","documentEpoch":epoch,"cursor":cursor,"limit":8}),
+            )
+            .unwrap();
+            cursor = next["cursor"].as_str().unwrap().to_owned();
+            records.extend(next["records"].as_array().unwrap().iter().cloned());
+            if next["hasMore"] != true {
+                break;
+            }
+        }
+        assert!(records.iter().any(|record| record["type"] == "attributes"));
+        assert!(records
+            .iter()
+            .any(|record| record["type"] == "characterData"));
+        assert!(records.iter().any(|record| record["type"] == "childList"));
+        assert!(records.iter().all(|record| record["target"]
+            .as_str()
+            .is_some_and(|reference| reference.starts_with(&format!("node:{epoch}:")))));
+        assert!(records.iter().any(|record| {
+            record["type"] == "childList"
+                && record["addedCount"].as_u64().unwrap_or_default() > 0
+                && record["added"].as_array().is_some_and(|nodes| {
+                    nodes.iter().any(|node| {
+                        node.as_str().is_some_and(|reference| {
+                            reference.starts_with(&format!("node:{epoch}:"))
+                        })
+                    })
+                })
+        }));
+        assert!(records
+            .iter()
+            .all(|record| record.get("attributeValue").is_none()));
+        let records_json = Value::Array(records.clone()).to_string();
+        assert!(!records_json.contains("never-export-this-value"));
+        assert!(!records_json.contains("updated private text"));
+
+        let controls = control_request(&mut doc, json!({"method":"controls"})).unwrap();
+        let control_ref = controls["controls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|control| control["id"] == "field")
+            .unwrap()["ref"]
+            .clone();
+        control_request(
+            &mut doc,
+            json!({"method":"fill","documentEpoch":epoch,"ref":control_ref,"value":"changed"}),
+        )
+        .unwrap();
+        let control_events = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"cursor":cursor,"limit":8}),
+        )
+        .unwrap();
+        assert!(control_events["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| { record["type"] == "control" && record["controlEvent"] == "input" }));
+
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>(
+                    "const bulk=document.createElement('div'); bulk.id='bulk'; bulk.innerHTML='<i>node</i>'.repeat(300); document.getElementById('app').appendChild(bulk);",
+                )
+            })
+            .unwrap();
+        drain_jobs(&doc.js_runtime, &doc.script_budget).unwrap();
+        let bulk_changes = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"cursor":control_events["cursor"],"limit":64}),
+        )
+        .unwrap();
+        let bulk_record = bulk_changes["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["nodesTruncated"] == true)
+            .unwrap();
+        assert_eq!(bulk_record["addedCount"], 300);
+        assert_eq!(bulk_record["added"].as_array().unwrap().len(), 32);
+        assert!(bulk_changes.to_string().len() <= 24 * 1024);
+
+        let stale = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch+1}),
+        )
+        .unwrap_err();
+        assert_eq!(stale.code, "stale_document");
+        let foreign_cursor = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"cursor":"page:0:1"}),
+        )
+        .unwrap_err();
+        assert_eq!(foreign_cursor.code, "stale_document");
+
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>(
+                    "const target=document.getElementById('bulk'); for(let i=0;i<270;i++) target.setAttribute('data-change-'+i,String(i));",
+                )
+            })
+            .unwrap();
+        drain_jobs(&doc.js_runtime, &doc.script_budget).unwrap();
+        let resync = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"cursor":baseline["cursor"],"limit":64}),
+        )
+        .unwrap();
+        assert_eq!(resync["resyncRequired"], true);
+        assert_eq!(resync["records"].as_array().unwrap().len(), 0);
+        let recovered = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"cursor":resync["cursor"],"limit":64}),
+        )
+        .unwrap();
+        assert_eq!(recovered["resyncRequired"], false);
+        assert!(recovered["records"].as_array().unwrap().is_empty());
     }
 
     #[cfg(feature = "software-renderer")]

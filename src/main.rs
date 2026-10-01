@@ -182,6 +182,7 @@ fn respond(
                     "cancelOperation",
                     "cancelWait",
                     "controls",
+                    "pageChanges",
                     "waitForControl",
                     "waitForRender",
                     "diagnostics",
@@ -221,6 +222,7 @@ fn respond(
                         "physicalPresentationAck": false,
                         "durableRecovery": false,
                         "controlSnapshot": true,
+                        "pageChangeJournal": true,
                         "controlConditionWait": true,
                         "waitCancellation": true,
                         "activeWaitLimit": MAX_ACTIVE_WAITS,
@@ -248,6 +250,7 @@ fn respond(
                     "debugTraceLimits": LapuiDocument::debug_trace_limits(),
                     "debugTraceMethodSchemas":debug_trace_schemas(),
                     "networkStreamLimits": LapuiDocument::stream_limits(),
+                    "pageChangesSchema":{"type":"object","additionalProperties":false,"required":["method","documentEpoch"],"properties":{"method":{"const":"pageChanges"},"documentEpoch":{"type":"integer","minimum":0},"cursor":{"type":"string","maxLength":256},"limit":{"type":"integer","minimum":1,"maximum":64,"default":32}}},
                     "runtimeMemoryUsageSchema":{"type":"object","additionalProperties":false,"required":["method"],"properties":{"method":{"const":"runtime.memoryUsage"},"collectGarbage":{"type":"boolean","default":false,"description":"Run QuickJS cycle collection before returning an additional post-collection snapshot"}}},
                     "changeSubscriptionLimits": ActionRegistry::change_limits(),
                     "actionCatalogLimits": ActionRegistry::action_limits(),
@@ -406,6 +409,7 @@ fn respond(
                 | "diagnostics"
                 | "networkStatus"
                 | "runtime.memoryUsage"
+                | "pageChanges"
                 | "activate"
                 | "fill"
                 | "check"
@@ -1260,6 +1264,7 @@ mod tests {
                 "cancelOperation",
                 "cancelWait",
                 "controls",
+                "pageChanges",
                 "waitForControl",
                 "waitForRender",
                 "diagnostics",
@@ -1284,6 +1289,10 @@ mod tests {
         assert_eq!(response["observation"]["capabilities"]["debugTrace"], true);
         assert_eq!(
             response["observation"]["capabilities"]["quickJsMemoryUsage"],
+            true
+        );
+        assert_eq!(
+            response["observation"]["capabilities"]["pageChangeJournal"],
             true
         );
         assert_eq!(

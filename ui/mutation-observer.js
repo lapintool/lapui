@@ -5,6 +5,10 @@
   let targetCount = 0, queuedCount = 0, deliveryScheduled = false, overflowReported = false;
   let nativeBatchDepth = 0;
   const pendingStyles = new Map(), pendingTexts = new Map();
+  const pageChangeCapacity = 256, pageChangeNodeLimit = 32;
+  const pageChanges = [];
+  let pageChangeSequence = 0;
+  let pageChangeSequenceExhausted = false;
 
   class MutationRecord {
     constructor() { throw new TypeError('Illegal constructor'); }
@@ -64,8 +68,32 @@
     });
   }
 
+  function recordPageChange(data) {
+    if (!data.target) return;
+    if (pageChangeSequence < Number.MAX_SAFE_INTEGER) {
+      const added = data.addedNodes || [], removed = data.removedNodes || [];
+      pageChanges.push({
+        sequence:++pageChangeSequence,
+        type:data.type,
+        target:data.target.__ref || '',
+        ...(data.attributeName ? {attributeName:data.attributeName} : {}),
+        ...(data.controlEvent ? {controlEvent:data.controlEvent} : {}),
+        addedCount:added.length,
+        added:added.slice(0,pageChangeNodeLimit).map(node=>node.__ref || ''),
+        removedCount:removed.length,
+        removed:removed.slice(0,pageChangeNodeLimit).map(node=>node.__ref || ''),
+        nodesTruncated:added.length>pageChangeNodeLimit || removed.length>pageChangeNodeLimit
+      });
+      if (pageChanges.length > pageChangeCapacity) pageChanges.shift();
+    } else {
+      pageChangeSequenceExhausted = true;
+    }
+  }
+
   function enqueue(data) {
-    if (!data.target || queuedCount >= limits.mutationRecords) {
+    if (!data.target) return;
+    recordPageChange(data);
+    if (queuedCount >= limits.mutationRecords) {
       if (!overflowReported) {
         overflowReported = true;
         __lapui_report_script_error('mutation-observer', 'MutationObserver queue limit exceeded; new records were dropped', '', 'mutation-observer');
@@ -289,4 +317,36 @@
     }
     return result;
   };
+
+  // A bounded, value-free journal lets external automation detect bridge DOM
+  // changes without consuming user MutationObserver capacity. Native Rust
+  // mutations remain outside the bridge and are not included.
+  globalThis.__lapui_page_changes = (afterSequence, limit) => {
+    afterSequence = Number(afterSequence);
+    limit = Number(limit);
+    if (!Number.isSafeInteger(afterSequence) || afterSequence < 0 ||
+        !Number.isInteger(limit) || limit < 1 || limit > 64) {
+      throw new TypeError('Invalid page change cursor or limit');
+    }
+    const oldest = pageChanges[0]?.sequence ?? pageChangeSequence + 1;
+    const resyncRequired = afterSequence > pageChangeSequence ||
+      (afterSequence < oldest - 1 && pageChanges.length > 0);
+    const selected = resyncRequired ? [] : pageChanges
+      .filter(record=>record.sequence>afterSequence).slice(0,limit);
+    const last = selected.length ? selected[selected.length - 1].sequence : afterSequence;
+    return JSON.stringify({
+      latestSequence:pageChangeSequence,
+      nextSequence:resyncRequired ? pageChangeSequence : last,
+      oldestSequence:oldest,
+      hasMore:selected.length>0 && last<pageChangeSequence,
+      resyncRequired,
+      sequenceExhausted:pageChangeSequenceExhausted,
+      records:selected
+    });
+  };
+  for (const type of ['input','change']) {
+    document.addEventListener(type, event => {
+      recordPageChange({type:'control', controlEvent:type, target:event.target});
+    });
+  }
 })();

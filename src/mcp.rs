@@ -200,6 +200,18 @@ struct PageObserveInput {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PageChangesInput {
+    document_epoch: u64,
+    #[serde(default)]
+    #[schemars(length(max = 256))]
+    cursor: Option<String>,
+    #[serde(default = "default_observe_page_size")]
+    #[schemars(range(min = 1, max = 64))]
+    limit: u8,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 enum OperationCommand {
     Status,
@@ -254,6 +266,7 @@ fn app_capabilities() -> Vec<&'static str> {
         vec![
             "semantic_controls",
             "page_observation",
+            "page_changes",
             "screenshot",
             "registered_actions",
             "diagnostics",
@@ -265,6 +278,7 @@ fn app_capabilities() -> Vec<&'static str> {
         vec![
             "semantic_controls",
             "page_observation",
+            "page_changes",
             "registered_actions",
             "diagnostics",
             "quickjs_memory_usage",
@@ -350,6 +364,33 @@ impl LapuiMcpServer {
         }
         if let Some(document_epoch) = input.document_epoch {
             request["documentEpoch"] = json!(document_epoch);
+        }
+        let controller = self.controller();
+        match tokio::task::spawn_blocking(move || {
+            controller.request(request, Duration::from_secs(5))
+        })
+        .await
+        {
+            Ok(Ok(value)) => mcp_result(value),
+            Ok(Err(error)) => {
+                mcp_result(json!({"ok":false,"code":error.code,"message":error.message}))
+            }
+            Err(error) => {
+                mcp_result(json!({"ok":false,"code":"adapter_failure","message":error.to_string()}))
+            }
+        }
+    }
+
+    #[tool(
+        description = "Read a bounded, value-free journal of DOM attribute, text, and child-list changes. Continue with the returned cursor and current documentEpoch; on resyncRequired, take a fresh page_observe snapshot before continuing. Native Rust DOM mutations are not included."
+    )]
+    async fn page_changes(
+        &self,
+        Parameters(input): Parameters<PageChangesInput>,
+    ) -> CallToolResult {
+        let mut request = json!({"method":"pageChanges","documentEpoch":input.document_epoch,"limit":input.limit});
+        if let Some(cursor) = input.cursor {
+            request["cursor"] = json!(cursor);
         }
         let controller = self.controller();
         match tokio::task::spawn_blocking(move || {
@@ -811,6 +852,7 @@ mod tests {
                 "app_describe",
                 "changes",
                 "operation",
+                "page_changes",
                 "page_control",
                 "page_controls",
                 "page_diagnostics",
@@ -847,6 +889,15 @@ mod tests {
             memory_schema["properties"]["collectGarbage"]["type"],
             "boolean"
         );
+        let page_changes = tools
+            .iter()
+            .find(|tool| tool.name == "page_changes")
+            .unwrap();
+        let page_changes_schema = serde_json::to_value(&page_changes.input_schema).unwrap();
+        assert!(page_changes_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("documentEpoch")));
     }
 
     #[test]

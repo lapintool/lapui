@@ -51,6 +51,7 @@ The initial tool set is deliberately small:
 | `app_describe` | Describe Lapui and the enabled semantic capabilities. |
 | `page_controls` | Read the current visible semantic controls and their state. |
 | `page_observe` | Read a bounded, paged hierarchy of rendered elements, names, text, bounds, and control state. |
+| `page_changes` | Read a bounded cursor-based journal of bridge DOM and control-event changes. |
 | `page_screenshot` | Return the current viewport as a bounded PNG image block. |
 | `page_control` | Activate, fill, check, focus a control, or scroll a rendered element using its current reference and document epoch. |
 | `page_reload` | Reload the trusted local document source; prior page references become stale. |
@@ -69,7 +70,16 @@ observation is a pre-order projection of rendered elements with a hard scan,
 page, text, and 24 KiB structured-result budget; it filters `hidden`,
 `aria-hidden`, `display:none`, and `visibility:hidden` subtrees and never copies
 arbitrary attributes. `nextAfter` cursors are only valid against the current
-tree, so clients must restart after page mutations.
+tree, so clients should restart after page mutations. `page_changes` returns a
+separate 256-record journal for JavaScript bridge attribute, text, child-list,
+input, and change events. It returns canonical document-scoped node references,
+attribute names and bounded added/removed node references, but never attribute
+values, control values, or text. If its cursor has fallen behind retained
+history, `resyncRequired` asks the client to take a fresh `page_observe` snapshot
+and continue from the returned cursor. This journal does not include DOM edits
+performed directly by native Rust code and is not the application-state
+`changes` feed. A programmatic form-property assignment that emits no
+`input`/`change` event is not a journal entry.
 `page_wait_for_control` requires exactly one `id` or current `ref`, and exactly
 one `equals` or `contains` condition. Supported fields are `value`, `checked`,
 `focused`, `enabled`, `name`, and `role`; values are checked against their
