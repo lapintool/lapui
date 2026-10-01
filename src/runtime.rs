@@ -1795,9 +1795,12 @@ impl LapuiDocument {
                 globals.set(
                     "__lapui_set_focus",
                     Func::from({
-                        let dom = dom.clone();
+                        let focus_dom = dom.clone();
+                        let focus_batch = mutation_batch.clone();
+                        let focus_frames = frames.clone();
                         move |reference: String| -> bool {
-                            let mut doc = dom.borrow_mut();
+                            flush_layout(&focus_dom, &focus_batch, &focus_frames);
+                            let mut doc = focus_dom.borrow_mut();
                             let Some(node_id) = resolve_node_ref(&doc, &reference) else {
                                 return false;
                             };
@@ -8224,9 +8227,11 @@ mod tests {
 
     #[test]
     fn dom_focus_api_tracks_active_element_and_dispatches_focus_events() {
-        let html = r#"<!doctype html><html><body><input id="first"><input id="second"><input id="disabled" disabled><input id="hidden-attr" hidden><input id="aria-hidden" aria-hidden="true"><div id="plain"></div></body></html>"#;
-        let (doc, _) =
+        let html = r#"<!doctype html><html><head><style>#css-hidden{display:none}#visibility-hidden{visibility:hidden}</style></head><body><input id="first"><input id="second"><input id="disabled" disabled><input id="hidden-attr" hidden><input id="aria-hidden" aria-hidden="true"><input id="css-hidden"><input id="visibility-hidden"><div id="plain"></div></body></html>"#;
+        let (mut doc, _) =
             LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
         let result = doc.js_context.with(|ctx| {
             ctx.eval::<String, _>(
                 r#"
@@ -8250,12 +8255,21 @@ mod tests {
                   if (document.activeElement !== document.body) throw new Error('non-focusable element received focus');
                   document.getElementById('disabled').focus();
                   if (document.activeElement !== document.body || lapui.focus('disabled')) throw new Error('disabled control received focus');
-                  for (const id of ['hidden-attr', 'aria-hidden']) {
+                  for (const id of ['hidden-attr', 'aria-hidden', 'css-hidden', 'visibility-hidden']) {
+                    document.getElementById(id).focus();
+                    if (document.activeElement !== document.body) throw new Error(`${id} DOM focus succeeded`);
                     if (lapui.focus(id)) throw new Error(`${id} AI focus succeeded`);
                   }
+                  const cssHidden = document.getElementById('css-hidden');
+                  cssHidden.style.display = 'block';
+                  if (!lapui.focus(cssHidden.__ref)) throw new Error('visible CSS control did not receive AI focus');
+                  cssHidden.blur();
+                  cssHidden.style.display = 'none';
+                  if (lapui.focus(cssHidden.__ref)) throw new Error('same-turn display:none mutation was not applied before AI focus');
                   const detached = document.createElement('input');
                   detached.focus();
                   if (document.activeElement !== document.body) throw new Error('detached control received focus');
+                  events.length = 0;
                   globalThis.__focusTestStep = 'first-focus';
                   if (!lapui.focus(first.__ref)) throw new Error('AI focus operation failed');
                   if (document.activeElement !== first) throw new Error('focus did not update activeElement');
