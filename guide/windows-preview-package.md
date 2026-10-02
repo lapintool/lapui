@@ -2,6 +2,8 @@
 
 This is a static staging checklist for the x64 Windows developer preview. It does not describe a finished installer or a production release. The current published source baseline remains `b098e0e`; the release executable and license/source artifacts below are separate evidence and must not be treated as if they were all built from the current workspace HEAD.
 
+Run `py -3 scripts/check_windows_preview_package.py` to verify that the reviewed executable, source archive, license report, notices, and documented package inputs are present. It writes a JSON report under ignored `target/` and exits nonzero while any resource or acceptance gate remains open. The checker is read-only apart from that report; it does not stage files or run the executable.
+
 ## Smallest useful package
 
 ```text
