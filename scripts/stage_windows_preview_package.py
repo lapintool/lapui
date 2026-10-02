@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import shutil
@@ -28,7 +29,7 @@ def copy_file(relative: str, destination: Path, package_path: str | None = None)
     shutil.copy2(source, target)
 
 
-def stage_package() -> dict:
+def stage_package(refresh: bool = False) -> dict:
     report = check_package()
     if report["missingResources"] or report["problems"]:
         raise RuntimeError(
@@ -36,9 +37,35 @@ def stage_package() -> dict:
             f"missing={report['missingResources']}, problems={report['problems']}"
         )
     if DESTINATION.exists():
-        raise FileExistsError(f"Refusing to overwrite existing staging directory: {DESTINATION}")
+        if not refresh:
+            raise FileExistsError(f"Refusing to overwrite existing staging directory: {DESTINATION}")
+        manifest_path = DESTINATION / "PACKAGE-MANIFEST.json"
+        if not manifest_path.is_file():
+            raise RuntimeError("Refusing to refresh a directory without a package manifest")
+        previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+        previous_files = {
+            item["path"]
+            for item in previous.get("files", [])
+            if item["path"] != "PACKAGE-MANIFEST.json"
+        }
+        actual_files = {
+            item.relative_to(DESTINATION).as_posix()
+            for item in DESTINATION.rglob("*")
+            if item.is_file() and item.name != "PACKAGE-MANIFEST.json"
+        }
+        if actual_files != previous_files:
+            raise RuntimeError("Refusing to refresh a package with added or missing files")
+        for item in previous["files"]:
+            if item["path"] == "PACKAGE-MANIFEST.json":
+                continue
+            path = DESTINATION / item["path"]
+            if path.stat().st_size != item["bytes"] or sha256(path) != item["sha256"]:
+                raise RuntimeError(f"Refusing to refresh modified package file: {item['path']}")
+        if previous.get("sourceCommit") != report["releaseCandidate"]["expectedSource"]:
+            raise RuntimeError("Refusing to refresh a package from a different source commit")
+    else:
+        DESTINATION.mkdir(parents=True)
 
-    DESTINATION.mkdir(parents=True)
     for relative in (
         "README.md",
         "README.zh-CN.md",
@@ -49,8 +76,17 @@ def stage_package() -> dict:
     ):
         copy_file(relative, DESTINATION)
 
-    shutil.copytree(ROOT / "guide", DESTINATION / "guide", ignore=shutil.ignore_patterns("*.lock"))
-    shutil.copytree(ROOT / "licenses" / "third_party", DESTINATION / "licenses" / "third_party")
+    shutil.copytree(
+        ROOT / "guide",
+        DESTINATION / "guide",
+        ignore=shutil.ignore_patterns("*.lock"),
+        dirs_exist_ok=refresh,
+    )
+    shutil.copytree(
+        ROOT / "licenses" / "third_party",
+        DESTINATION / "licenses" / "third_party",
+        dirs_exist_ok=refresh,
+    )
     copy_file("target/release/lapui.exe", DESTINATION, "lapui.exe")
     copy_file("target/windows-release-sources.zip", DESTINATION, "sources/windows-release-sources.zip")
 
@@ -68,7 +104,11 @@ def stage_package() -> dict:
     )
 
     files = []
-    for path in sorted(item for item in DESTINATION.rglob("*") if item.is_file()):
+    for path in sorted(
+        item
+        for item in DESTINATION.rglob("*")
+        if item.is_file() and item.name != "PACKAGE-MANIFEST.json"
+    ):
         files.append(
             {
                 "path": path.relative_to(DESTINATION).as_posix(),
@@ -100,7 +140,13 @@ def stage_package() -> dict:
 
 
 def main() -> int:
-    result = stage_package()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="update a previously staged package after verifying its manifest and files",
+    )
+    result = stage_package(refresh=parser.parse_args().refresh)
     print(json.dumps(result, ensure_ascii=False))
     return 0
 
