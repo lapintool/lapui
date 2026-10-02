@@ -21,4 +21,6 @@
 - [Compatibility matrix](compatibility.md)
 - [Desktop input and platforms](platform-validation.md)
 - [Windows developer preview package](windows-preview-package.md)
+- [Desktop MCP host acceptance](desktop-mcp-host-acceptance.md)
+- [Clean Windows 11 acceptance](windows-11-clean-machine-acceptance.md)
 - [Current limitations](limitations.md)

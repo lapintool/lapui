@@ -43,9 +43,15 @@ jobs:
       - name: Check formatting
         run: cargo +${{ matrix.rust }} fmt --all --check
       - name: Default runtime regressions
-        run: cargo +${{ matrix.rust }} test --locked -- --test-threads=2
+        run: >-
+          python scripts/run_cargo_tests_with_summary.py
+          --title "Default runtime regressions" --
+          cargo +${{ matrix.rust }} test --locked -- --test-threads=2
       - name: Minimal-feature regressions
-        run: cargo +${{ matrix.rust }} test --locked --no-default-features -- --test-threads=2
+        run: >-
+          python scripts/run_cargo_tests_with_summary.py
+          --title "Minimal-feature regressions" --
+          cargo +${{ matrix.rust }} test --locked --no-default-features -- --test-threads=2
       - name: Strict lint
         run: cargo +${{ matrix.rust }} clippy --locked --all-targets -- -D warnings
       - name: Link the executable
