@@ -371,36 +371,61 @@
       ]
     }
   ],
-  "sourceErrors": [
+  "upstreamFilesUnavailable": [
     {
       "repository": "lifthrasiir/hexf",
       "commit": "4225763d744183d720f575ae96d04161b4d08ea0",
-      "reason": "upstream archive has no exact license file; canonical SPDX text is included"
+      "packages": [
+        "hexf-parse 0.2.1"
+      ],
+      "reason": "no exact upstream license/notice file; canonical SPDX text is included"
     },
     {
       "repository": "reem/rust-void",
       "commit": "ab2f4dbb7c95c144ccba2fa8afd11e155aa91133",
-      "reason": "upstream archive has no exact license file; canonical SPDX text is included"
+      "packages": [
+        "void 1.0.2"
+      ],
+      "reason": "no exact upstream license/notice file; canonical SPDX text is included"
     },
     {
       "repository": "servo/app_units",
       "commit": "2e4e0e0ad8b43bf49a1d3d84e3ca4c55367314a7",
-      "reason": "upstream archive has no exact license file; canonical SPDX text is included"
+      "packages": [
+        "app_units 0.7.8"
+      ],
+      "reason": "no exact upstream license/notice file; canonical SPDX text is included"
     },
     {
       "repository": "servo/stylo",
       "commit": "3fb66ea0f39d480cd3f8f932867bc594a25f2b80",
-      "reason": "upstream archive has no exact license file; canonical SPDX text is included"
+      "packages": [
+        "to_shmem_derive 0.1.0"
+      ],
+      "reason": "no exact upstream license/notice file; canonical SPDX text is included"
     },
     {
       "repository": "servo/stylo",
       "commit": "67faaab3ff7aa66780ec1d0f51ca47e177b812d3",
-      "reason": "upstream archive has no exact license file; canonical SPDX text is included"
+      "packages": [
+        "selectors 0.40.0",
+        "stylo 0.20.0",
+        "stylo_atoms 0.20.0",
+        "stylo_derive 0.20.0",
+        "stylo_dom 0.20.0",
+        "stylo_static_prefs 0.20.0",
+        "stylo_traits 0.20.0"
+      ],
+      "reason": "no exact upstream license/notice file; canonical SPDX text is included"
     },
     {
       "repository": "servo/stylo",
       "commit": "e0bcd28a1f1a0b35903b4a9b7652c6b993a26ccc",
-      "reason": "upstream archive has no exact license file; canonical SPDX text is included"
+      "packages": [
+        "to_shmem 0.5.0"
+      ],
+      "reason": "no exact upstream license/notice file; canonical SPDX text is included"
     }
-  ]
+  ],
+  "sourceErrors": []
 }

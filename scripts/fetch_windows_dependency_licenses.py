@@ -94,6 +94,7 @@ def main() -> int:
         (error.get("repository", "").removeprefix("https://github.com/"), error.get("commit"))
         for error in previous_manifest.get("sourceErrors", [])
         if error.get("repository") and error.get("commit")
+        and "no exact license file" not in error.get("reason", "")
     }
     no_upstream_file_packages = {
         (package["name"], package["version"])
@@ -152,6 +153,7 @@ def main() -> int:
             }
         )
     manifests = []
+    upstream_files_unavailable = []
     for (repo, commit), packages in sorted(groups.items()):
         cached_directory = output / repo / commit
         candidates = []
@@ -163,7 +165,14 @@ def main() -> int:
             ]
         if not candidates and (repo, commit) not in cached_source_errors:
             if any((package["name"], package["version"]) in no_upstream_file_packages for package in packages):
-                errors.append({"repository": repo, "commit": commit, "reason": "upstream archive has no exact license file; canonical SPDX text is included"})
+                upstream_files_unavailable.append(
+                    {
+                        "repository": repo,
+                        "commit": commit,
+                        "packages": [f"{package['name']} {package['version']}" for package in packages],
+                        "reason": "no exact upstream license/notice file; canonical SPDX text is included",
+                    }
+                )
                 continue
             try:
                 tree = get_json(f"{API_BASE}/repos/{repo}/git/trees/{commit}?recursive=1")
@@ -187,7 +196,14 @@ def main() -> int:
                 and LICENSE_NAME.fullmatch(PurePosixPath(path).name)
             ]
         if not candidates:
-            errors.append({"repository": repo, "commit": commit, "reason": "no relevant license or notice file at package ancestors"})
+            upstream_files_unavailable.append(
+                {
+                    "repository": repo,
+                    "commit": commit,
+                    "packages": [f"{package['name']} {package['version']}" for package in packages],
+                    "reason": "no exact upstream license/notice file; canonical SPDX text is included",
+                }
+            )
             continue
 
         downloaded = []
@@ -246,6 +262,7 @@ def main() -> int:
     spdx_manifest_path.write_text(
         json.dumps({"source": "SPDX License List", "licenses": canonical_spdx}, indent=2) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
 
     manifest = {
@@ -254,11 +271,16 @@ def main() -> int:
         "sourceSelection": "Cargo VCS commit, or exact version tag when VCS metadata is absent",
         "canonicalSpdxTexts": spdx_manifest_path.relative_to(output).as_posix(),
         "groups": manifests,
+        "upstreamFilesUnavailable": upstream_files_unavailable,
         "sourceErrors": errors,
     }
     output.mkdir(parents=True, exist_ok=True)
     manifest_path = output / "SOURCES.json"
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     print(
         json.dumps(
             {
@@ -267,6 +289,7 @@ def main() -> int:
                 "packages": sum(len(group["packages"]) for group in manifests),
                 "licenseAndNoticeFiles": sum(len(group["licenseAndNoticeFiles"]) for group in manifests),
                 "manifest": str(manifest_path),
+                "upstreamFilesUnavailable": len(upstream_files_unavailable),
                 "sourceErrors": errors,
             },
             ensure_ascii=False,
