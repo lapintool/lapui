@@ -83,16 +83,16 @@ async def check_fixture(binary: Path, examples: Path, artifacts: Path, fixture: 
         if page_geometry.is_error or not isinstance(page_geometry.structured_content, dict):
             raise AssertionError(f"{fixture.name}: geometry observation failed: {page_geometry.structured_content}")
         geometry_items = page_geometry.structured_content.get("items", [])
-        viewport = next((item for item in geometry_items if item.get("tag") == "html"), None)
-        if not isinstance(viewport, dict) or not isinstance(viewport.get("bounds"), dict):
-            raise AssertionError(f"{fixture.name}: viewport geometry is missing")
-        viewport_bounds = viewport["bounds"]
+        document_root = next((item for item in geometry_items if item.get("tag") == "html"), None)
+        if not isinstance(document_root, dict) or not isinstance(document_root.get("bounds"), dict):
+            raise AssertionError(f"{fixture.name}: document-root geometry is missing")
+        root_bounds = document_root["bounds"]
         if any(
-            not isinstance(viewport_bounds.get(field), (int, float))
-            or not math.isfinite(viewport_bounds[field])
+            not isinstance(root_bounds.get(field), (int, float))
+            or not math.isfinite(root_bounds[field])
             for field in ("x", "y", "width", "height")
-        ) or viewport_bounds["width"] <= 0 or viewport_bounds["height"] <= 0:
-            raise AssertionError(f"{fixture.name}: invalid viewport bounds: {viewport_bounds}")
+        ) or root_bounds["width"] <= 0 or root_bounds["height"] <= 0:
+            raise AssertionError(f"{fixture.name}: invalid document-root bounds: {root_bounds}")
         visible_buttons = [
             item
             for item in geometry_items
@@ -102,7 +102,7 @@ async def check_fixture(binary: Path, examples: Path, artifacts: Path, fixture: 
             and item["bounds"].get("height", 0) > 0
         ]
         if not visible_buttons:
-            raise AssertionError(f"{fixture.name}: no button has non-empty rendered geometry")
+            raise AssertionError(f"{fixture.name}: no button has non-empty layout geometry")
 
         if fixture.name == "changes-demo":
             activated = await client.call_tool(

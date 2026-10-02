@@ -249,8 +249,17 @@ async def run_sensitive_content_smoke(binary: Path) -> None:
                 arguments={"documentEpoch": epoch, "cursor": baseline.structured_content["cursor"], "limit": 64},
             )
             require(not after.is_error, f"sensitive fixture journal read failed: {after.structured_content}")
+            password_changes = after.structured_content.get("records", [])
+            require(
+                any(record.get("target") == password["ref"] for record in password_changes),
+                "password fill did not produce an observable value-free journal record",
+            )
             diagnostics = await client.call_tool("page_diagnostics")
             require(not diagnostics.is_error, f"sensitive fixture diagnostics failed: {diagnostics.structured_content}")
+            require(
+                diagnostics.structured_content.get("errors", []) == [],
+                f"sensitive fixture produced runtime errors: {diagnostics.structured_content}",
+            )
             semantic_outputs = json.dumps(
                 [snapshot.structured_content, observed.structured_content, filled.structured_content,
                  after.structured_content, diagnostics.structured_content]
