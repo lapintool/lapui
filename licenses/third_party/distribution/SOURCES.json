@@ -1,0 +1,17 @@
+{
+  "description": "Third-party distribution copyright metadata used when the exact upstream crate archive does not include a copyright notice file.",
+  "notices": [
+    {
+      "package": "void",
+      "version": "1.0.2",
+      "sourcePackage": "Debian rust-void 1.0.2-1",
+      "source": "https://metadata.ftp-master.debian.org/changelogs//main/r/rust-void/rust-void_1.0.2-1_copyright",
+      "evidencePath": "debian/rust-void-1.0.2-1.copyright",
+      "evidenceSha256": "82e84184e8054ed7af258df2178ae6de0c79d95f5b956ba22258541a46437b43",
+      "noticePath": "notices/void-1.0.2-MIT.txt",
+      "noticeSha256": "b4d0c822281192d62e8c1f76347fa0c62f92d38bdd97dc8acaa7f0399fef2ffa",
+      "reviewStatus": "pending-human-notice-review",
+      "evidenceScope": "Debian copyright metadata identifies Files: * for upstream void 1.0.2 and records Copyright: 2015-2018 Jonathan Reem; the complete MIT notice is assembled from that line and the canonical MIT terms. This is downstream distribution evidence, not upstream rights-holder confirmation."
+    }
+  ]
+}

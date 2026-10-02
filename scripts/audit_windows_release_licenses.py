@@ -1,9 +1,8 @@
 """Inventory license metadata and bundled notices for the Windows release graph.
 
-This is an input audit, not a legal-compliance certification. It deliberately
-reports packages that declare an SPDX expression but expose no top-level or
-declared license file in the cached crate archive, so packaging cannot silently
-treat metadata as a complete third-party notice bundle.
+This is an input audit, not a legal-compliance certification. It reports source
+license files and checksum-pinned distribution notices separately; downstream
+copyright evidence does not clear the review gate until explicitly approved.
 """
 
 from __future__ import annotations
@@ -63,6 +62,48 @@ def bundled_license_sources() -> tuple[dict[tuple[str, str], list[dict]], dict[s
     return package_sources, standard_sources
 
 
+def distribution_notice_sources() -> dict[tuple[str, str], list[dict]]:
+    """Load checksum-pinned notice evidence from downstream source packages."""
+    manifest_path = ROOT / "licenses" / "third_party" / "distribution" / "SOURCES.json"
+    if not manifest_path.is_file():
+        return {}
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    package_sources: dict[tuple[str, str], list[dict]] = {}
+    for entry in manifest.get("notices", []):
+        relative = entry.get("noticePath")
+        evidence_relative = entry.get("evidencePath")
+        name = entry.get("package")
+        version = entry.get("version")
+        notice_hash = entry.get("noticeSha256")
+        evidence_hash = entry.get("evidenceSha256")
+        if not relative or not evidence_relative or not name or not version or not notice_hash or not evidence_hash:
+            continue
+        distribution_root = ROOT / "licenses" / "third_party" / "distribution"
+        notice_path = distribution_root / relative
+        evidence_path = distribution_root / evidence_relative
+        if (
+            not notice_path.is_file()
+            or hashlib.sha256(notice_path.read_bytes()).hexdigest() != notice_hash
+            or not evidence_path.is_file()
+            or hashlib.sha256(evidence_path.read_bytes()).hexdigest() != evidence_hash
+        ):
+            continue
+        package_sources.setdefault((name, version), []).append(
+            {
+                "path": str(notice_path.relative_to(ROOT)),
+                "sha256": notice_hash,
+                "source": entry.get("source"),
+                "sourcePackage": entry.get("sourcePackage"),
+                "evidenceScope": entry.get("evidenceScope"),
+                "reviewStatus": entry.get("reviewStatus", "pending-human-notice-review"),
+                "evidencePath": str(evidence_path.relative_to(ROOT)),
+                "evidenceSha256": evidence_hash,
+            }
+        )
+    return package_sources
+
+
 def registry_roots() -> list[Path]:
     cargo_home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
     return list((cargo_home / "registry" / "src").glob("*"))
@@ -96,6 +137,7 @@ def license_graph(target: str, roots: list[Path]) -> dict:
             packages.add(match.groups())
 
     upstream_license_sources, standard_license_sources = bundled_license_sources()
+    distribution_sources = distribution_notice_sources()
     entries = []
     missing_sources = []
     for name, version in sorted(packages):
@@ -117,6 +159,7 @@ def license_graph(target: str, roots: list[Path]) -> dict:
             license_files.append(license_file)
             license_files.sort()
         upstream_license_files = upstream_license_sources.get((name, version), [])
+        distribution_notice_files = distribution_sources.get((name, version), [])
         expression_ids = {
             identifier
             for identifier in LICENSE_ID.findall(metadata.get("license") or "")
@@ -128,6 +171,9 @@ def license_graph(target: str, roots: list[Path]) -> dict:
             if identifier in standard_license_sources
         ]
         has_complete_standard_text = bool(expression_ids) and expression_ids <= set(standard_license_sources)
+        reviewed_distribution_notice = any(
+            source["reviewStatus"] == "approved" for source in distribution_notice_files
+        )
         entries.append(
             {
                 "name": name,
@@ -138,9 +184,13 @@ def license_graph(target: str, roots: list[Path]) -> dict:
                 "licenseFiles": license_files,
                 "noticeFiles": notices,
                 "upstreamLicenseFiles": upstream_license_files,
+                "distributionNoticeFiles": distribution_notice_files,
                 "standardLicenseTexts": standard_license_texts,
-                "licenseTextMissing": not (license_files or upstream_license_files or has_complete_standard_text),
-                "copyrightTemplateReviewRequired": "MIT" in expression_ids and not (license_files or upstream_license_files),
+                "licenseTextMissing": not (
+                    license_files or upstream_license_files or distribution_notice_files or has_complete_standard_text
+                ),
+                "copyrightTemplateReviewRequired": "MIT" in expression_ids
+                and not (license_files or upstream_license_files or reviewed_distribution_notice),
             }
         )
 
@@ -155,9 +205,17 @@ def license_graph(target: str, roots: list[Path]) -> dict:
             entry for entry in entries if not entry["licenseFiles"] and not entry["upstreamLicenseFiles"]
         ],
         "packagesUsingCanonicalLicenseText": [
-            entry for entry in entries if entry["standardLicenseTexts"] and not entry["licenseFiles"] and not entry["upstreamLicenseFiles"]
+            entry
+            for entry in entries
+            if entry["standardLicenseTexts"]
+            and not entry["licenseFiles"]
+            and not entry["upstreamLicenseFiles"]
+            and not entry["distributionNoticeFiles"]
         ],
         "copyrightTemplateReviewRequired": [entry for entry in entries if entry["copyrightTemplateReviewRequired"]],
+        "packagesWithDistributionNoticeEvidence": [
+            entry for entry in entries if entry["distributionNoticeFiles"]
+        ],
         "packages": entries,
     }
 
@@ -185,6 +243,7 @@ def main() -> int:
                 "missingLicenseText": len(report["missingLicenseText"]),
                 "missingExactUpstreamLicenseFile": len(report["missingExactUpstreamLicenseFile"]),
                 "packagesUsingCanonicalLicenseText": len(report["packagesUsingCanonicalLicenseText"]),
+                "packagesWithDistributionNoticeEvidence": len(report["packagesWithDistributionNoticeEvidence"]),
                 "copyrightTemplateReviewRequired": len(report["copyrightTemplateReviewRequired"]),
                 "mplPackages": sum("MPL-2.0" in (entry["license"] or "") for entry in report["packages"]),
             },

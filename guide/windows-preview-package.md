@@ -13,7 +13,8 @@ Lapui-preview/
 ├── LICENSE-MIT
 ├── LICENSE-APACHE
 ├── guide/                         # tracked Markdown guides
-├── licenses/third_party/upstream/ # source manifests, hashes, and notices
+├── licenses/third_party/upstream/ # exact upstream notices + SPDX sources
+├── licenses/third_party/distribution/ # assembled notice + Debian evidence/source hashes
 ├── sources/windows-release-sources.zip
 └── prerequisites/
     └── vc_redist.x64.exe          # not yet acquired or staged
@@ -31,7 +32,7 @@ The PE imports show no Node, browser engine, WebView, or OpenSSL DLL. The build 
 
 ## Release gates
 
-- **Blocked: `void 1.0.2` MIT notice.** Cargo.lock checksum and cached `.crate` SHA-256 both equal `6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d`. The crate archive contains only `.gitignore`, `.travis.yml`, `Cargo.toml`, `README.md`, and `src/lib.rs`; no LICENSE or NOTICE file. The pinned upstream source commit is `ab2f4dbb7c95c144ccba2fa8afd11e155aa91133`. Its manifest and README state MIT and name Jonathan Reem as package author/primary maintainer, but provide no year or explicit copyright-holder notice. The canonical SPDX MIT text still has `<year> <copyright holders>`. These sources do not establish a package-specific notice, so the audit must keep failing until an authoritative notice is obtained or the dependency is removed/replaced and the locked graph is audited again.
+- **Notice evidence recorded: `void 1.0.2`; human review pending.** Cargo.lock checksum and cached `.crate` SHA-256 both equal `6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d`. The crate archive contains only `.gitignore`, `.travis.yml`, `Cargo.toml`, `README.md`, and `src/lib.rs`; no LICENSE or NOTICE file. The pinned upstream source commit is `ab2f4dbb7c95c144ccba2fa8afd11e155aa91133`. Debian's official `rust-void 1.0.2-1` source package identifies the same upstream project and records `Copyright: 2015-2018 Jonathan Reem` for `Files: *` in its [copyright metadata](https://metadata.ftp-master.debian.org/changelogs//main/r/rust-void/rust-void_1.0.2-1_copyright). The exact source file and a complete MIT notice are retained with separate SHA-256 values in `licenses/third_party/distribution/`. The audit verifies both files and reports their exact package mapping, but deliberately remains nonzero until a human reviews this downstream evidence and approves the staged notice wording. Preserve the Debian provenance in the package; this evidence is not an upstream rights-holder confirmation.
 - **Missing:** stage the x64 VC++ Redistributable and verify its version/source, or approve a static-CRT rebuild and full regression. No runtime DLL or installer is in the current package staging output.
 - **Missing:** create the staging directory from the explicit contents list and verify every referenced guide, license, notice, and source file is present.
 - **Missing:** run the staged package on a clean Windows 11 user environment without Rust, Node, or a system WebView; verify startup, local-files, CJK font fallback, and MCP stdio workflow.
