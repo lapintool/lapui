@@ -191,7 +191,9 @@ def check_package() -> dict:
     if notice_review_required:
         open_gates.append("Human review of the downstream void 1.0.2 notice evidence and staged wording.")
     if not redist.is_file():
-        open_gates.append("Stage the official x64 Visual C++ Redistributable or revalidate a static-CRT build.")
+        open_gates.append(
+            "Resolve VC++ Runtime delivery: verify redistribution rights before bundling, document the official user-installed prerequisite, or revalidate a static-CRT build."
+        )
     open_gates.extend(manual_gates)
 
     return {
