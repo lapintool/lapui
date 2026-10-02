@@ -1,0 +1,23 @@
+{
+  "source": "SPDX License List",
+  "licenses": [
+    {
+      "licenseId": "CC0-1.0",
+      "path": "SPDX/CC0-1.0.txt",
+      "url": "https://spdx.org/licenses/CC0-1.0.txt",
+      "sha256": "e0456cbab4f7b5e7203e678faff37eadbdfef02e822db3b7a52a1dd9d3dc514a"
+    },
+    {
+      "licenseId": "MIT",
+      "path": "SPDX/MIT.txt",
+      "url": "https://spdx.org/licenses/MIT.txt",
+      "sha256": "c3b1b78bc8bd3ea13aa4bc9778442d16560270afa235006d816e5e88cef24db4"
+    },
+    {
+      "licenseId": "MPL-2.0",
+      "path": "SPDX/MPL-2.0.txt",
+      "url": "https://spdx.org/licenses/MPL-2.0.txt",
+      "sha256": "66c10535a495f4cd8115607e890f8116d657064b98557f660c51e123b3f3fee6"
+    }
+  ]
+}

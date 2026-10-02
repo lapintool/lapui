@@ -1,0 +1,406 @@
+{
+  "target": "x86_64-pc-windows-msvc",
+  "featureSet": "default",
+  "sourceSelection": "Cargo VCS commit, or exact version tag when VCS metadata is absent",
+  "canonicalSpdxTexts": "SPDX-SOURCES.json",
+  "groups": [
+    {
+      "repository": "https://github.com/DelSkayn/rquickjs",
+      "commit": "d7ef5eeae702fea24c03643064de454f1c1dd4b0",
+      "packages": [
+        {
+          "name": "rquickjs-core",
+          "version": "0.14.0",
+          "license": "MIT",
+          "pathInRepository": "core",
+          "sourceReference": "commit:d7ef5eeae702fea24c03643064de454f1c1dd4b0"
+        },
+        {
+          "name": "rquickjs-sys",
+          "version": "0.14.0",
+          "license": "MIT",
+          "pathInRepository": "sys",
+          "sourceReference": "commit:d7ef5eeae702fea24c03643064de454f1c1dd4b0"
+        }
+      ],
+      "licenseAndNoticeFiles": [
+        {
+          "repositoryPath": "LICENSE",
+          "bundlePath": "DelSkayn/rquickjs/d7ef5eeae702fea24c03643064de454f1c1dd4b0/LICENSE",
+          "url": "https://raw.githubusercontent.com/DelSkayn/rquickjs/d7ef5eeae702fea24c03643064de454f1c1dd4b0/LICENSE",
+          "sha256": "976ad3d07927343ab99b31510625acba89eac8e0e517c712925620ddeda91b70"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/DioxusLabs/taffy",
+      "commit": "77f385683c1d698c91a23a259f87fdddf26925fb",
+      "packages": [
+        {
+          "name": "taffy",
+          "version": "0.14.0",
+          "license": "MIT",
+          "pathInRepository": "",
+          "sourceReference": "commit:77f385683c1d698c91a23a259f87fdddf26925fb"
+        }
+      ],
+      "licenseAndNoticeFiles": [
+        {
+          "repositoryPath": "LICENSE",
+          "bundlePath": "DioxusLabs/taffy/77f385683c1d698c91a23a259f87fdddf26925fb/LICENSE",
+          "url": "https://raw.githubusercontent.com/DioxusLabs/taffy/77f385683c1d698c91a23a259f87fdddf26925fb/LICENSE",
+          "sha256": "f97daf1a0124413dccf399a4e6626b4b74acd05282f80b6d64ac82225650b77a"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/aclysma/profiling",
+      "commit": "8271551172eb6fa4cba47369aedd93790c623df9",
+      "packages": [
+        {
+          "name": "profiling",
+          "version": "1.0.18",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "profiling",
+          "sourceReference": "commit:8271551172eb6fa4cba47369aedd93790c623df9"
+        }
+      ],
+      "licenseAndNoticeFiles": [
+        {
+          "repositoryPath": "LICENSE-APACHE",
+          "bundlePath": "aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-APACHE",
+          "url": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-APACHE",
+          "sha256": "10d30a673cd5e9349bdc02aeb48f14b3386d27d0da32df8f0a555d4aa16aa551"
+        },
+        {
+          "repositoryPath": "LICENSE-MIT",
+          "bundlePath": "aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT",
+          "url": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT",
+          "sha256": "c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/dioxuslabs/anyrender",
+      "commit": "1f2a55d9b8c36edfa7197926152118ec399a6860",
+      "packages": [
+        {
+          "name": "anyrender",
+          "version": "0.13.0",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "crates/anyrender",
+          "sourceReference": "commit:1f2a55d9b8c36edfa7197926152118ec399a6860"
+        },
+        {
+          "name": "anyrender_vello",
+          "version": "0.14.0",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "crates/anyrender_vello",
+          "sourceReference": "commit:1f2a55d9b8c36edfa7197926152118ec399a6860"
+        },
+        {
+          "name": "softbuffer_window_renderer",
+          "version": "0.8.0",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "crates/softbuffer_window_renderer",
+          "sourceReference": "commit:1f2a55d9b8c36edfa7197926152118ec399a6860"
+        },
+        {
+          "name": "wgpu_context",
+          "version": "0.9.0",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "crates/wgpu_context",
+          "sourceReference": "commit:1f2a55d9b8c36edfa7197926152118ec399a6860"
+        }
+      ],
+      "licenseAndNoticeFiles": [
+        {
+          "repositoryPath": "LICENSE-APACHE",
+          "bundlePath": "dioxuslabs/anyrender/1f2a55d9b8c36edfa7197926152118ec399a6860/LICENSE-APACHE",
+          "url": "https://raw.githubusercontent.com/dioxuslabs/anyrender/1f2a55d9b8c36edfa7197926152118ec399a6860/LICENSE-APACHE",
+          "sha256": "95bd3988beee069fa2848f648dab43cc6e0b2add2ad6bcb17360caf749802bcc"
+        },
+        {
+          "repositoryPath": "LICENSE-MIT",
+          "bundlePath": "dioxuslabs/anyrender/1f2a55d9b8c36edfa7197926152118ec399a6860/LICENSE-MIT",
+          "url": "https://raw.githubusercontent.com/dioxuslabs/anyrender/1f2a55d9b8c36edfa7197926152118ec399a6860/LICENSE-MIT",
+          "sha256": "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/dioxuslabs/anyrender",
+      "commit": "c5f889688962ed619cf268b66f514bf185ed58b2",
+      "packages": [
+        {
+          "name": "anyrender_vello_cpu",
+          "version": "0.17.0",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "crates/anyrender_vello_cpu",
+          "sourceReference": "commit:c5f889688962ed619cf268b66f514bf185ed58b2"
+        }
+      ],
+      "licenseAndNoticeFiles": [
+        {
+          "repositoryPath": "LICENSE-APACHE",
+          "bundlePath": "dioxuslabs/anyrender/c5f889688962ed619cf268b66f514bf185ed58b2/LICENSE-APACHE",
+          "url": "https://raw.githubusercontent.com/dioxuslabs/anyrender/c5f889688962ed619cf268b66f514bf185ed58b2/LICENSE-APACHE",
+          "sha256": "95bd3988beee069fa2848f648dab43cc6e0b2add2ad6bcb17360caf749802bcc"
+        },
+        {
+          "repositoryPath": "LICENSE-MIT",
+          "bundlePath": "dioxuslabs/anyrender/c5f889688962ed619cf268b66f514bf185ed58b2/LICENSE-MIT",
+          "url": "https://raw.githubusercontent.com/dioxuslabs/anyrender/c5f889688962ed619cf268b66f514bf185ed58b2/LICENSE-MIT",
+          "sha256": "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/dioxuslabs/blitz",
+      "commit": "078b082ced8cc1e35b87c4d5fd85b9cffafc9e47",
+      "packages": [
+        {
+          "name": "debug_timer",
+          "version": "0.1.3",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "packages/debug_timer",
+          "sourceReference": "commit:078b082ced8cc1e35b87c4d5fd85b9cffafc9e47"
+        }
+      ],
+      "licenseAndNoticeFiles": [
+        {
+          "repositoryPath": "LICENSE-APACHE",
+          "bundlePath": "dioxuslabs/blitz/078b082ced8cc1e35b87c4d5fd85b9cffafc9e47/LICENSE-APACHE",
+          "url": "https://raw.githubusercontent.com/dioxuslabs/blitz/078b082ced8cc1e35b87c4d5fd85b9cffafc9e47/LICENSE-APACHE",
+          "sha256": "95bd3988beee069fa2848f648dab43cc6e0b2add2ad6bcb17360caf749802bcc"
+        },
+        {
+          "repositoryPath": "LICENSE-MIT",
+          "bundlePath": "dioxuslabs/blitz/078b082ced8cc1e35b87c4d5fd85b9cffafc9e47/LICENSE-MIT",
+          "url": "https://raw.githubusercontent.com/dioxuslabs/blitz/078b082ced8cc1e35b87c4d5fd85b9cffafc9e47/LICENSE-MIT",
+          "sha256": "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/dioxuslabs/blitz",
+      "commit": "67edf2061121382b3e43af19977fc3472aa7e069",
+      "packages": [
+        {
+          "name": "blitz",
+          "version": "0.3.0-beta.2",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "packages/blitz",
+          "sourceReference": "commit:67edf2061121382b3e43af19977fc3472aa7e069"
+        },
+        {
+          "name": "blitz-dom",
+          "version": "0.3.0-beta.2",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "packages/blitz-dom",
+          "sourceReference": "commit:67edf2061121382b3e43af19977fc3472aa7e069"
+        },
+        {
+          "name": "blitz-html",
+          "version": "0.3.0-beta.2",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "packages/blitz-html",
+          "sourceReference": "commit:67edf2061121382b3e43af19977fc3472aa7e069"
+        },
+        {
+          "name": "blitz-net",
+          "version": "0.3.0-beta.2",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "packages/blitz-net",
+          "sourceReference": "commit:67edf2061121382b3e43af19977fc3472aa7e069"
+        },
+        {
+          "name": "blitz-paint",
+          "version": "0.3.0-beta.2",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "packages/blitz-paint",
+          "sourceReference": "commit:67edf2061121382b3e43af19977fc3472aa7e069"
+        },
+        {
+          "name": "blitz-shell",
+          "version": "0.3.0-beta.2",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "packages/blitz-shell",
+          "sourceReference": "commit:67edf2061121382b3e43af19977fc3472aa7e069"
+        },
+        {
+          "name": "blitz-traits",
+          "version": "0.3.0-beta.2",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "packages/blitz-traits",
+          "sourceReference": "commit:67edf2061121382b3e43af19977fc3472aa7e069"
+        },
+        {
+          "name": "stylo_taffy",
+          "version": "0.3.0-beta.2",
+          "license": "MIT OR Apache-2.0 OR MPL-2.0",
+          "pathInRepository": "packages/stylo_taffy",
+          "sourceReference": "commit:67edf2061121382b3e43af19977fc3472aa7e069"
+        }
+      ],
+      "licenseAndNoticeFiles": [
+        {
+          "repositoryPath": "LICENSE-APACHE",
+          "bundlePath": "dioxuslabs/blitz/67edf2061121382b3e43af19977fc3472aa7e069/LICENSE-APACHE",
+          "url": "https://raw.githubusercontent.com/dioxuslabs/blitz/67edf2061121382b3e43af19977fc3472aa7e069/LICENSE-APACHE",
+          "sha256": "95bd3988beee069fa2848f648dab43cc6e0b2add2ad6bcb17360caf749802bcc"
+        },
+        {
+          "repositoryPath": "LICENSE-MIT",
+          "bundlePath": "dioxuslabs/blitz/67edf2061121382b3e43af19977fc3472aa7e069/LICENSE-MIT",
+          "url": "https://raw.githubusercontent.com/dioxuslabs/blitz/67edf2061121382b3e43af19977fc3472aa7e069/LICENSE-MIT",
+          "sha256": "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/gfx-rs/rspirv",
+      "commit": "8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4",
+      "packages": [
+        {
+          "name": "spirv",
+          "version": "0.4.0+sdk-1.4.341.0",
+          "license": "Apache-2.0",
+          "pathInRepository": "spirv",
+          "sourceReference": "commit:8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4"
+        }
+      ],
+      "licenseAndNoticeFiles": [
+        {
+          "repositoryPath": "LICENSE",
+          "bundlePath": "gfx-rs/rspirv/8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4/LICENSE",
+          "url": "https://raw.githubusercontent.com/gfx-rs/rspirv/8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4/LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/modelcontextprotocol/rust-sdk",
+      "commit": "0cde3c5cf3e6aff0cc852ce6045f107e95991f48",
+      "packages": [
+        {
+          "name": "rmcp",
+          "version": "3.5.0",
+          "license": "Apache-2.0",
+          "pathInRepository": "crates/rmcp",
+          "sourceReference": "commit:0cde3c5cf3e6aff0cc852ce6045f107e95991f48"
+        },
+        {
+          "name": "rmcp-macros",
+          "version": "3.5.0",
+          "license": "Apache-2.0",
+          "pathInRepository": "crates/rmcp-macros",
+          "sourceReference": "commit:0cde3c5cf3e6aff0cc852ce6045f107e95991f48"
+        }
+      ],
+      "licenseAndNoticeFiles": [
+        {
+          "repositoryPath": "LICENSE",
+          "bundlePath": "modelcontextprotocol/rust-sdk/0cde3c5cf3e6aff0cc852ce6045f107e95991f48/LICENSE",
+          "url": "https://raw.githubusercontent.com/modelcontextprotocol/rust-sdk/0cde3c5cf3e6aff0cc852ce6045f107e95991f48/LICENSE",
+          "sha256": "0382b0057770ca05e9c350a50aa3b1c1fea84da0bc81d723bf00b9aa841be58a"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/nical/rust_debug",
+      "commit": "93f414cd572b5c2781df93dbdc068ed13443d05a",
+      "packages": [
+        {
+          "name": "svg_fmt",
+          "version": "0.4.5",
+          "license": "MIT/Apache-2.0",
+          "pathInRepository": "svg_fmt",
+          "sourceReference": "commit:93f414cd572b5c2781df93dbdc068ed13443d05a"
+        }
+      ],
+      "licenseAndNoticeFiles": [
+        {
+          "repositoryPath": "LICENSE",
+          "bundlePath": "nical/rust_debug/93f414cd572b5c2781df93dbdc068ed13443d05a/LICENSE",
+          "url": "https://raw.githubusercontent.com/nical/rust_debug/93f414cd572b5c2781df93dbdc068ed13443d05a/LICENSE",
+          "sha256": "7e98bed7f100747aaae7d82ab94fbe6b76fd6b84b09a3aaa413bff8196d0fbb1"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/zakarumych/gpu-descriptor",
+      "commit": "9f2fb9546591322e7b77ee1e79385e01effd85e4",
+      "packages": [
+        {
+          "name": "gpu-descriptor-types",
+          "version": "0.2.0",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "types",
+          "sourceReference": "commit:9f2fb9546591322e7b77ee1e79385e01effd85e4"
+        }
+      ],
+      "licenseAndNoticeFiles": [
+        {
+          "repositoryPath": "COPYING",
+          "bundlePath": "zakarumych/gpu-descriptor/9f2fb9546591322e7b77ee1e79385e01effd85e4/COPYING",
+          "url": "https://raw.githubusercontent.com/zakarumych/gpu-descriptor/9f2fb9546591322e7b77ee1e79385e01effd85e4/COPYING",
+          "sha256": "f72143f7e9d9fb8bd336b139fa22f825a299591c29f2f7338c5566347b137613"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/zakarumych/gpu-descriptor",
+      "commit": "bb28b4e55b742e0ea3e7a0968e7ee6287ba0e06a",
+      "packages": [
+        {
+          "name": "gpu-descriptor",
+          "version": "0.3.2",
+          "license": "MIT OR Apache-2.0",
+          "pathInRepository": "gpu-descriptor",
+          "sourceReference": "commit:bb28b4e55b742e0ea3e7a0968e7ee6287ba0e06a"
+        }
+      ],
+      "licenseAndNoticeFiles": [
+        {
+          "repositoryPath": "COPYING",
+          "bundlePath": "zakarumych/gpu-descriptor/bb28b4e55b742e0ea3e7a0968e7ee6287ba0e06a/COPYING",
+          "url": "https://raw.githubusercontent.com/zakarumych/gpu-descriptor/bb28b4e55b742e0ea3e7a0968e7ee6287ba0e06a/COPYING",
+          "sha256": "f72143f7e9d9fb8bd336b139fa22f825a299591c29f2f7338c5566347b137613"
+        }
+      ]
+    }
+  ],
+  "sourceErrors": [
+    {
+      "repository": "lifthrasiir/hexf",
+      "commit": "4225763d744183d720f575ae96d04161b4d08ea0",
+      "reason": "upstream archive has no exact license file; canonical SPDX text is included"
+    },
+    {
+      "repository": "reem/rust-void",
+      "commit": "ab2f4dbb7c95c144ccba2fa8afd11e155aa91133",
+      "reason": "upstream archive has no exact license file; canonical SPDX text is included"
+    },
+    {
+      "repository": "servo/app_units",
+      "commit": "2e4e0e0ad8b43bf49a1d3d84e3ca4c55367314a7",
+      "reason": "upstream archive has no exact license file; canonical SPDX text is included"
+    },
+    {
+      "repository": "servo/stylo",
+      "commit": "3fb66ea0f39d480cd3f8f932867bc594a25f2b80",
+      "reason": "upstream archive has no exact license file; canonical SPDX text is included"
+    },
+    {
+      "repository": "servo/stylo",
+      "commit": "67faaab3ff7aa66780ec1d0f51ca47e177b812d3",
+      "reason": "upstream archive has no exact license file; canonical SPDX text is included"
+    },
+    {
+      "repository": "servo/stylo",
+      "commit": "e0bcd28a1f1a0b35903b4a9b7652c6b993a26ccc",
+      "reason": "upstream archive has no exact license file; canonical SPDX text is included"
+    }
+  ]
+}
