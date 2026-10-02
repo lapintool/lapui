@@ -20,4 +20,5 @@
 - [Network requests](network.md)
 - [Compatibility matrix](compatibility.md)
 - [Desktop input and platforms](platform-validation.md)
+- [Windows developer preview package](windows-preview-package.md)
 - [Current limitations](limitations.md)
