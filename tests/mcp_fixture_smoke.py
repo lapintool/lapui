@@ -24,6 +24,7 @@ FIXTURES = (
     Fixture("form-submit-demo", 16, "submit", "button"),
     Fixture("changes-demo", 8, "increment", "button"),
     Fixture("scroll-demo", 20, "end", "button"),
+    Fixture("list-stress-demo", 3, "clear", "button"),
     Fixture("forms-demo", 16, "first-contact-email", "option"),
     Fixture("floating-demo", 12, "anchor", "button"),
     Fixture("animation-demo", 9, "start", "button"),
@@ -101,6 +102,48 @@ async def check_fixture(binary: Path, examples: Path, artifacts: Path, fixture: 
             )
             if updated.is_error or updated.structured_content.get("status") != "matched":
                 raise AssertionError(f"{fixture.name}: asynchronous state wait failed: {updated.structured_content}")
+
+        if fixture.name == "list-stress-demo":
+            initial = await client.call_tool(
+                "page_wait_for_control",
+                arguments={
+                    "documentEpoch": epoch,
+                    "id": "result",
+                    "field": "name",
+                    "contains": "1000 / 1000 entries · 100 rows rendered",
+                    "waitId": "fixture-list-ready",
+                    "timeoutMs": 3000,
+                },
+            )
+            if initial.is_error or initial.structured_content.get("status") != "matched":
+                raise AssertionError(f"list-stress-demo: initial 100-row window did not render: {initial.structured_content}")
+            search = next((control for control in controls if control.get("id") == "query"), None)
+            if search is None:
+                raise AssertionError("list-stress-demo: search control was not discovered")
+            filtered = await client.call_tool(
+                "page_control",
+                arguments={
+                    "operation": "fill",
+                    "controlRef": search["ref"],
+                    "documentEpoch": epoch,
+                    "value": "Entry 0999",
+                },
+            )
+            if filtered.is_error:
+                raise AssertionError(f"list-stress-demo: search fill failed: {filtered.structured_content}")
+            result = await client.call_tool(
+                "page_wait_for_control",
+                arguments={
+                    "documentEpoch": epoch,
+                    "id": "result",
+                    "field": "name",
+                    "contains": "1 / 1000 entries · 1 rows rendered",
+                    "waitId": "fixture-list-filtered",
+                    "timeoutMs": 3000,
+                },
+            )
+            if result.is_error or result.structured_content.get("status") != "matched":
+                raise AssertionError(f"list-stress-demo: 1,000-row filter did not settle: {result.structured_content}")
 
         if fixture.name == "react-demo":
             effect = await client.call_tool(

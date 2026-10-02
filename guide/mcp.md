@@ -135,8 +135,8 @@ and the local-files query/update/conflict workflow. Keep this separate from
 the v1.30.0 compatibility smoke: SDK v2 negotiates the current protocol and
 falls back to legacy initialization for older servers.
 
-`tests/mcp_fixture_smoke.py` opens the form, shared-state, scroll, Chinese
-controls, popover, animation, modules, Vue, and React examples through the same
+`tests/mcp_fixture_smoke.py` opens the form, shared-state, scroll, a 1,000-row
+filtering list, Chinese controls, popover, animation, modules, Vue, and React examples through the same
 stdio client. It checks the expected semantic controls, uses
 `page_wait_for_control` as a trace-independent readiness condition, and
 requires clean runtime diagnostics. It also saves post-readiness CPU screenshots

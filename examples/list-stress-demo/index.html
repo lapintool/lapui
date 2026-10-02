@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Lapui 1,000 row list</title>
+  <style>
+    html, body { margin: 0; min-height: 100%; background: #edf3fb; color: #182b49; font-family: sans-serif; }
+    main { box-sizing: border-box; max-width: 820px; margin: 24px auto; padding: 24px; border: 1px solid #cfdaeb; border-radius: 12px; background: white; }
+    h1 { margin-top: 0; font-size: 26px; }
+    p { line-height: 1.5; }
+    .search { display: flex; align-items: center; gap: 12px; margin: 16px 0; }
+    label { min-width: 110px; }
+    input { box-sizing: border-box; width: 100%; max-width: 480px; padding: 10px; border: 1px solid #a4b9d9; border-radius: 6px; }
+    button { padding: 10px 16px; border: 1px solid #a4b9d9; border-radius: 6px; background: #edf3fb; cursor: pointer; }
+    #viewport { height: 360px; overflow: auto; border: 2px solid #a4b9d9; background: #f8faff; }
+    #rows { position: relative; box-sizing: border-box; margin: 0; padding: 0 36px; list-style: none; }
+    .row { position: absolute; box-sizing: border-box; left: 36px; right: 36px; height: 28px; padding: 4px 8px; overflow: hidden; border-bottom: 1px solid #e1e8f2; }
+    .row[hidden] { display: none; }
+    #result { padding: 10px; background: #e4ecfc; border-radius: 6px; }
+  </style>
+</head>
+<body><main>
+  <h1>Large list and conditional updates</h1>
+  <p>A deterministic 1,000-record list exercises initial DOM construction, scrolling and filtering without a network dependency.</p>
+  <div class="search"><label for="query">Filter entries</label><input id="query" type="search" autocomplete="off"><button id="clear" type="button">Clear</button></div>
+  <p id="result" role="status" aria-live="polite">1000 / 1000 entries</p>
+  <div id="viewport"><ol id="rows"></ol></div>
+  <script src="app.js"></script>
+</main></body>
+</html>
