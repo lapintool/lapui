@@ -5,9 +5,94 @@ use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz::dom::Document;
 use blitz::traits::shell::{ColorScheme, Viewport};
+use image::ImageEncoder;
 use serde_json::json;
 use std::path::Path;
 use std::time::Instant;
+
+/// Owned CPU capture of one rendering opportunity at the current viewport.
+///
+/// Capture is independent of MCP and native desktop capture permissions. The
+/// pixels include the document's content, but not OS chrome, the system cursor
+/// or IME candidate windows. The epoch identifies the document instance, not a
+/// DOM revision or an acknowledgement of physical screen presentation.
+pub struct Screenshot {
+    document_epoch: usize,
+    width: u32,
+    height: u32,
+    scale_factor: f64,
+    rgba: Vec<u8>,
+}
+
+impl Screenshot {
+    pub fn document_epoch(&self) -> usize {
+        self.document_epoch
+    }
+
+    /// Physical pixel width.
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Physical pixel height.
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Physical pixels per CSS pixel.
+    pub fn scale_factor(&self) -> f64 {
+        self.scale_factor
+    }
+
+    /// Row-major, straight-alpha RGBA8 pixels.
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+
+    /// Encode this capture without advancing the document again.
+    pub fn to_png(&self) -> Result<Vec<u8>, String> {
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(
+                &self.rgba,
+                self.width,
+                self.height,
+                image::ExtendedColorType::Rgba8,
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(png)
+    }
+
+    /// Save this capture as PNG. Parent directories must already exist.
+    pub fn save_png(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        std::fs::write(path, self.to_png()?).map_err(|error| error.to_string())
+    }
+}
+
+/// Capture on the owning document thread without changing viewport size, DPI,
+/// or color scheme. Polls pending work and paints one animation opportunity;
+/// callers supply their own application-ready condition. Requires the default
+/// `software-renderer` feature. Captures are limited to 8192 per dimension and
+/// 4 megapixels, independently of the MCP transport's PNG byte budget.
+pub fn capture(document: &mut LapuiDocument) -> Result<Screenshot, String> {
+    document.poll(None);
+    capture_without_poll(document)
+}
+
+pub(crate) fn capture_without_poll(document: &mut LapuiDocument) -> Result<Screenshot, String> {
+    let viewport = document.inner().viewport().clone();
+    let (width, height) = viewport.window_size;
+    validate_dimensions(width, height, 4 * 1024 * 1024)?;
+    let scale_factor = viewport.scale_f64();
+    let rgba = render_current_layout(document, width, height, scale_factor)?;
+    Ok(Screenshot {
+        document_epoch: document.inner().id(),
+        width,
+        height,
+        scale_factor,
+        rgba,
+    })
+}
 
 /// Render current state at 1x scale. This resolves layout but does not wait for
 /// all application/network work, and changes the document's viewport.
@@ -27,19 +112,8 @@ pub fn render_rgba(
 /// Paint the current physical viewport without changing its size or scale.
 /// This does not confirm that the native window presented the returned pixels.
 pub fn render_current_rgba(document: &mut LapuiDocument) -> Result<(u32, u32, Vec<u8>), String> {
-    document.poll(None);
-    render_current_rgba_without_poll(document)
-}
-
-pub(crate) fn render_current_rgba_without_poll(
-    document: &mut LapuiDocument,
-) -> Result<(u32, u32, Vec<u8>), String> {
-    let viewport = document.inner().viewport().clone();
-    let (width, height) = viewport.window_size;
-    validate_dimensions(width, height, 4 * 1024 * 1024)?;
-    let scale = viewport.scale_f64();
-    let pixels = render_current_layout(document, width, height, scale)?;
-    Ok((width, height, pixels))
+    let screenshot = capture(document)?;
+    Ok((screenshot.width, screenshot.height, screenshot.rgba))
 }
 
 fn validate_dimensions(width: u32, height: u32, max_pixels: u64) -> Result<(), String> {
@@ -123,6 +197,57 @@ pub fn save_png(
 mod tests {
     use super::*;
     use crate::action::ActionRegistry;
+
+    #[test]
+    fn capture_preserves_viewport_and_encodes_the_owned_frame_after_mutation() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(), None,
+            "<html><head><style>html,body{margin:0;background:transparent}#box{width:40px;height:40px;background:rgba(255,0,0,0.5)}</style></head><body><div id='box'></div></body></html>", "",
+        ).unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(150, 120, 1.5, ColorScheme::Dark));
+        let epoch = doc.inner().id();
+        let shot = capture(&mut doc).unwrap();
+        assert_eq!(
+            (shot.width(), shot.height(), shot.scale_factor()),
+            (150, 120, 1.5)
+        );
+        assert_eq!(shot.document_epoch(), epoch);
+        assert_eq!(doc.inner().viewport().window_size, (150, 120));
+        assert_eq!(doc.inner().viewport().scale_f64(), 1.5);
+        assert_eq!(doc.inner().viewport().color_scheme, ColorScheme::Dark);
+        assert_eq!(shot.rgba().len(), 150 * 120 * 4);
+        let pixel = (15 * 150 + 15) * 4;
+        assert_eq!(shot.rgba()[pixel], 255); // Straight alpha, not premultiplied.
+        assert!((127..=128).contains(&shot.rgba()[pixel + 3]));
+
+        let id = doc.inner().get_element_by_id("box").unwrap();
+        doc.inner_mut().mutate().set_attribute(
+            id,
+            blitz::dom::QualName::new(
+                None,
+                Default::default(),
+                blitz::dom::LocalName::from("style"),
+            ),
+            "background:#0000ff",
+        );
+        let next = capture(&mut doc).unwrap();
+        assert_eq!(&next.rgba()[pixel..pixel + 4], &[0, 0, 255, 255]);
+        let decoded = image::load_from_memory(&shot.to_png().unwrap())
+            .unwrap()
+            .into_rgba8();
+        assert_eq!(decoded.dimensions(), (150, 120));
+        assert_eq!(decoded.as_raw(), shot.rgba()); // Encoding keeps the captured frame.
+        let path =
+            std::env::temp_dir().join(format!("lapui-capture-{epoch}-{}.png", std::process::id()));
+        shot.save_png(&path).unwrap();
+        assert_eq!(image::open(&path).unwrap().into_rgba8(), decoded);
+        std::fs::remove_file(path).unwrap();
+
+        doc.inner_mut()
+            .set_viewport(Viewport::new(8192, 8192, 1.0, ColorScheme::Light));
+        assert!(capture(&mut doc).is_err());
+    }
     #[test]
     fn cpu_snapshot_delivers_native_resize_before_painting_observer_changes() {
         let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None,
@@ -192,7 +317,7 @@ mod tests {
             let height = (150.0 * scale) as u32;
             doc.inner_mut()
                 .set_viewport(Viewport::new(width, height, scale, ColorScheme::Light));
-            let pixels = render_current_rgba_without_poll(&mut doc).unwrap().2;
+            let pixels = capture_without_poll(&mut doc).unwrap().rgba;
             let stride = width as usize * 4;
             let has_vertical_border_near = |edge_css_x: f32| {
                 let edge_px = (edge_css_x * scale).round() as i32;

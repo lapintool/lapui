@@ -1,10 +1,16 @@
 # Structured interaction
 
-The development client exposes protocol discovery, application state, and action invocation without a screenshot or DOM scraping. Send a JSON line over the printed loopback address. Start with:
+The development client exposes protocol discovery, application state, and action invocation without requiring a screenshot or DOM scraping. Send a JSON line over the printed loopback address:
 
 ```json
 {"method":"describe"}
 ```
+
+For visual debugging, `lapui client <address> screenshot <image.png>` captures
+the current physical viewport using the built-in CPU renderer and saves a PNG.
+`describe` advertises this method when `software-renderer` is compiled. The
+image and compact metadata use the same API as MCP `page_screenshot`; see
+[built-in screenshots](rendering.md#built-in-screenshot-api).
 
 `describe` reports protocol version and capability flags; unsupported operations are explicitly false. The TCP adapter exposes semantic controls, control mutations and script diagnostics through the document's UI thread. Registered Rust actions and bounded asynchronous operations share the application registry; see [Rust host actions](host-actions.md). [Change subscriptions](changes.md) provide bounded application-state, action, operation and explicit host events with scoped cursor recovery. DOM/control change streams and frame events remain unsupported.
 

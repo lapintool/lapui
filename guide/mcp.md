@@ -121,7 +121,9 @@ before and after; it may pause the UI and does not promise that the OS returns
 freed pages to the system.
 Screenshot requests paint one rendering opportunity with the software
 renderer at the current physical viewport size and scale, without resizing the
-window. PNG payloads are capped at 4 MiB; the result identifies CPU rendering
+window. They call the public [built-in screenshot API](rendering.md#built-in-screenshot-api);
+the result includes physical `width`, `height`, `scaleFactor` and `documentEpoch`.
+PNG payloads are capped at 4 MiB; the result identifies CPU rendering
 but does not acknowledge presentation by the native window or operating system.
 The tools do not expose arbitrary JavaScript evaluation, arbitrary DOM access,
 or process discovery. The bridge is the only listener and is authenticated and

@@ -1,11 +1,43 @@
 # Desktop MCP host acceptance (Windows / Cursor)
 
-**Status: prepared, not run.** The current machine has Cursor 3.21.16 installed at
+**Status: partial desktop validation, 2026-10-03; business workflow unverified.**
+The current machine has Cursor 3.21.16 installed at
 `C:\Program Files\cursor\Cursor.exe`; an older per-user Cursor 0.45.14 is also
 registered. The newer executable resolves from `cursor` on PATH. It was not
-running during preparation, and no project MCP configuration was found. This
-document does not claim a desktop-host integration pass or assume an account is
-signed in.
+running during initial preparation, and no project MCP configuration was found.
+The later isolated run connected and discovered tools; see the observed results
+below. This document does not claim a complete desktop-host integration pass.
+
+## Observed results (2026-10-03)
+
+- Computer Use launched the installed Cursor successfully after the user enabled
+  access. A disposable `.cursor/mcp.json` under `target/cursor-host-<unique-id>/`
+  pointed to the candidate below. The global MCP configuration was not created.
+- Cursor's project MCP source was initially disabled. Enabling that source
+  produced `Local: Connected` and the expected 18 named tools, including
+  `page_screenshot`. This is real desktop-host startup/discovery evidence.
+- Cursor's `Reload` action replaced its stdio adapter (PID 24632 -> 13904),
+  returned to `Connected`, and rediscovered the same 18 tools while Lapui's UI
+  process remained PID 25532. Application epoch and metadata recovery through
+  Cursor's business calls were not measured.
+- The test workspace title included `[Administrator]`. Indexed and coordinate
+  clicks did not establish editable focus in the test composer; direct value
+  assignment returned without an error but the composer remained empty. No test
+  prompt was submitted. The cause is undiagnosed; elevation is an observed
+  condition, not a proven explanation. Business reads/writes, stale versions,
+  waits and model-mediated recovery remain unverified.
+- Both synthetic fixture files retained their baseline names, sizes and SHA-256
+  values. A local capture of the connected tools panel is retained in
+  `target/desktop-host-report/cursor-connected.jpg`; it contains no bridge token.
+- Cursor, the disposable Lapui host and its adapter were closed after the run;
+  temporary project configuration, synthetic fixture and descriptor were removed.
+  The local JSON report and screenshot are retained outside that disposable tree.
+- The UI showed its existing `Writes: Allow all` setting. No approval-policy
+  setting was changed; this run does not verify per-call approval behavior.
+
+The remaining desktop workflow can be run from a normally launched Cursor
+window with a working composer, using only the synthetic fixture. Keep this
+separate from the independently passing official SDK business workflow tests.
 
 The goal is to verify Lapui through the installed desktop host, using a disposable
 directory and the authenticated bridge. The bridge keeps the same Lapui window

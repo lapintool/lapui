@@ -20,6 +20,63 @@ cargo run --release --locked -- --html examples/react-demo/index.html --snapshot
 
 This resolves styles/layout at 1x scale and paints the current state using the CPU renderer. It is not a screenshot of an existing window and does not wait for every asynchronous script, image or network operation. The embedding API `lapui::snapshot::render_rgba` and `save_png` allow a host to render after its own state-ready condition. Dimensions must be 1..8192 with at most 16 megapixels. Rendering changes the document viewport. PNG export converts premultiplied pixels to straight RGBA. The pixel regression test checks known CSS colors, state mutation and viewport resize; the file-tool output has also been visually inspected with Chinese text and controls. This does not prove physical IME/cursor behavior or GPU/CPU pixel equality.
 
+## Built-in screenshot API
+
+To capture a running application through its printed development-client address:
+
+```powershell
+lapui client 127.0.0.1:PORT screenshot target/current-window.png
+```
+
+This saves a PNG locally and prints compact capture metadata. It uses the UI
+thread's current document and the built-in renderer; no MCP SDK, native screen
+capture permission or window activation is required. It also works when the
+window is covered. The development listener is enabled only in the regular
+development mode; MCP-only modes keep their authenticated bridge. Use
+`page_screenshot` through that bridge instead. The output directory must exist.
+
+Embedding applications can capture their live document directly on its owning
+thread, using `lapui::snapshot::capture`. This API works independently of MCP
+and operating-system screenshot permissions, and preserves the current physical
+viewport size, scale and color scheme:
+
+```rust,no_run
+use lapui::{runtime::LapuiDocument, snapshot};
+
+fn debug_image(document: &mut LapuiDocument) -> Result<(), String> {
+    // Call after the application's own readiness condition.
+    let screenshot = snapshot::capture(document)?;
+    println!("epoch={}, {}x{} pixels, scale={}",
+        screenshot.document_epoch(), screenshot.width(), screenshot.height(),
+        screenshot.scale_factor());
+    let rgba: &[u8] = screenshot.rgba(); // Straight-alpha RGBA8.
+    let png: Vec<u8> = screenshot.to_png()?; // Same owned frame; no second paint.
+    screenshot.save_png("debug.png")?;
+    Ok(())
+}
+```
+
+`Screenshot` owns its pixels, so encoding and saving remain valid after later
+document mutations or teardown. Capture polls pending work and paints one
+animation opportunity; it does not wait for all asynchronous work. Dimensions
+are limited to 8192 per axis and 4 megapixels. The `document_epoch` identifies
+the document instance, and is not a DOM revision. Capturing advances rendering
+callbacks, so it is not a passive copy of the last presented window frame.
+
+The image contains Lapui document content. Native title bars, mouse cursors and
+OS IME candidate windows require desktop inspection. The CPU image can be
+captured while a GPU window is in use, but does not certify GPU pixel parity or
+physical screen presentation. The API requires `software-renderer`, which is
+enabled by default. `page_screenshot` uses this same capture and PNG encoder,
+adds `scaleFactor` metadata, and applies the separate 4 MiB MCP PNG budget.
+
+Run `py -3 tests/screenshot_smoke.py --binary target/release/lapui.exe` for a
+live CLI regression without an MCP SDK. It opens the maintained forms fixture,
+checks discovery, PNG dimensions, epoch/DPI metadata and viewport preservation,
+then closes its test process. Images and a JSON report remain under
+`target/screenshot-smoke/`. The Rust pixel tests separately check straight alpha
+and the captured image's independence from later document mutations.
+
 Fractional-DPI painting temporarily restores unrounded CSS border edges before building the paint scene, then restores the authoritative Taffy layout. The pixel regression checks both vertical borders at 100%, 125%, 150%, and 175% scales without changing final layout. A current Windows 11 `forms-demo` window also showed the input's left and right borders intact after this fix. This addresses a 1-pixel edge loss seen at fractional scales; it does not establish general pixel parity with browser engines.
 
 The current release candidate also completed matched short network-soak screens on both renderers. The CPU screen ran 30 minutes total including 5 minutes of warm-up (about 25 minutes of steady samples), followed by 10 minutes idle; private bytes rose 0.53 MiB in steady state. The opt-in GPU screen used the same duration and workload: steady private bytes rose 0.29 MiB and working set fell 3.18 MiB, but private bytes stayed near 348 MiB. DXGI usage during steady state was about 28 MiB dedicated and 273 MiB shared, dropping to about 24 MiB dedicated during idle while process private bytes remained flat. Both screens completed 180 cycles, 15 reloads, 6,034 SSE messages, 180 WebSocket messages, and 36 planned error injections with no unexpected errors. These are short screens, not the required eight-hour mixed-load acceptance; GPU remains opt-in and CPU remains the default.

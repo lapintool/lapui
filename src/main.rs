@@ -203,6 +203,8 @@ fn respond(
                     methods.push("reload");
                     methods.push("reloadStatus");
                 }
+                #[cfg(feature = "software-renderer")]
+                methods.push("screenshot");
                 Ok(json!({
                     "protocolVersion": 1,
                     "transport": "newline-delimited-json-over-tcp",
@@ -222,6 +224,7 @@ fn respond(
                         "physicalPresentationAck": false,
                         "durableRecovery": false,
                         "controlSnapshot": true,
+                        "screenshot": cfg!(feature = "software-renderer"),
                         "pageChangeJournal": true,
                         "controlConditionWait": true,
                         "waitCancellation": true,
@@ -404,6 +407,7 @@ fn respond(
                 }
                 observation
             }
+            Some("screenshot") => controller.request(request, Duration::from_secs(15)),
             Some(
                 "controls"
                 | "diagnostics"
@@ -494,7 +498,11 @@ fn run_client(
         return Ok(());
     }
     let mut stream = TcpStream::connect(address)?;
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_read_timeout(Some(Duration::from_secs(if method == "screenshot" {
+        20
+    } else {
+        10
+    })))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let request = match method {
         "describe" => json!({"method":"describe"}),
@@ -502,6 +510,10 @@ fn run_client(
         "actions" => json!({"method":"actions.list"}),
         "describe-action" => json!({"method":"actions.describe","action":request_file.ok_or("describe-action requires an action ID")?}),
         "controls" => json!({"method":"controls"}),
+        "screenshot" => {
+            request_file.ok_or("screenshot requires a PNG output path")?;
+            json!({"method":"screenshot"})
+        },
         "diagnostics" => json!({"method":"diagnostics"}),
         "network-status" => json!({"method":"networkStatus"}),
         "runtime-memory" => json!({"method":"runtime.memoryUsage"}),
@@ -519,18 +531,59 @@ fn run_client(
             if bytes.len() > MAX_CONTROL_REQUEST_BYTES { return Err("request file exceeds 64 KiB".into()); }
             serde_json::from_slice(&bytes)?
         }
-        _ => return Err("client command must be describe, observe, actions, describe-action <id>, increment, changes [cursor], trace, controls, diagnostics, network-status, runtime-memory, reload, reload-status, operation <id>, cancel-operation <id>, or request-file <path>".into()),
+        _ => return Err("client command must be describe, observe, actions, describe-action <id>, increment, changes [cursor], trace, controls, screenshot <image.png>, diagnostics, network-status, runtime-memory, reload, reload-status, operation <id>, cancel-operation <id>, or request-file <path>".into()),
     };
     writeln!(stream, "{request}")?;
     let mut response = String::new();
+    if method == "screenshot" {
+        const MAX_REPLY_BYTES: u64 = 6 * 1024 * 1024;
+        BufReader::new(stream.take(MAX_REPLY_BYTES + 1)).read_line(&mut response)?;
+        if response.len() as u64 > MAX_REPLY_BYTES {
+            return Err("screenshot response exceeds 6 MiB".into());
+        }
+        let response: Value = serde_json::from_str(&response)?;
+        let metadata = save_screenshot_response(&response, request_file.unwrap())?;
+        println!("{metadata}");
+        return Ok(());
+    }
     BufReader::new(stream).read_line(&mut response)?;
     println!("{}", response.trim_end());
     Ok(())
 }
 
+fn save_screenshot_response(
+    response: &Value,
+    path: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    use base64::Engine;
+    if response["ok"] != true {
+        return Err(format!("screenshot failed: {}", response["error"]).into());
+    }
+    let observation = &response["observation"];
+    let encoded = observation["pngBase64"]
+        .as_str()
+        .ok_or("missing screenshot PNG")?;
+    if encoded.len() > 4 * 1024 * 1024 * 4 / 3 + 4 {
+        return Err("screenshot PNG exceeds 4 MiB".into());
+    }
+    let png = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+    if png.len() > 4 * 1024 * 1024 || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("invalid or oversized screenshot PNG".into());
+    }
+    std::fs::write(path, png)?;
+    let mut metadata = observation.clone();
+    metadata
+        .as_object_mut()
+        .ok_or("invalid screenshot metadata")?
+        .remove("pngBase64");
+    metadata["path"] = json!(path);
+    Ok(metadata)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!("Capture a running application: lapui client <address> screenshot <image.png>\n");
         println!("Lapui {}\n\nRun: lapui [--demo files | --demo local-files --directory <path> | --html <index.html> [--js <bundle.js>]]\n     [--renderer cpu|gpu] [--watch] [--debug-trace] [--mcp-stdio | --mcp-bridge-id <id>]\nMCP stdio adapter: lapui mcp-stdio <bridge-id>\nExport current state: lapui [app options] --snapshot <image.png> [--width <pixels> --height <pixels>]\nClient: lapui client <address> describe|observe|increment|controls|diagnostics|network-status|runtime-memory|trace|debug-trace <documentEpoch>|actions\n        lapui client <address> describe-action <action-id>\n        lapui client <address> changes [cursor]\n        lapui client <address> reload|reload-status\n        lapui client <address> operation|cancel-operation <operation-id>\n        lapui client <address> request-file <request.json>\n\n--demo local-files indexes top-level regular files only. File names and contents are not changed.\n--mcp-stdio serves the current local UI over MCP stdio; stdout is reserved for the protocol.\n--mcp-bridge-id exposes an authenticated, loopback-only MCP bridge for reconnectable stdio adapters.\nCPU drawing and PNG export require the software-renderer feature (enabled by default).\n--watch uses local files and a window; it performs full document reloads.\nThe control address is printed when the window starts. Snapshots do not wait for all asynchronous work.", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
@@ -811,6 +864,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(feature = "software-renderer")]
+    fn screenshot_client_saves_current_frame_and_rejects_failures_without_clobbering() {
+        use base64::Engine;
+        use blitz::dom::Document;
+        use blitz::traits::shell::{ColorScheme, Viewport};
+        let (mut document, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><style>html,body{margin:0;background:#123456}</style></html>",
+            "",
+        )
+        .unwrap();
+        document
+            .inner_mut()
+            .set_viewport(Viewport::new(10, 8, 1.5, ColorScheme::Light));
+        let shot = lapui::snapshot::capture(&mut document).unwrap();
+        let png = shot.to_png().unwrap();
+        let response = json!({"ok":true,"observation":{
+            "documentEpoch":shot.document_epoch(),"width":10,"height":8,"scaleFactor":1.5,
+            "boundary":"cpu_rendered","physicalPresentation":"not_confirmed",
+            "pngBase64":base64::engine::general_purpose::STANDARD.encode(&png)
+        }});
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&request).unwrap(),
+                json!({"method":"screenshot"})
+            );
+            writeln!(stream, "{response}").unwrap();
+        });
+        let path = std::env::temp_dir().join(format!(
+            "lapui-client-screenshot-{}.png",
+            std::process::id()
+        ));
+        let path_str = path.to_str().unwrap();
+        run_client(&address.to_string(), "screenshot", Some(path_str)).unwrap();
+        server.join().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), png);
+        assert_eq!(
+            image::open(&path).unwrap().into_rgba8().as_raw(),
+            shot.rgba()
+        );
+        assert!(save_screenshot_response(
+            &json!({"ok":false,"error":{"code":"screenshot_unavailable"}}),
+            path_str
+        )
+        .is_err());
+        assert!(save_screenshot_response(
+            &json!({"ok":true,"observation":{"pngBase64":"!!!"}}),
+            path_str
+        )
+        .is_err());
+        assert!(save_screenshot_response(
+            &json!({"ok":true,"observation":{"pngBase64":"bm90IHBuZw=="}}),
+            path_str
+        )
+        .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), png);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn wait_for_control_matches_a_semantic_condition_and_bounds_requests() {
@@ -1297,34 +1418,42 @@ mod tests {
         let response: Value = serde_json::from_str(&response).unwrap();
         assert_eq!(response["ok"], true);
         assert_eq!(response["observation"]["protocolVersion"], 1);
+        let mut expected_methods = json!([
+            "describe",
+            "observe",
+            "invoke",
+            "trace",
+            "operation",
+            "cancelOperation",
+            "cancelWait",
+            "controls",
+            "pageChanges",
+            "waitForControl",
+            "waitForRender",
+            "diagnostics",
+            "networkStatus",
+            "runtime.memoryUsage",
+            "activate",
+            "fill",
+            "check",
+            "focus",
+            "changes.subscribe",
+            "actions.list",
+            "actions.describe",
+            "actions.check",
+            "debugTrace.configure",
+            "debugTrace.read"
+        ]);
+        if cfg!(feature = "software-renderer") {
+            expected_methods
+                .as_array_mut()
+                .unwrap()
+                .push(json!("screenshot"));
+        }
+        assert_eq!(response["observation"]["methods"], expected_methods);
         assert_eq!(
-            response["observation"]["methods"],
-            json!([
-                "describe",
-                "observe",
-                "invoke",
-                "trace",
-                "operation",
-                "cancelOperation",
-                "cancelWait",
-                "controls",
-                "pageChanges",
-                "waitForControl",
-                "waitForRender",
-                "diagnostics",
-                "networkStatus",
-                "runtime.memoryUsage",
-                "activate",
-                "fill",
-                "check",
-                "focus",
-                "changes.subscribe",
-                "actions.list",
-                "actions.describe",
-                "actions.check",
-                "debugTrace.configure",
-                "debugTrace.read"
-            ])
+            response["observation"]["capabilities"]["screenshot"],
+            cfg!(feature = "software-renderer")
         );
         assert_eq!(
             response["observation"]["capabilities"]["expectedVersion"],

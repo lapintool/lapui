@@ -1211,14 +1211,12 @@ impl LapuiDocument {
             #[cfg(feature = "software-renderer")]
             {
                 use base64::Engine;
-                use image::ImageEncoder;
                 const MAX_PNG_BYTES: usize = 4 * 1024 * 1024;
-                let (width, height, rgba) = crate::snapshot::render_current_rgba_without_poll(self)
+                let screenshot = crate::snapshot::capture_without_poll(self)
                     .map_err(|message| failure("screenshot_unavailable", &message))?;
-                let mut png = Vec::new();
-                image::codecs::png::PngEncoder::new(&mut png)
-                    .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
-                    .map_err(|error| failure("screenshot_failed", &error.to_string()))?;
+                let png = screenshot
+                    .to_png()
+                    .map_err(|message| failure("screenshot_failed", &message))?;
                 if png.len() > MAX_PNG_BYTES {
                     return Err(failure(
                         "screenshot_too_large",
@@ -1226,9 +1224,10 @@ impl LapuiDocument {
                     ));
                 }
                 return Ok(json!({
-                    "documentEpoch":self.dom.borrow().id(),
-                    "width":width,
-                    "height":height,
+                    "documentEpoch":screenshot.document_epoch(),
+                    "width":screenshot.width(),
+                    "height":screenshot.height(),
+                    "scaleFactor":screenshot.scale_factor(),
                     "boundary":"cpu_rendered",
                     "physicalPresentation":"not_confirmed",
                     "pngBase64":base64::engine::general_purpose::STANDARD.encode(png)

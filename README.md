@@ -59,6 +59,11 @@ The demo does not modify disk files. See [Rust host actions](guide/host-actions.
 
 AI clients can discover bounded action summaries with `actions.list`, retrieve a selected schema with `actions.describe`, and query business blockers with `actions.check`. Rust scopes retire temporary actions when their owner/document closes. See [action discovery and lifetime](guide/action-discovery.md).
 
+Save an application image with `--snapshot target/image.png`, or capture a running
+window with `lapui client <address> screenshot target/image.png`. Embedding hosts
+can call `lapui::snapshot::capture` directly and export the owned frame as RGBA
+or PNG. See [built-in screenshots](guide/rendering.md#built-in-screenshot-api).
+
 ## Build the documentation
 
 The public guide is an [mdBook](https://rust-lang.github.io/mdBook/). After installing the `mdbook` CLI, run `mdbook build` from the repository root; `mdbook serve` starts a local preview. The generated `book/` directory is ignored by Git.
