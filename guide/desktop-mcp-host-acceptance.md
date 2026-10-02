@@ -47,11 +47,16 @@ transport, and per-tool approval; see [Cursor MCP configuration](https://docs.cu
 
 ## Candidate and isolation
 
-Use the staged developer-preview candidate only for this local acceptance:
+The observed partial desktop run above used this older immutable candidate:
 
 - Executable: `target/windows-preview-package-6d8147c/lapui.exe`
 - SHA-256: `EB1F48098FC827A3C1DC7D9937E1DF9DD30A89F8678E22E68A6DA3DBE438B156`
 - Source commit: `6d8147cf6b6520f9b18bc1ae79170b9dc989b171`
+
+For a new run, use the candidate from the [current package checklist](windows-preview-package.md)
+and record its actual hash separately. Do not transfer the older host evidence
+to that new candidate. The commands below show the original run's paths; replace
+the executable path in both launch and MCP configuration for a fresh acceptance.
 
 The package is explicitly `not-ready`: the downstream `void` notice still needs
 human review, and clean-Windows acceptance remains open. Do not use real personal

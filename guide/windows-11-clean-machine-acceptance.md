@@ -25,11 +25,12 @@ review are complete.
    if (@($report.missingResources).Count -or @($report.problems).Count) {
      throw 'Package report has missing resources or consistency problems.'
    }
-   $stageRoot = (Resolve-Path target\windows-preview-package-6d8147c -ErrorAction SilentlyContinue).Path
+   $stagePath = Join-Path 'target' ('windows-preview-package-' + $report.releaseCandidate.expectedSource.Substring(0,7))
+   $stageRoot = (Resolve-Path $stagePath -ErrorAction SilentlyContinue).Path
    if (-not $stageRoot) {
      py -3 scripts/stage_windows_preview_package.py
      if ($LASTEXITCODE -ne 0) { throw 'Could not stage the reviewed candidate.' }
-     $stageRoot = (Resolve-Path target\windows-preview-package-6d8147c).Path
+     $stageRoot = (Resolve-Path $stagePath).Path
    }
    $manifest = Get-Content (Join-Path $stageRoot 'PACKAGE-MANIFEST.json') -Raw | ConvertFrom-Json
    $expected = @($manifest.files | ForEach-Object { $_.path } | Sort-Object)
@@ -56,7 +57,7 @@ review are complete.
    $kit = 'C:\LapuiAcceptance\host-input'
    New-Item -ItemType Directory -Force "$kit\package", "$kit\prerequisites", `
      "$kit\acceptance\tests", "$kit\acceptance\wheelhouse" | Out-Null
-   Copy-Item 'target\windows-preview-package-6d8147c\*' "$kit\package" -Recurse
+   Copy-Item (Join-Path $stageRoot '*') "$kit\package" -Recurse
    Copy-Item 'tests\mcp_sdk_v2_smoke.py', 'tests\requirements-mcp-sdk-v2-lock.txt' `
      "$kit\acceptance\tests"
    ```

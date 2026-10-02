@@ -6,12 +6,13 @@ import argparse
 import hashlib
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
-from check_windows_preview_package import ROOT, check_package
+from check_windows_preview_package import RELEASE_SOURCE, ROOT, check_package
 
 
-DESTINATION = ROOT / "target" / "windows-preview-package-6d8147c"
+DESTINATION = ROOT / "target" / f"windows-preview-package-{RELEASE_SOURCE[:7]}"
 
 
 def sha256(path: Path) -> str:
@@ -36,6 +37,14 @@ def stage_package(refresh: bool = False) -> dict:
             "Cannot stage an incomplete candidate: "
             f"missing={report['missingResources']}, problems={report['problems']}"
         )
+    package_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True,
+        check=True, timeout=10,
+    ).stdout.strip()
+    tracked_changes = bool(subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT,
+        capture_output=True, text=True, check=True, timeout=10,
+    ).stdout.strip())
     if DESTINATION.exists():
         if not refresh:
             raise FileExistsError(f"Refusing to overwrite existing staging directory: {DESTINATION}")
@@ -93,6 +102,8 @@ def stage_package(refresh: bool = False) -> dict:
     status = {
         "packageStatus": "not-ready",
         "sourceCommit": report["releaseCandidate"]["expectedSource"],
+        "packageCheckoutCommit": package_commit,
+        "packageTrackedChanges": tracked_changes,
         "executableSha256": report["releaseCandidate"]["sha256"],
         "openGates": report["openGates"],
         "noticeReviewRequired": True,
@@ -120,6 +131,8 @@ def stage_package(refresh: bool = False) -> dict:
         "formatVersion": 1,
         "packageStatus": "not-ready",
         "sourceCommit": status["sourceCommit"],
+        "packageCheckoutCommit": package_commit,
+        "packageTrackedChanges": tracked_changes,
         "executableSha256": status["executableSha256"],
         "fileCountExcludingManifest": len(files),
         "uncompressedBytesExcludingManifest": sum(item["bytes"] for item in files),
