@@ -15,8 +15,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_SHA256 = "C8FF3F17F8F00769CF27EA259E3D9BB4AD874FDCDF557033396DDF48779EBD48"
-RELEASE_BYTES = 33_571_328
+RELEASE_SOURCE = "6d8147cf6b6520f9b18bc1ae79170b9dc989b171"
+RELEASE_SHA256 = "EB1F48098FC827A3C1DC7D9937E1DF9DD30A89F8678E22E68A6DA3DBE438B156"
+RELEASE_BYTES = 34_113_536
 EXPECTED_DEPENDENCIES = 338
 
 
@@ -32,7 +33,7 @@ def check_package() -> dict:
     missing_resources: list[str] = []
     problems: list[str] = []
     manual_gates = [
-        "Run the staged package on a clean Windows 11 user environment.",
+        "Run the staged package on a clean Windows 11 user environment after following its documented VC++ prerequisite.",
         "Verify CJK fallback/rendering and the MCP stdio workflow on that machine.",
     ]
 
@@ -48,6 +49,7 @@ def check_package() -> dict:
         "licenses/third_party/upstream/SPDX-SOURCES.json",
         "licenses/third_party/distribution/SOURCES.json",
         "licenses/third_party/distribution/notices/void-1.0.2-MIT.txt",
+        "prerequisites/README.md",
     ]
     for relative in required_files:
         if not (ROOT / relative).is_file():
@@ -58,11 +60,17 @@ def check_package() -> dict:
         problems.append("No tracked guide Markdown files were found.")
 
     executable = ROOT / "target" / "release" / "lapui.exe"
-    executable_info = {"path": str(executable), "exists": executable.is_file()}
+    executable_info = {
+        "path": str(executable),
+        "exists": executable.is_file(),
+        "expectedSource": RELEASE_SOURCE,
+        "expectedBytes": RELEASE_BYTES,
+        "expectedSha256": RELEASE_SHA256,
+    }
     if executable.is_file():
         executable_info.update({"bytes": executable.stat().st_size, "sha256": sha256(executable)})
         if executable_info["bytes"] != RELEASE_BYTES or executable_info["sha256"] != RELEASE_SHA256:
-            problems.append("The release executable differs from the reviewed b098e0e candidate.")
+            problems.append(f"The release executable differs from the reviewed {RELEASE_SOURCE[:7]} candidate.")
     else:
         missing_resources.append("target/release/lapui.exe")
 
@@ -151,9 +159,20 @@ def check_package() -> dict:
     else:
         missing_resources.append("target/windows-release-sources.zip")
 
-    redist = ROOT / "target" / "windows-preview-package" / "prerequisites" / "vc_redist.x64.exe"
-    if not redist.is_file():
-        missing_resources.append("prerequisites/vc_redist.x64.exe")
+    prerequisite_readme = ROOT / "prerequisites" / "README.md"
+    prerequisite_info = {
+        "delivery": "user-installed",
+        "instructionPath": str(prerequisite_readme),
+        "exists": prerequisite_readme.is_file(),
+    }
+    if prerequisite_readme.is_file():
+        prerequisite_text = prerequisite_readme.read_text(encoding="utf-8")
+        prerequisite_info["officialMicrosoftLinkDocumented"] = (
+            "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist" in prerequisite_text
+        )
+        prerequisite_info["x64RuntimeDocumented"] = "x64" in prerequisite_text and "Redistributable" in prerequisite_text
+        if not prerequisite_info["officialMicrosoftLinkDocumented"] or not prerequisite_info["x64RuntimeDocumented"]:
+            problems.append("The documented VC++ prerequisite does not identify Microsoft's official x64 download.")
 
     audit_path = ROOT / "target" / "windows-release-license-audit.json"
     audit_info = {"path": str(audit_path), "exists": audit_path.is_file()}
@@ -190,15 +209,12 @@ def check_package() -> dict:
     open_gates = []
     if notice_review_required:
         open_gates.append("Human review of the downstream void 1.0.2 notice evidence and staged wording.")
-    if not redist.is_file():
-        open_gates.append(
-            "Resolve VC++ Runtime delivery: verify redistribution rights before bundling, document the official user-installed prerequisite, or revalidate a static-CRT build."
-        )
     open_gates.extend(manual_gates)
 
     return {
         "packageStatus": "not-ready",
         "releaseCandidate": executable_info,
+        "runtimePrerequisite": prerequisite_info,
         "sourceArchive": source_info,
         "licenseAudit": audit_info,
         "missingResources": missing_resources,
