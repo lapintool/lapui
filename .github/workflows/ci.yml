@@ -19,11 +19,19 @@ env:
 
 jobs:
   runtime:
-    name: Runtime (${{ matrix.os }})
+    name: Runtime (${{ matrix.os }}, Rust ${{ matrix.rust }})
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, ubuntu-24.04, macos-15]
+        include:
+          - os: windows-2025
+            rust: "1.91.1"
+          - os: windows-2025
+            rust: stable
+          - os: ubuntu-24.04
+            rust: "1.91.1"
+          - os: macos-15
+            rust: "1.91.1"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -31,24 +39,24 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev libfontconfig1-dev fonts-noto-cjk
       - name: Install fixed Rust toolchain
-        run: rustup toolchain install 1.91.1 --profile minimal --component clippy,rustfmt
+        run: rustup toolchain install ${{ matrix.rust }} --profile minimal --component clippy,rustfmt
       - name: Check formatting
-        run: cargo +1.91.1 fmt --all --check
+        run: cargo +${{ matrix.rust }} fmt --all --check
       - name: Default runtime regressions
-        run: cargo +1.91.1 test --locked -- --test-threads=2
+        run: cargo +${{ matrix.rust }} test --locked -- --test-threads=2
       - name: Minimal-feature regressions
-        run: cargo +1.91.1 test --locked --no-default-features -- --test-threads=2
+        run: cargo +${{ matrix.rust }} test --locked --no-default-features -- --test-threads=2
       - name: Strict lint
-        run: cargo +1.91.1 clippy --locked --all-targets -- -D warnings
+        run: cargo +${{ matrix.rust }} clippy --locked --all-targets -- -D warnings
       - name: Link the executable
-        run: cargo +1.91.1 build --locked --bins
+        run: cargo +${{ matrix.rust }} build --locked --bins
       - name: Paint embedded tool without a window
-        run: cargo +1.91.1 run --locked -- --demo files --snapshot target/ci-files.png
+        run: cargo +${{ matrix.rust }} run --locked -- --demo files --snapshot target/ci-files.png
   documentation:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install fixed documentation tool
-        run: cargo install mdbook --version 0.4.52 --locked
+        run: cargo install mdbook --version 0.5.4 --locked
       - name: Build the guide
         run: mdbook build

@@ -85,7 +85,7 @@ fn render_current_layout(
         &mut pixels,
     );
     // Vello returns premultiplied RGBA; image encoders expect straight alpha.
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         let alpha = u16::from(pixel[3]);
         if alpha == 0 {
             pixel[..3].fill(0);
