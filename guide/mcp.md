@@ -125,7 +125,17 @@ window. PNG payloads are capped at 4 MiB; the result identifies CPU rendering
 but does not acknowledge presentation by the native window or operating system.
 The tools do not expose arbitrary JavaScript evaluation, arbitrary DOM access,
 or process discovery. The bridge is the only listener and is authenticated and
-loopback-only. The official Python MCP SDK 1.30.0 smoke covers one combined
+loopback-only. A current-line Python client check is available at
+`tests/mcp_sdk_v2_smoke.py`; install its isolated dependency with
+`python -m pip install -r tests/requirements-mcp-sdk-v2.txt` and run
+`python tests/mcp_sdk_v2_smoke.py [path-to-lapui]` after building. It pins the
+stable SDK v2 line at 2.2.0 and verifies 2026-07-28 protocol negotiation, all
+18 tools, stable fields for `app_describe`, `page_observe`, and `page_changes`,
+and the local-files query/update/conflict workflow. Keep this separate from
+the v1.30.0 compatibility smoke: SDK v2 negotiates the current protocol and
+falls back to legacy initialization for older servers.
+
+The official Python MCP SDK 1.30.0 smoke covers one combined
 workflow: Chinese page observation, semantic and causal waits, conflict/draft
 recovery, verified rename, scan, reload with stale-ref rejection, adapter
 disconnect/reconnect, and recovery of the same operation and changes. This is
