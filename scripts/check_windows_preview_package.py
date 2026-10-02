@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -68,6 +69,24 @@ def check_package() -> dict:
     archive = ROOT / "target" / "windows-release-sources.zip"
     source_info = {"path": str(archive), "exists": archive.is_file()}
     if archive.is_file():
+        lock_packages = tomllib.loads((ROOT / "Cargo.lock").read_text(encoding="utf-8")).get("package", [])
+        registry_checksums = {
+            (package["name"], package["version"]): package["checksum"]
+            for package in lock_packages
+            if package.get("source", "").startswith("registry+") and package.get("checksum")
+        }
+        audit_path = ROOT / "target" / "windows-release-license-audit.json"
+        try:
+            audit_packages = json.loads(audit_path.read_text(encoding="utf-8")).get("packages", [])
+        except (OSError, json.JSONDecodeError) as error:
+            audit_packages = []
+            problems.append(f"The license audit report could not be used to verify source packages: {error}")
+        expected_packages = {
+            (package["name"], package["version"])
+            for package in audit_packages
+            if package.get("name") and package.get("version")
+        }
+        locked_checksums = {package: registry_checksums.get(package) for package in expected_packages}
         try:
             with zipfile.ZipFile(archive) as bundle:
                 bad_member = bundle.testzip()
@@ -75,6 +94,21 @@ def check_package() -> dict:
                 members = set(bundle.namelist())
                 crate_count = sum(name.startswith("crates/") and name.endswith(".crate") for name in members)
                 bad_checksums = []
+                source_packages = {
+                    (package.get("name"), package.get("version")): package
+                    for package in manifest.get("packages", [])
+                }
+                missing_locked = sorted(expected_packages - set(source_packages))
+                unexpected_packages = sorted(set(source_packages) - expected_packages)
+                lockfile_checksum_mismatches = [
+                    f"{name}-{version}"
+                    for (name, version), checksum in locked_checksums.items()
+                    if (name, version) in source_packages
+                    and (
+                        checksum is None
+                        or source_packages[(name, version)].get("crateSha256") != checksum
+                    )
+                ]
                 for package in manifest.get("packages", []):
                     member = f"crates/{package['name']}-{package['version']}.crate"
                     if member not in members:
@@ -92,6 +126,11 @@ def check_package() -> dict:
                     "dependencyCount": manifest.get("dependencyCount"),
                     "crateArchiveCount": crate_count,
                     "checksumVerifiedCount": len(manifest.get("packages", [])) - len(bad_checksums),
+                    "lockfilePackageCount": len(expected_packages),
+                    "lockfileMatchedPackageCount": len(expected_packages)
+                    - len(missing_locked)
+                    - len(lockfile_checksum_mismatches),
+                    "unexpectedPackageCount": len(unexpected_packages),
                     "zipIntegrity": "passed" if bad_member is None else f"failed:{bad_member}",
                 }
             )
@@ -101,6 +140,12 @@ def check_package() -> dict:
                 problems.append("The source archive does not contain all 338 reviewed dependency archives.")
             if bad_checksums:
                 problems.append(f"The source archive has missing or checksum-mismatched crate entries: {bad_checksums[:5]}")
+            if missing_locked or unexpected_packages or lockfile_checksum_mismatches:
+                problems.append(
+                    "The source archive manifest differs from Cargo.lock: "
+                    f"missing={missing_locked[:5]}, unexpected={unexpected_packages[:5]}, "
+                    f"checksumMismatches={lockfile_checksum_mismatches[:5]}"
+                )
         except (OSError, KeyError, json.JSONDecodeError, zipfile.BadZipFile) as error:
             problems.append(f"The source archive could not be verified: {error}")
     else:
