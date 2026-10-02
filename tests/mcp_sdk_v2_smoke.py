@@ -192,6 +192,89 @@ async def run(binary: Path) -> None:
                 )
             )
 
+    await run_sensitive_content_smoke(binary)
+
+
+async def run_sensitive_content_smoke(binary: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="lapui-mcp-sensitive-") as temporary:
+        directory = Path(temporary)
+        page = directory / "sensitive.html"
+        page.write_text(
+            """<!doctype html><html><body>
+              <input id="password" type="password" value="initial-password-sentinel">
+              <input id="otp" autocomplete="one-time-code" value="initial-otp-sentinel">
+              <input id="email" autocomplete="email" value="visible@example.test">
+            </body></html>""",
+            encoding="utf-8",
+        )
+        parameters = StdioServerParameters(
+            command=str(binary),
+            args=["--html", str(page), "--mcp-stdio"],
+        )
+        async with Client(parameters) as client:
+            snapshot = await client.call_tool("page_controls")
+            require(not snapshot.is_error, f"sensitive fixture controls failed: {snapshot.structured_content}")
+            epoch = snapshot.structured_content["documentEpoch"]
+            controls = snapshot.structured_content["controls"]
+            password = next(control for control in controls if control.get("id") == "password")
+            require("value" not in password, "password control value was exposed")
+            require(
+                "visible@example.test" in json.dumps(snapshot.structured_content),
+                "non-sensitive email control was unexpectedly redacted",
+            )
+
+            observed = await client.call_tool("page_observe", arguments={"limit": 64})
+            require(not observed.is_error, f"sensitive fixture observation failed: {observed.structured_content}")
+            initial_semantic = json.dumps([snapshot.structured_content, observed.structured_content])
+            for secret in ("initial-password-sentinel", "initial-otp-sentinel"):
+                require(secret not in initial_semantic, f"semantic observation exposed {secret}")
+
+            baseline = await client.call_tool(
+                "page_changes", arguments={"documentEpoch": epoch, "limit": 64}
+            )
+            require(not baseline.is_error, f"sensitive fixture journal failed: {baseline.structured_content}")
+            filled = await client.call_tool(
+                "page_control",
+                arguments={
+                    "operation": "fill",
+                    "controlRef": password["ref"],
+                    "documentEpoch": epoch,
+                    "value": "typed-password-sentinel",
+                },
+            )
+            require(not filled.is_error, f"password fill failed: {filled.structured_content}")
+
+            after = await client.call_tool(
+                "page_changes",
+                arguments={"documentEpoch": epoch, "cursor": baseline.structured_content["cursor"], "limit": 64},
+            )
+            require(not after.is_error, f"sensitive fixture journal read failed: {after.structured_content}")
+            diagnostics = await client.call_tool("page_diagnostics")
+            require(not diagnostics.is_error, f"sensitive fixture diagnostics failed: {diagnostics.structured_content}")
+            semantic_outputs = json.dumps(
+                [snapshot.structured_content, observed.structured_content, filled.structured_content,
+                 after.structured_content, diagnostics.structured_content]
+            )
+            for secret in (
+                "initial-password-sentinel",
+                "initial-otp-sentinel",
+                "typed-password-sentinel",
+            ):
+                require(secret not in semantic_outputs, f"semantic MCP output exposed {secret}")
+            print(
+                json.dumps(
+                    {
+                        "checks": [
+                            "password and one-time-code values omitted from controls and observation",
+                            "password values omitted from change journal and diagnostics",
+                            "ordinary email value remains observable",
+                            "screenshot content is outside semantic redaction checks",
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
 
 if __name__ == "__main__":
     default_binary = Path(__file__).resolve().parents[1] / "target" / "release" / "lapui.exe"
