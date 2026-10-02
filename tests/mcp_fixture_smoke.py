@@ -117,6 +117,31 @@ async def check_fixture(binary: Path, examples: Path, artifacts: Path, fixture: 
             )
             if initial.is_error or initial.structured_content.get("status") != "matched":
                 raise AssertionError(f"list-stress-demo: initial 100-row window did not render: {initial.structured_content}")
+
+            geometry = await client.call_tool("page_observe", arguments={"limit": 64})
+            if geometry.is_error or not isinstance(geometry.structured_content, dict):
+                raise AssertionError(f"list-stress-demo: geometry observation failed: {geometry.structured_content}")
+            geometry_by_id = {
+                item.get("id"): item.get("bounds")
+                for item in geometry.structured_content.get("items", [])
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+            viewport_bounds = geometry_by_id.get("viewport")
+            rows_bounds = geometry_by_id.get("rows")
+            first_row_bounds = geometry_by_id.get("entry-0001")
+            if not all(isinstance(bounds, dict) for bounds in (viewport_bounds, rows_bounds, first_row_bounds)):
+                raise AssertionError(f"list-stress-demo: fixed layout boxes are missing: {geometry_by_id}")
+            if abs(viewport_bounds["height"] - 364) > 0.1:
+                raise AssertionError(f"list-stress-demo: viewport height drifted: {viewport_bounds}")
+            if abs(rows_bounds["height"] - 28_000) > 0.1:
+                raise AssertionError(f"list-stress-demo: 1,000-row content height drifted: {rows_bounds}")
+            if abs(first_row_bounds["height"] - 28) > 0.1:
+                raise AssertionError(f"list-stress-demo: row height drifted: {first_row_bounds}")
+            if abs(first_row_bounds["y"] - (viewport_bounds["y"] + 2)) > 0.1:
+                raise AssertionError(
+                    f"list-stress-demo: first row is not aligned to viewport content: {viewport_bounds}, {first_row_bounds}"
+                )
+
             search = next((control for control in controls if control.get("id") == "query"), None)
             if search is None:
                 raise AssertionError("list-stress-demo: search control was not discovered")
@@ -144,6 +169,25 @@ async def check_fixture(binary: Path, examples: Path, artifacts: Path, fixture: 
             )
             if result.is_error or result.structured_content.get("status") != "matched":
                 raise AssertionError(f"list-stress-demo: 1,000-row filter did not settle: {result.structured_content}")
+
+            filtered_geometry = await client.call_tool("page_observe", arguments={"limit": 64})
+            filtered_items = filtered_geometry.structured_content.get("items", [])
+            filtered_by_id = {
+                item.get("id"): item.get("bounds")
+                for item in filtered_items
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+            filtered_viewport = filtered_by_id.get("viewport")
+            filtered_rows = filtered_by_id.get("rows")
+            filtered_row = filtered_by_id.get("entry-0999")
+            if not all(isinstance(bounds, dict) for bounds in (filtered_viewport, filtered_rows, filtered_row)):
+                raise AssertionError(f"list-stress-demo: filtered layout boxes are missing: {filtered_by_id}")
+            if abs(filtered_rows["height"] - 360) > 0.1:
+                raise AssertionError(f"list-stress-demo: filtered list did not shrink to its viewport: {filtered_rows}")
+            if abs(filtered_row["y"] - (filtered_viewport["y"] + 2)) > 0.1:
+                raise AssertionError(
+                    f"list-stress-demo: filtered row is not aligned to viewport content: {filtered_viewport}, {filtered_row}"
+                )
 
         if fixture.name == "react-demo":
             effect = await client.call_tool(

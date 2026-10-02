@@ -110,6 +110,38 @@ async def run(binary: Path) -> None:
             require(saved_item["metadata"]["note"] == "updated via MCP Python SDK 2", "metadata update not returned")
             require(saved_item["version"] > initial_version, "successful update did not advance object version")
 
+            retry = await client.call_tool(
+                "action_invoke",
+                arguments={
+                    "action": "local_files.metadata.update",
+                    "args": {
+                        "fileId": item["id"],
+                        "note": "updated via MCP Python SDK 2",
+                        "expectedFileVersion": initial_version,
+                    },
+                    "requestId": "mcp-v2-save-1",
+                },
+            )
+            require(action_result(retry) == saved_item, "same requestId retry did not replay the committed result")
+
+            reused = await client.call_tool(
+                "action_invoke",
+                arguments={
+                    "action": "local_files.metadata.update",
+                    "args": {
+                        "fileId": item["id"],
+                        "note": "different payload must be rejected",
+                        "expectedFileVersion": initial_version,
+                    },
+                    "requestId": "mcp-v2-save-1",
+                },
+            )
+            require(reused.is_error, "same requestId with a different payload unexpectedly succeeded")
+            require(
+                reused.structured_content.get("code") == "request_id_conflict",
+                f"requestId payload reuse returned the wrong error: {reused.structured_content}",
+            )
+
             stale = await client.call_tool(
                 "action_invoke",
                 arguments={
@@ -150,6 +182,8 @@ async def run(binary: Path) -> None:
                             "action discovery",
                             "top-level index query",
                             "metadata update",
+                            "same requestId retry deduplicated",
+                            "same requestId with a different payload rejected",
                             "stale version rejected",
                             "source file unchanged",
                         ],
