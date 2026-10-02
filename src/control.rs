@@ -196,6 +196,129 @@ mod tests {
     }
 
     #[test]
+    fn unknown_dispatched_action_can_be_observed_and_retried_without_duplicate_write() {
+        use crate::action::{ActionInfo, ActionKind, ActionRegistry};
+
+        let registry = ActionRegistry::new(json!({"count":0})).unwrap();
+        let (handler_entered, entered_rx) = mpsc::channel::<Instant>();
+        let (release_handler, release_rx) = mpsc::channel();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        registry
+            .register(
+                ActionInfo {
+                    id: "counter.increment".into(),
+                    description: "Increase the counter by one".into(),
+                    input_schema: json!({"type":"object","additionalProperties":false}),
+                    output_schema: json!({"type":"integer","minimum":0}),
+                    kind: ActionKind::Write,
+                },
+                move |state, _| {
+                    handler_entered.send(Instant::now()).unwrap();
+                    if release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .is_err()
+                    {
+                        return Err(crate::action::ActionError::new(
+                            "test_release_timeout",
+                            "test did not release the dispatched action handler",
+                        ));
+                    }
+                    let count = state["count"].as_u64().unwrap() + 1;
+                    state["count"] = json!(count);
+                    Ok(json!(count))
+                },
+            )
+            .unwrap();
+
+        let (controller, requests) = channel(|| {});
+        let command = json!({
+            "action":"counter.increment",
+            "arguments":{},
+            "requestId":"unknown-retry-1",
+            "expectedVersion":0
+        });
+        let (caller_returned, caller_result) = mpsc::channel();
+        let caller = std::thread::spawn(move || {
+            let result = controller.request(command, Duration::from_secs(1));
+            let _ = caller_returned.send((Instant::now(), result));
+        });
+        let request = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(request.start());
+
+        let dispatch_registry = registry.clone();
+        let dispatcher = std::thread::spawn(move || {
+            let result = dispatch_registry
+                .invoke_checked(
+                    request.command["action"].as_str().unwrap(),
+                    &request.command["arguments"],
+                    request.command["requestId"].as_str(),
+                    request.command["expectedVersion"].as_u64(),
+                )
+                .map(
+                    |observation| json!({"version":observation.version,"state":observation.state}),
+                );
+            request.finish(result);
+        });
+
+        let handler_entered_at = entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (caller_returned_at, result) =
+            caller_result.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            handler_entered_at < caller_returned_at,
+            "the action handler must enter before the client times out"
+        );
+        let unknown = result.unwrap_err();
+        assert_eq!(unknown.code, "outcome_unknown");
+        caller.join().unwrap();
+        assert_eq!(registry.observe().state["count"], 0);
+        assert_eq!(registry.observe().version, 0);
+
+        release_handler.send(()).unwrap();
+        dispatcher.join().unwrap();
+
+        let final_state = registry.observe();
+        assert_eq!(final_state.state["count"], 1);
+        assert_eq!(final_state.version, 1);
+        let retry = registry
+            .invoke_checked(
+                "counter.increment",
+                &json!({}),
+                Some("unknown-retry-1"),
+                Some(0),
+            )
+            .unwrap();
+        assert_eq!(retry.state["count"], 1);
+        assert_eq!(retry.version, 1);
+        assert_eq!(registry.observe().state["count"], 1);
+
+        let trace = registry.trace(0);
+        assert_eq!(
+            trace
+                .records
+                .iter()
+                .filter(|record| {
+                    record.request_id.as_deref() == Some("unknown-retry-1")
+                        && record.outcome == "completed"
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            trace
+                .records
+                .iter()
+                .filter(|record| {
+                    record.request_id.as_deref() == Some("unknown-retry-1")
+                        && record.outcome == "replayed"
+                })
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn closed_documents_and_oversized_requests_fail_before_dispatch() {
         let (controller, requests) = channel(|| {});
         assert_eq!(

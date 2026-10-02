@@ -194,20 +194,32 @@ mod tests {
                 .set_viewport(Viewport::new(width, height, scale, ColorScheme::Light));
             let pixels = render_current_rgba_without_poll(&mut doc).unwrap().2;
             let stride = width as usize * 4;
-            let center_y = ((20.0 + (36.0 + 16.0 + 2.0) / 2.0) * scale).round() as usize;
-            let has_border_near = |edge_css_x: f32| {
+            let has_vertical_border_near = |edge_css_x: f32| {
                 let edge_px = (edge_css_x * scale).round() as i32;
-                (edge_px - 3..=edge_px + 3).any(|x| {
-                    x >= 0
-                        && (x as u32) < width
-                        && pixels[center_y * stride + x as usize * 4
-                            ..center_y * stride + x as usize * 4 + 3]
-                            != [255, 255, 255]
+                // Sample well inside the straight section, away from rounded
+                // corners. A pixel just outside a rounded edge can still be
+                // faintly tinted by antialiasing, so require a visible stroke
+                // on several rows instead of accepting any non-white pixel.
+                [8.0_f32, 16.0, 27.0, 38.0, 46.0].into_iter().all(|offset| {
+                    let y = ((20.0 + offset) * scale).round() as usize;
+                    (edge_px - 3..=edge_px + 3).any(|x| {
+                        x >= 0
+                            && (x as u32) < width
+                            && pixels[y * stride + x as usize * 4..y * stride + x as usize * 4 + 3]
+                                .iter()
+                                .all(|channel| *channel < 240)
+                    })
                 })
             };
 
-            assert!(has_border_near(20.0), "left border missing at {scale}x");
-            assert!(has_border_near(278.0), "right border missing at {scale}x");
+            assert!(
+                has_vertical_border_near(20.0),
+                "left vertical border is clipped at {scale}x"
+            );
+            assert!(
+                has_vertical_border_near(278.0),
+                "right vertical border is clipped at {scale}x"
+            );
 
             // The correction is paint-only; hit testing and CSS geometry keep
             // the final Taffy layout exactly as resolved.

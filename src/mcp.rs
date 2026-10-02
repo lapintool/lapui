@@ -1054,6 +1054,8 @@ pub fn serve_stdio(reload: ReloadHandle, actions: ActionRegistry) -> Result<(), 
 mod tests {
     use super::*;
 
+    static WAIT_GUARD_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn tool_catalog_is_small_and_does_not_expose_script_evaluation() {
         let tools = LapuiMcpServer::tool_router().list_all();
@@ -1220,6 +1222,9 @@ mod tests {
 
     #[test]
     fn cancel_wait_wakes_page_change_waiter_and_releases_wait_id() {
+        let _serial = WAIT_GUARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let guard = WaitGuard::register("page-cancel-test-unique").unwrap();
         let token = guard.token();
         let notifier = crate::control::PageChangeNotifier::default();
@@ -1232,6 +1237,44 @@ mod tests {
         assert!(token.is_cancelled());
         drop(guard);
         assert!(!WaitGuard::cancel("page-cancel-test-unique"));
+    }
+
+    #[test]
+    fn active_wait_budget_rejects_fifth_wait_and_releases_slot_on_drop() {
+        let _serial = WAIT_GUARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guards: Vec<_> = (0..MAX_ACTIVE_WAITS)
+            .map(|index| WaitGuard::register(&format!("page-wait-capacity-{index}")).unwrap())
+            .collect();
+
+        let rejected = match WaitGuard::register("page-wait-capacity-overflow") {
+            Ok(guard) => {
+                drop(guard);
+                panic!("a fifth active wait must be rejected");
+            }
+            Err(error) => error,
+        };
+        assert_eq!(rejected.code, "wait_busy");
+        assert_eq!(
+            ACTIVE_WAITS.get().unwrap().lock().unwrap().len(),
+            MAX_ACTIVE_WAITS
+        );
+
+        drop(guards.pop().unwrap());
+        assert_eq!(
+            ACTIVE_WAITS.get().unwrap().lock().unwrap().len(),
+            MAX_ACTIVE_WAITS - 1
+        );
+        let replacement = WaitGuard::register("page-wait-capacity-replacement").unwrap();
+        assert_eq!(
+            ACTIVE_WAITS.get().unwrap().lock().unwrap().len(),
+            MAX_ACTIVE_WAITS
+        );
+
+        drop(replacement);
+        drop(guards);
+        assert_eq!(ACTIVE_WAITS.get().unwrap().lock().unwrap().len(), 0);
     }
 
     #[test]
