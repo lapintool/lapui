@@ -72,14 +72,26 @@ def check_package() -> dict:
             with zipfile.ZipFile(archive) as bundle:
                 bad_member = bundle.testzip()
                 manifest = json.loads(bundle.read("SOURCES.json"))
-                crate_count = sum(
-                    name.startswith("crates/") and name.endswith(".crate") for name in bundle.namelist()
-                )
+                members = set(bundle.namelist())
+                crate_count = sum(name.startswith("crates/") and name.endswith(".crate") for name in members)
+                bad_checksums = []
+                for package in manifest.get("packages", []):
+                    member = f"crates/{package['name']}-{package['version']}.crate"
+                    if member not in members:
+                        bad_checksums.append({"package": member, "error": "missing archive"})
+                        continue
+                    digest = hashlib.sha256()
+                    with bundle.open(member) as stream:
+                        for block in iter(lambda: stream.read(1024 * 1024), b""):
+                            digest.update(block)
+                    if digest.hexdigest() != package.get("crateSha256"):
+                        bad_checksums.append({"package": member, "error": "Cargo.lock checksum mismatch"})
             source_info.update(
                 {
                     "bytes": archive.stat().st_size,
                     "dependencyCount": manifest.get("dependencyCount"),
                     "crateArchiveCount": crate_count,
+                    "checksumVerifiedCount": len(manifest.get("packages", [])) - len(bad_checksums),
                     "zipIntegrity": "passed" if bad_member is None else f"failed:{bad_member}",
                 }
             )
@@ -87,6 +99,8 @@ def check_package() -> dict:
                 problems.append(f"The source archive has a corrupt ZIP member: {bad_member}")
             if manifest.get("dependencyCount") != EXPECTED_DEPENDENCIES or crate_count != EXPECTED_DEPENDENCIES:
                 problems.append("The source archive does not contain all 338 reviewed dependency archives.")
+            if bad_checksums:
+                problems.append(f"The source archive has missing or checksum-mismatched crate entries: {bad_checksums[:5]}")
         except (OSError, KeyError, json.JSONDecodeError, zipfile.BadZipFile) as error:
             problems.append(f"The source archive could not be verified: {error}")
     else:
