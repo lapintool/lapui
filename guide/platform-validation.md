@@ -58,6 +58,14 @@ returned `wait_cancelled`. A control-triggered `waitForRender` returned only aft
 the causally linked layout resolved and the renderer returned; physical presentation
 remained unknown.
 
+On Windows 11, the current release window was opened with `forms-demo` and checked
+at the current display setting. The user separately confirmed Chinese IME input
+and arrow-key behavior; a physical wheel scroll also moved the form page. The
+post-fix screenshot showed both vertical input borders intact. This run did not
+record the exact OS scale and does not cover 100%/150% physical scale changes,
+candidate/preedit placement, clipboard paste, or a resized window, so the full
+Windows input gate remains open.
+
 The single-select follow-up passed in a Windows release window. A visible button
 listbox updates a hidden single-select form value through the same JS/default path;
 the control snapshot reports option roles and selected state, form submission
