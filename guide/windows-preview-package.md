@@ -2,7 +2,7 @@
 
 This is a static staging checklist for the x64 Windows developer preview. It does not describe a finished installer or a production release. The current published source baseline remains `b098e0e`; the locally validated release candidate is built from commit `6d8147cf6b6520f9b18bc1ae79170b9dc989b171`. The source archive and license audit are separately verified against the unchanged `Cargo.lock`; they are not executable build inputs.
 
-Run `py -3 scripts/check_windows_preview_package.py` to verify that the reviewed executable, source archive, license report, notices, and documented package inputs are present. It writes a JSON report under ignored `target/` and exits nonzero while any resource or acceptance gate remains open. The checker is read-only apart from that report; it does not stage files or run the executable.
+Run `py -3 scripts/check_windows_preview_package.py` to verify that the reviewed executable, source archive, license report, notices, and documented package inputs are present. It writes a JSON report under ignored `target/` and exits nonzero while any resource or acceptance gate remains open. Once there are no missing resources or consistency problems, `py -3 scripts/stage_windows_preview_package.py` creates an ignored local review copy at `target/windows-preview-package-6d8147c/`, with a file-hash manifest and a status file that preserves every open gate. Staging does not install prerequisites, launch the app, or make an unreviewed package distributable.
 
 ## Smallest useful package
 
@@ -14,6 +14,8 @@ Lapui-preview/
 ├── THIRD_PARTY.md
 ├── LICENSE-MIT
 ├── LICENSE-APACHE
+├── PACKAGE-STATUS.json
+├── PACKAGE-MANIFEST.json
 ├── guide/                         # tracked Markdown guides
 ├── licenses/third_party/upstream/ # exact upstream notices + SPDX sources
 ├── licenses/third_party/distribution/ # assembled notice + Debian evidence/source hashes
@@ -36,6 +38,6 @@ The PE imports show no Node, browser engine, WebView, or OpenSSL DLL. The build 
 
 - **Notice evidence recorded: `void 1.0.2`; human review pending.** Cargo.lock checksum and cached `.crate` SHA-256 both equal `6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d`. The crate archive contains only `.gitignore`, `.travis.yml`, `Cargo.toml`, `README.md`, and `src/lib.rs`; no LICENSE or NOTICE file. The pinned upstream source commit is `ab2f4dbb7c95c144ccba2fa8afd11e155aa91133`. Debian's official `rust-void 1.0.2-1` source package identifies the same upstream project and records `Copyright: 2015-2018 Jonathan Reem` for `Files: *` in its [copyright metadata](https://metadata.ftp-master.debian.org/changelogs//main/r/rust-void/rust-void_1.0.2-1_copyright). The exact source file and a complete MIT notice are retained with separate SHA-256 values in `licenses/third_party/distribution/`. The audit verifies both files and reports their exact package mapping, but deliberately remains nonzero until a human reviews this downstream evidence and approves the staged notice wording. Preserve the Debian provenance in the package; this evidence is not an upstream rights-holder confirmation.
 - **Documented prerequisite:** users install the official Microsoft x64 VC++ Redistributable when it is not already present. Clean-machine validation must confirm the prerequisite instruction is sufficient and the executable starts; no Microsoft runtime binary is bundled.
-- **Missing:** create the staging directory from the explicit contents list and verify every referenced guide, license, notice, and source file is present.
+- **Local staging complete:** `scripts/stage_windows_preview_package.py` created the 56-file ignored review package, verified each file against `PACKAGE-MANIFEST.json`, and preserved the current open gates in `PACKAGE-STATUS.json`. The staged executable also passed a local-files snapshot launch and MCP SDK v2 stdio smoke from an unrelated working directory. This is useful local package evidence, not a clean-machine test.
 - **Missing:** run the staged package on a clean Windows 11 user environment without Rust, Node, or a system WebView; verify startup, local-files, CJK font fallback, and MCP stdio workflow.
-- **Missing:** obtain a successful license audit, review all notices/source obligations, and record the final staged package hash and size. The current package is a developer preview candidate, not a distributable release.
+- **Missing:** obtain a successful license audit, review all notices/source obligations, and create the final archive with its hash and size after the acceptance gates close. The current local package is a developer preview candidate, not a distributable release.
