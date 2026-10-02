@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import base64
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -77,6 +78,31 @@ async def check_fixture(binary: Path, examples: Path, artifacts: Path, fixture: 
         )
         if ready.is_error or ready.structured_content.get("status") != "matched":
             raise AssertionError(f"{fixture.name}: readiness wait failed: {ready.structured_content}")
+
+        page_geometry = await client.call_tool("page_observe", arguments={"limit": 64})
+        if page_geometry.is_error or not isinstance(page_geometry.structured_content, dict):
+            raise AssertionError(f"{fixture.name}: geometry observation failed: {page_geometry.structured_content}")
+        geometry_items = page_geometry.structured_content.get("items", [])
+        viewport = next((item for item in geometry_items if item.get("tag") == "html"), None)
+        if not isinstance(viewport, dict) or not isinstance(viewport.get("bounds"), dict):
+            raise AssertionError(f"{fixture.name}: viewport geometry is missing")
+        viewport_bounds = viewport["bounds"]
+        if any(
+            not isinstance(viewport_bounds.get(field), (int, float))
+            or not math.isfinite(viewport_bounds[field])
+            for field in ("x", "y", "width", "height")
+        ) or viewport_bounds["width"] <= 0 or viewport_bounds["height"] <= 0:
+            raise AssertionError(f"{fixture.name}: invalid viewport bounds: {viewport_bounds}")
+        visible_buttons = [
+            item
+            for item in geometry_items
+            if item.get("role") == "button"
+            and isinstance(item.get("bounds"), dict)
+            and item["bounds"].get("width", 0) > 0
+            and item["bounds"].get("height", 0) > 0
+        ]
+        if not visible_buttons:
+            raise AssertionError(f"{fixture.name}: no button has non-empty rendered geometry")
 
         if fixture.name == "changes-demo":
             activated = await client.call_tool(
