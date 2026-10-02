@@ -2,6 +2,73 @@
 use blitz::dom::{BaseDocument, ScrollBehavior};
 use blitz::traits::node_id::NodeId;
 
+#[derive(Clone, Copy)]
+pub(crate) struct ClientRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// The element's border box excludes its own content scroll, while ancestor
+/// scroll still moves it. Use unrounded native CSS layout, before paint snapping.
+/// Inline fragments already use the containing text root's scrolled origin.
+pub(crate) fn bounding_rect(doc: &BaseDocument, id: NodeId) -> Option<ClientRect> {
+    if !has_boxes(doc, id) {
+        return None;
+    }
+    if doc.inline_fragment_rects(id).is_some() {
+        let rect = doc.get_client_bounding_rect(id)?;
+        return Some(ClientRect {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        });
+    }
+    let node = doc.get_node(id)?;
+    let layout = node.unrounded_layout();
+    let viewport_scroll = doc.viewport_scroll();
+    let mut rect = ClientRect {
+        x: -viewport_scroll.x,
+        y: -viewport_scroll.y,
+        width: f64::from(layout.size.width),
+        height: f64::from(layout.size.height),
+    };
+    let mut current = Some(id);
+    while let Some(current_id) = current {
+        let node = doc.get_node(current_id)?;
+        let location = node.unrounded_layout().location;
+        rect.x += f64::from(location.x);
+        rect.y += f64::from(location.y);
+        if current_id != id {
+            let scroll = node.scroll_offset();
+            rect.x -= scroll.x;
+            rect.y -= scroll.y;
+        }
+        current = node.layout_parent.get();
+    }
+    Some(rect)
+}
+
+pub(crate) fn client_rects(doc: &BaseDocument, id: NodeId) -> Vec<ClientRect> {
+    if !has_boxes(doc, id) {
+        return Vec::new();
+    }
+    match doc.inline_fragment_rects(id) {
+        Some(rects) => rects
+            .into_iter()
+            .map(|rect| ClientRect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+            })
+            .collect(),
+        None => bounding_rect(doc, id).into_iter().collect(),
+    }
+}
+
 // [scrollLeft, scrollTop, clientWidth, clientHeight, clientLeft, clientTop,
 //  scrollWidth, scrollHeight]. These are CSS extents, not Taffy max offsets.
 pub(crate) fn has_boxes(doc: &BaseDocument, id: NodeId) -> bool {
@@ -65,7 +132,7 @@ pub(crate) fn metrics(doc: &BaseDocument, id: NodeId) -> Vec<f64> {
         return vec![0.0; 8];
     }
     let node = doc.get_node(id).expect("checked layout node");
-    let layout = node.final_layout();
+    let layout = node.unrounded_layout();
     if doc.try_root_element().is_some_and(|root| root.id == id) {
         let viewport = doc.viewport();
         let width = f64::from(viewport.window_size.0) / viewport.scale_f64();
@@ -94,15 +161,33 @@ pub(crate) fn metrics(doc: &BaseDocument, id: NodeId) -> Vec<f64> {
         ];
     }
     let offset = node.scroll_offset();
+    let client_width = (layout.size.width
+        - layout.border.left
+        - layout.border.right
+        - layout.scrollbar_size.width)
+        .max(0.0);
+    let client_height = (layout.size.height
+        - layout.border.top
+        - layout.border.bottom
+        - layout.scrollbar_size.height)
+        .max(0.0);
     vec![
         offset.x,
         offset.y,
-        f64::from(node.client_width().max(0.0).round()),
-        f64::from(node.client_height().max(0.0).round()),
+        f64::from(client_width.round()),
+        f64::from(client_height.round()),
         f64::from(layout.border.left.round()),
         f64::from(layout.border.top.round()),
-        f64::from(node.scroll_width().max(0.0).round()),
-        f64::from(node.scroll_height().max(0.0).round()),
+        f64::from(
+            client_width
+                .max(layout.scrollable_overflow_rect.right)
+                .round(),
+        ),
+        f64::from(
+            client_height
+                .max(layout.scrollable_overflow_rect.bottom)
+                .round(),
+        ),
     ]
 }
 
@@ -143,7 +228,7 @@ pub(crate) fn offset_metrics(doc: &BaseDocument, id: NodeId) -> Vec<f64> {
     }
     let node = doc.get_node(id).expect("checked layout node");
     let position = node.offset_top_left();
-    let rect = doc.get_client_bounding_rect(id);
+    let rect = bounding_rect(doc, id);
     vec![
         f64::from(position.x.round()),
         f64::from(position.y.round()),
@@ -216,7 +301,7 @@ pub(crate) fn intersection_sample(doc: &BaseDocument, id: NodeId) -> Vec<f64> {
     if !has_boxes(doc, id) {
         return vec![0.0; 5];
     }
-    let Some(rect) = doc.get_client_bounding_rect(id) else {
+    let Some(rect) = bounding_rect(doc, id) else {
         return vec![0.0; 5];
     };
     vec![

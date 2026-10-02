@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+html, body { margin: 0; overflow: hidden; }
+* { box-sizing: border-box; }
+#root { width: 800px; height: 600px; padding: 20px; background: #eef2f8; }
+#row { position: relative; display: flex; gap: 12px; padding: 10px; border: 2px solid #172b45; }
+#left { flex: none; width: 140px; height: 64px; background: #c54040; }
+#fill { flex: 1; height: 64px; border: 3px solid #4270a0; background: #4e9b58; }
+#badge { position: absolute; right: 12px; top: 6px; width: 40px; height: 24px; border: 1px solid #7258a0; }
+#scroll { margin-top: 16px; height: 180px; overflow: hidden; border: 1px solid #172b45; padding: 8px; }
+#content { display: flex; align-items: center; width: 150%; height: 220px; background: #d1d9e4; }
+#child { flex: none; margin-left: 17px; width: 80px; height: 40px; background: #e2ad38; }
+</style></head><body>
+<main id="root"><section id="row"><div id="left"></div><div id="fill"></div><div id="badge"></div></section>
+<section id="scroll"><div id="content"><div id="child"></div></div></section></main>
+</body></html>

@@ -60,9 +60,7 @@ impl CandidateCollector<'_> {
         let visible_box = needs_bounds
             && !hidden
             && geometry::has_boxes(self.doc, id)
-            && self
-                .doc
-                .get_client_bounding_rect(id)
+            && geometry::bounding_rect(self.doc, id)
                 .is_some_and(|rect| rect.width > 0.0 && rect.height > 0.0);
         let own_ref = visible_box.then(|| canonical_node_ref(self.doc.id(), id));
         if let Some(reference) = own_ref.as_deref() {
@@ -341,7 +339,7 @@ pub(crate) fn page_snapshot(
             .or_else(|| attr(element, "alt").map(str::to_owned))
             .or_else(|| attr(element, "title").map(str::to_owned))
             .unwrap_or_else(|| text.clone());
-        let rect = doc.get_client_bounding_rect(candidate.id);
+        let rect = geometry::bounding_rect(doc, candidate.id);
         let bounds =
             rect.map(|rect| json!({"x":rect.x,"y":rect.y,"width":rect.width,"height":rect.height}));
         let on_screen = rect.is_some_and(|rect| {

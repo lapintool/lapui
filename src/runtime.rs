@@ -1750,7 +1750,7 @@ impl LapuiDocument {
                     let doc = rects_dom.borrow();
                     let Some(id) = resolve_node_ref(&doc,&reference) else { return Vec::new(); };
                     if !crate::geometry::has_boxes(&doc,id) { return Vec::new(); }
-                    doc.node_client_rects(id).into_iter()
+                    crate::geometry::client_rects(&doc,id).into_iter()
                         .map(|rect| vec![rect.x,rect.y,rect.width,rect.height]).collect()
                 }))?;
                 let document_root = canonical_node_ref(doc_id, dom.borrow().root_node().id);
@@ -1766,7 +1766,7 @@ impl LapuiDocument {
                     let doc = geometry_dom.borrow();
                     let Some(id) = resolve_node_ref(&doc, &reference) else { return vec![0.0;4]; };
                     if !crate::geometry::has_boxes(&doc,id) { return vec![0.0;4]; }
-                    doc.get_client_bounding_rect(id).map_or_else(|| vec![0.0;4], |rect| vec![rect.x,rect.y,rect.width,rect.height])
+                    crate::geometry::bounding_rect(&doc,id).map_or_else(|| vec![0.0;4], |rect| vec![rect.x,rect.y,rect.width,rect.height])
                 }))?;
                 let timer_arm = timers.handle.clone();
                 globals.set(
@@ -5187,6 +5187,100 @@ mod tests {
             child.remove();
             return child.offsetWidth===0 && child.offsetParent===null;
         })()"#)).unwrap());
+    }
+
+    #[test]
+    fn css_geometry_matches_saved_browser_reference_at_multiple_scales() {
+        for reference in [
+            include_str!("../tests/fixtures/layout-reference.json"),
+            include_str!("../tests/fixtures/layout-reference-150.json"),
+        ] {
+            let reference: serde_json::Value = serde_json::from_str(reference).unwrap();
+            let scale = reference["scaleFactor"].as_f64().unwrap();
+            let (mut doc, _) = LapuiDocument::new_with_source(
+                ActionRegistry::default(),
+                None,
+                include_str!("../tests/fixtures/layout-reference.html"),
+                "",
+            )
+            .unwrap();
+            doc.inner_mut().set_viewport(Viewport::new(
+                (800.0 * scale) as u32,
+                (600.0 * scale) as u32,
+                scale as f32,
+                ColorScheme::Light,
+            ));
+            let measured = doc
+                .js_context
+                .with(|ctx| {
+                    ctx.eval::<(), _>(include_str!("../tests/fixtures/layout-reference.js"))?;
+                    ctx.eval::<String, _>("JSON.stringify(cases)")
+                })
+                .unwrap();
+            let measured: serde_json::Value = serde_json::from_str(&measured).unwrap();
+            assert_eq!(reference["cases"].as_array().unwrap().len(), 2);
+            assert_eq!(measured.as_array().unwrap().len(), 2);
+            let mut differences = Vec::new();
+            for (index, expected) in reference["cases"].as_array().unwrap().iter().enumerate() {
+                assert_eq!(measured[index]["width"], expected["width"]);
+                assert_eq!(measured[index]["height"], expected["height"]);
+                for stage in ["before", "after"] {
+                    for category in ["boxes", "scroll"] {
+                        for (name, value) in expected[stage][category].as_object().unwrap() {
+                            let fields: Vec<(&str, &serde_json::Value)> = match value.as_object() {
+                                Some(fields) => fields
+                                    .iter()
+                                    .map(|(key, value)| (key.as_str(), value))
+                                    .collect(),
+                                None => vec![("", value)],
+                            };
+                            for (field, expected_value) in fields {
+                                let actual = if field.is_empty() {
+                                    &measured[index][stage][category][name]
+                                } else {
+                                    &measured[index][stage][category][name][field]
+                                };
+                                let expected_number = expected_value.as_f64().unwrap();
+                                let actual_number = actual.as_f64().unwrap();
+                                if (actual_number - expected_number).abs() > 0.02 {
+                                    differences.push(format!("case {index}/{stage}/{category}/{name}/{field}: expected {expected_number}, got {actual_number}"));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(
+                differences.is_empty(),
+                "scale {scale}:\n{}",
+                differences.join("\n")
+            );
+            let page = doc
+                .execute_control_command(&serde_json::json!({"method":"pageSnapshot", "limit":32}))
+                .unwrap();
+            let dom = doc.dom.borrow();
+            for (id, expected) in reference["cases"][1]["after"]["boxes"].as_object().unwrap() {
+                let node = dom.get_element_by_id(id).unwrap();
+                let sample = crate::geometry::intersection_sample(&dom, node);
+                let observed = page["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|item| item["id"] == id.as_str())
+                    .unwrap();
+                for (index, field) in ["x", "y", "width", "height"].iter().enumerate() {
+                    let expected = expected[field].as_f64().unwrap();
+                    assert!(
+                        (sample[index + 1] - expected).abs() <= 0.02,
+                        "intersection {id}/{field}, scale {scale}"
+                    );
+                    assert!(
+                        (observed["bounds"][field].as_f64().unwrap() - expected).abs() <= 0.02,
+                        "page bounds {id}/{field}, scale {scale}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

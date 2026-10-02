@@ -1,6 +1,6 @@
 # Layout measurements
 
-Elements expose `getBoundingClientRect()`, backed by Blitz's viewport-relative bounding calculation:
+Elements expose `getBoundingClientRect()`, backed by Blitz's native CSS layout:
 
 ```js
 const element = document.getElementById('panel');
@@ -15,9 +15,16 @@ A measurement synchronously resolves pending style/layout at the renderer's last
 
 Coordinates account for viewport scroll, and viewport scale does not turn CSS pixels into physical pixels. Detached/expired references return zero rectangles. Old snapshots do not update after mutation or resize; query again. Layout may still be unavailable while critical stylesheets load.
 
+A scroll container's own content offset does not move its border rectangle.
+Ancestor scroll offsets still move descendant rectangles. Lapui applies this
+correction consistently to DOM box rectangles, IntersectionObserver geometry
+and AI page bounds; native inline fragments retain their scrolled text origin.
+Generated box positions and client/content sizes use unrounded CSS layout
+before paint snapping. Measurements describe layout rather than physical pixels.
+
 `getClientRects()` returns a snapshot array of DOMRect values, with `length`, indexes, iteration and `item(index)` (null out of range). Non-atomic inline elements return their native per-line fragments. Boxless, hidden and detached elements return an empty list; a zero-size generated box still has a rectangle. This is not a native DOMRectList class.
 
-This is an initial API. Inline unions, nested positioning/scrolling and transforms follow current Blitz behavior; full browser equivalence is unverified. Offset metrics and [computed styles](computed-styles.md) are available as described below. Native HTML box [ResizeObserver notifications](observers.md) are available; MutationObserver remains unsupported. The [animation example](getting-started.md#run-the-animation-and-measurement-example) demonstrates frame-driven position changes. Neither measurements nor callback completion acknowledge screen presentation.
+This is an initial API. Inline unions, nested positioning/scrolling and transforms follow current Blitz behavior with the generated-box scroll correction above; full browser equivalence is unverified. Offset metrics and [computed styles](computed-styles.md) are available as described below. Native HTML box ResizeObserver and bounded MutationObserver subsets are available; see [observations](observers.md). The [animation example](getting-started.md#run-the-animation-and-measurement-example) demonstrates frame-driven position changes. Neither measurements nor callback completion acknowledge screen presentation.
 
 
 ## Element and viewport scrolling
@@ -39,6 +46,23 @@ The preview supports immediate scrolling only. auto and instant both use native 
 Changed programmatic offsets coalesce per target until a Promise microtask checkpoint, then dispatch a non-cancelable scroll notification. Element scroll does not bubble; viewport scroll targets the document and bubbles to the window. Unchanged/clamped requests emit no new notification. Registered scroll listeners also receive changed native offsets at rendering updates; window capture listeners share the connected event path. See [observers/window events](observers.md) for bounds and sampling limits. Delivery at a microtask checkpoint differs from browser rendering-task ordering. Reads made after writes see the updated native offset before event delivery.
 
 Run `cargo run --release --locked -- --html examples/scroll-demo/index.html` for a horizontal/vertical list with extent/offset measurements, selection and Home/End controls. Automated tests cover padding/borders, 2x scale, nested offset geometry, clamping, hidden/clip overflow, coalescing, batch writes, multiline fragments and detached/hidden nodes. Physical wheel/scrollbar input and broader RTL/writing-mode/transform/zoom conformance still need verification.
+
+The controlled browser references in `tests/fixtures/layout-reference*.json`
+record Edge 154 CSS geometry at matching 100% and 150% device scale for two fixed root sizes, before and after
+horizontal/vertical programmatic scrolling. The Rust regression compares eight
+boxes and six scroll metrics at 100% and 150% scale. It covers flex gaps and
+growth, absolute positioning, border/padding boxes, percentage widths and scroll
+translation. Scroll requests align to physical pixels at both scales; Chromium
+quantizes other fractional-device-pixel requests differently from Lapui, which
+retains native fractional offsets. That difference remains outside this fixture.
+It excludes text, native controls, transforms and pixel painting;
+passing this fixture does not establish general browser conformance.
+Regenerate it with `py -3 tests/update_layout_reference.py --browser <msedge.exe>`
+using an installed Edge executable. The generator uses a disposable headless
+profile and synthetic local HTML; normal Rust tests need neither Edge nor Python.
+Use `--scale 1.5 --output tests/fixtures/layout-reference-150.json` for the
+second baseline. Comparisons use a 0.02 CSS-pixel numeric tolerance, without
+allowing a whole pixel of drift.
 
 
 ## Offset metrics
