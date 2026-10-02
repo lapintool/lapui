@@ -18,6 +18,7 @@ pub mod mcp;
 pub mod mcp_bridge;
 pub mod operation;
 pub(crate) mod page_change_wait;
+mod paint;
 pub mod reload;
 pub mod render_wait;
 pub mod runtime;

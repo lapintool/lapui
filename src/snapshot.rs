@@ -79,7 +79,7 @@ fn render_current_layout(
     renderer.render_to_vec(
         |painter| {
             let start = measured.then(Instant::now);
-            blitz_paint::paint_scene(painter, &mut dom, scale, width, height, 0, 0);
+            crate::paint::paint_scene(painter, &mut dom, scale, width, height, 0, 0);
             scene_millis = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
         },
         &mut pixels,
@@ -176,5 +176,53 @@ mod tests {
         assert_eq!(at(&pixels, 120, 10, 10), [0, 0, 255, 255]);
         assert_eq!(at(&pixels, 120, 110, 80), [255, 255, 255, 255]);
         assert!(render_rgba(&mut doc, 0, 90).is_err());
+    }
+
+    #[test]
+    fn rounded_input_keeps_both_vertical_borders_at_fractional_dpi_scales() {
+        for scale in [1.0_f32, 1.25, 1.5, 1.75] {
+            let (mut doc, _) = LapuiDocument::new_with_source(
+                ActionRegistry::default(),
+                None,
+                "<html><head><style>html,body{margin:0;background:#fff}input{position:absolute;left:20px;top:20px;width:240px;height:36px;padding:8px;border:1px solid #a6b4c6;border-radius:4px;background:#fff}</style></head><body><input id='field'></body></html>",
+                "",
+            )
+            .unwrap();
+            let width = (400.0 * scale) as u32;
+            let height = (150.0 * scale) as u32;
+            doc.inner_mut()
+                .set_viewport(Viewport::new(width, height, scale, ColorScheme::Light));
+            let pixels = render_current_rgba_without_poll(&mut doc).unwrap().2;
+            let stride = width as usize * 4;
+            let center_y = ((20.0 + (36.0 + 16.0 + 2.0) / 2.0) * scale).round() as usize;
+            let has_border_near = |edge_css_x: f32| {
+                let edge_px = (edge_css_x * scale).round() as i32;
+                (edge_px - 3..=edge_px + 3).any(|x| {
+                    x >= 0
+                        && (x as u32) < width
+                        && pixels[center_y * stride + x as usize * 4
+                            ..center_y * stride + x as usize * 4 + 3]
+                            != [255, 255, 255]
+                })
+            };
+
+            assert!(has_border_near(20.0), "left border missing at {scale}x");
+            assert!(has_border_near(278.0), "right border missing at {scale}x");
+
+            // The correction is paint-only; hit testing and CSS geometry keep
+            // the final Taffy layout exactly as resolved.
+            if scale == 1.5 {
+                let id = doc.inner().get_element_by_id("field").unwrap();
+                assert_eq!(
+                    doc.inner()
+                        .get_node(id)
+                        .unwrap()
+                        .final_layout()
+                        .border
+                        .right,
+                    0.0
+                );
+            }
+        }
     }
 }

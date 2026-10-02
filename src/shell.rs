@@ -175,7 +175,7 @@ fn redraw_document<R: WindowRenderer>(view: &mut View<R>, callbacks_due: bool) {
     if !blocked {
         view.renderer.render(|scene| {
             let start = measured.then(Instant::now);
-            blitz_paint::paint_scene(
+            crate::paint::paint_scene(
                 scene,
                 &mut dom,
                 scale,
