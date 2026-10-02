@@ -13,6 +13,7 @@ mod frames;
 mod geometry;
 mod host_work;
 mod lifecycle;
+pub mod local_files;
 pub mod mcp;
 pub mod mcp_bridge;
 pub mod operation;

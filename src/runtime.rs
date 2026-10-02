@@ -5932,6 +5932,141 @@ mod tests {
     }
 
     #[test]
+    fn real_local_file_ui_edits_only_app_metadata_and_refreshes_the_index() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("lapui-local-ui-{unique}"));
+        std::fs::create_dir(&root).unwrap();
+        let file_path = root.join("说明.txt");
+        std::fs::write(&file_path, b"unchanged file contents").unwrap();
+        let actions = crate::local_files::actions(&root).unwrap();
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            actions.clone(),
+            None,
+            include_str!("../ui/local-files/index.html"),
+            include_str!("../ui/local-files/app.js"),
+        )
+        .unwrap();
+        let snapshot = control_request(&mut doc, json!({"method":"controls"})).unwrap();
+        let epoch = snapshot["documentEpoch"].clone();
+        let reference = |id: &str| {
+            snapshot["controls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|control| control["id"] == id)
+                .unwrap()["ref"]
+                .clone()
+        };
+        control_request(
+            &mut doc,
+            json!({"method":"fill","documentEpoch":epoch,"ref":reference("note"),"value":"人工草稿"}),
+        )
+        .unwrap();
+        let indexed = actions.observe().state["files"][0].clone();
+        actions
+            .invoke(
+                "local_files.metadata.update",
+                &json!({"fileId":indexed["id"],"note":"MCP备注","expectedFileVersion":1}),
+            )
+            .unwrap();
+        for _ in 0..500 {
+            doc.poll(None);
+            if text(&doc, "entity-version").starts_with("对象版本 2") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(text(&doc, "entity-version").starts_with("对象版本 2"));
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("document.getElementById('note').value"))
+                .unwrap(),
+            "人工草稿"
+        );
+        control_request(
+            &mut doc,
+            json!({"method":"activate","documentEpoch":epoch,"ref":reference("save")}),
+        )
+        .unwrap();
+        for _ in 0..500 {
+            doc.poll(None);
+            if text(&doc, "status").contains("草稿已保留") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(text(&doc, "status").contains("草稿已保留"));
+        control_request(
+            &mut doc,
+            json!({"method":"activate","documentEpoch":epoch,"ref":reference("refresh")}),
+        )
+        .unwrap();
+        for _ in 0..500 {
+            doc.poll(None);
+            if text(&doc, "status").starts_with("重新索引完成") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("document.getElementById('note').value"))
+                .unwrap(),
+            "MCP备注"
+        );
+        control_request(
+            &mut doc,
+            json!({"method":"fill","documentEpoch":epoch,"ref":reference("note"),"value":"由界面保存"}),
+        )
+        .unwrap();
+        control_request(
+            &mut doc,
+            json!({"method":"activate","documentEpoch":epoch,"ref":reference("save")}),
+        )
+        .unwrap();
+        for _ in 0..500 {
+            doc.poll(None);
+            if text(&doc, "status") == "Lapui 备注已保存" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(text(&doc, "status"), "Lapui 备注已保存");
+        assert_eq!(
+            actions.observe().state["files"][0]["metadata"]["note"],
+            "由界面保存"
+        );
+        assert_eq!(
+            std::fs::read(&file_path).unwrap(),
+            b"unchanged file contents"
+        );
+
+        std::fs::write(root.join("new.txt"), b"new file").unwrap();
+        control_request(
+            &mut doc,
+            json!({"method":"activate","documentEpoch":epoch,"ref":reference("refresh")}),
+        )
+        .unwrap();
+        for _ in 0..500 {
+            doc.poll(None);
+            if text(&doc, "status").starts_with("重新索引完成") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(text(&doc, "status"), "重新索引完成：2 个文件");
+        assert_eq!(
+            actions.observe().state["files"][1]["metadata"]["note"],
+            "由界面保存"
+        );
+        drop(doc);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn js_waits_for_operation_revisions_and_cancels_cooperatively() {
         let actions = ActionRegistry::new(json!({})).unwrap();
         let info = crate::action::ActionInfo {

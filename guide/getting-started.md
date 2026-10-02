@@ -47,6 +47,14 @@ No Node.js or bundle build is required. See [form interaction](forms.md) for che
 cargo run --release --locked -- --demo files
 ```
 
+For a read-only index of an explicitly selected local directory:
+
+```powershell
+cargo run --release --locked -- --demo local-files --directory "C:\Users\you\Documents"
+```
+
+This indexes top-level regular files only and shows their names and sizes; it does not read file contents or modify disk files. Notes are app-owned in-memory metadata for the current run.
+
 This embedded fixture tool supports Chinese search, file details, rename conflicts, a settings panel, background scan progress and cancellation. It only changes an in-memory catalog. Read [Rust host actions](host-actions.md) for the shared backend and structured CLI requests. Human drafts are retained when another client edits the same entity.
 
 ## Run the ES module example

@@ -53,6 +53,8 @@ For a richer in-memory tool with Chinese search, file details, shared rename act
 cargo run --release --locked -- --demo files
 ```
 
+To inspect a local folder without changing files, run `lapui --demo local-files --directory <path>`. The index reads only top-level regular file names and sizes. Lapui notes are process-local app metadata and are discarded when the app exits.
+
 The demo does not modify disk files. See [Rust host actions](guide/host-actions.md) to register your own backend and use operation IDs and finite tracing.
 
 AI clients can discover bounded action summaries with `actions.list`, retrieve a selected schema with `actions.describe`, and query business blockers with `actions.check`. Rust scopes retire temporary actions when their owner/document closes. See [action discovery and lifetime](guide/action-discovery.md).

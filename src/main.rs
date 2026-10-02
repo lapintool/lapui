@@ -531,7 +531,7 @@ fn run_client(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("Lapui {}\n\nRun: lapui [--demo files | --html <index.html> [--js <bundle.js>]]\n     [--renderer cpu|gpu] [--watch] [--debug-trace] [--mcp-stdio | --mcp-bridge-id <id>]\nMCP stdio adapter: lapui mcp-stdio <bridge-id>\nExport current state: lapui [app options] --snapshot <image.png> [--width <pixels> --height <pixels>]\nClient: lapui client <address> describe|observe|increment|controls|diagnostics|network-status|runtime-memory|trace|debug-trace <documentEpoch>|actions\n        lapui client <address> describe-action <action-id>\n        lapui client <address> changes [cursor]\n        lapui client <address> reload|reload-status\n        lapui client <address> operation|cancel-operation <operation-id>\n        lapui client <address> request-file <request.json>\n\n--mcp-stdio serves the current local UI over MCP stdio; stdout is reserved for the protocol.\n--mcp-bridge-id exposes an authenticated, loopback-only MCP bridge for reconnectable stdio adapters.\nCPU drawing and PNG export require the software-renderer feature (enabled by default).\n--watch uses local files and a window; it performs full document reloads.\nThe control address is printed when the window starts. Snapshots do not wait for all asynchronous work.", env!("CARGO_PKG_VERSION"));
+        println!("Lapui {}\n\nRun: lapui [--demo files | --demo local-files --directory <path> | --html <index.html> [--js <bundle.js>]]\n     [--renderer cpu|gpu] [--watch] [--debug-trace] [--mcp-stdio | --mcp-bridge-id <id>]\nMCP stdio adapter: lapui mcp-stdio <bridge-id>\nExport current state: lapui [app options] --snapshot <image.png> [--width <pixels> --height <pixels>]\nClient: lapui client <address> describe|observe|increment|controls|diagnostics|network-status|runtime-memory|trace|debug-trace <documentEpoch>|actions\n        lapui client <address> describe-action <action-id>\n        lapui client <address> changes [cursor]\n        lapui client <address> reload|reload-status\n        lapui client <address> operation|cancel-operation <operation-id>\n        lapui client <address> request-file <request.json>\n\n--demo local-files indexes top-level regular files only. File names and contents are not changed.\n--mcp-stdio serves the current local UI over MCP stdio; stdout is reserved for the protocol.\n--mcp-bridge-id exposes an authenticated, loopback-only MCP bridge for reconnectable stdio adapters.\nCPU drawing and PNG export require the software-renderer feature (enabled by default).\n--watch uses local files and a window; it performs full document reloads.\nThe control address is printed when the window starts. Snapshots do not wait for all asynchronous work.", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if args.get(1).is_some_and(|arg| arg == "--version") {
@@ -558,6 +558,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut html_path: Option<PathBuf> = None;
     let mut js_path: Option<PathBuf> = None;
     let mut demo_files = false;
+    let mut demo_local_files = false;
+    let mut directory_path: Option<PathBuf> = None;
     let mut watch_files = false;
     let mut debug_trace = false;
     let mut mcp_stdio = false;
@@ -615,16 +617,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 index += 1;
                 js_path = Some(args.get(index).ok_or("--js requires a path")?.into());
             }
+            "--directory" => {
+                index += 1;
+                directory_path = Some(args.get(index).ok_or("--directory requires a path")?.into());
+            }
             "--demo" => {
                 index += 1;
-                if args.get(index).is_none_or(|value| value != "files") {
-                    return Err("--demo supports files".into());
+                match args.get(index).map(String::as_str) {
+                    Some("files") => demo_files = true,
+                    Some("local-files") => demo_local_files = true,
+                    _ => return Err("--demo supports files or local-files".into()),
                 }
-                demo_files = true;
             }
             other => {
                 return Err(format!(
-                "unknown argument: {other}; use --html <path> [--js <bundle.js>] or --demo files"
+                "unknown argument: {other}; use --html <path> [--js <bundle.js>] or --demo files/local-files"
             )
                 .into())
             }
@@ -632,8 +639,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         index += 1;
     }
 
-    if demo_files && (html_path.is_some() || js_path.is_some()) {
+    if (demo_files || demo_local_files) && (html_path.is_some() || js_path.is_some()) {
         return Err("--demo cannot be combined with --html or --js".into());
+    }
+    if demo_files && demo_local_files {
+        return Err("only one --demo mode may be selected".into());
+    }
+    if demo_local_files != directory_path.is_some() {
+        return Err("--demo local-files requires --directory <path>".into());
     }
     if mcp_stdio && mcp_bridge_id.is_some() {
         return Err("--mcp-stdio and --mcp-bridge-id are mutually exclusive".into());
@@ -653,7 +666,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if software_renderer || snapshot_path.is_some() {
         return Err("CPU rendering requires rebuilding with --features software-renderer".into());
     }
-    let actions = if demo_files {
+    let actions = if demo_local_files {
+        lapui::local_files::actions(directory_path.as_ref().unwrap())?
+    } else if demo_files {
         lapui::demo::files()?
     } else {
         ActionRegistry::default()
@@ -673,7 +688,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             script: js_path.map(|path| path.canonicalize()).transpose()?,
         }
     } else {
-        let html = if demo_files {
+        let html = if demo_local_files {
+            include_str!("../ui/local-files/index.html")
+        } else if demo_files {
             include_str!("../ui/files/index.html")
         } else {
             include_str!("../ui/index.html")
@@ -686,7 +703,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             DocumentSource::Embedded {
                 html: html.into(),
-                script: if demo_files {
+                script: if demo_local_files {
+                    include_str!("../ui/local-files/app.js")
+                } else if demo_files {
                     include_str!("../ui/files/app.js")
                 } else {
                     include_str!("../ui/app.js")

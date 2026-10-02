@@ -1,0 +1,21 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Lapui local file index</title>
+<style>
+html, body { margin:0; width:100%; height:100%; font-family:system-ui; color:#17233b; background:#f5f7fb; cursor:default; }
+main { padding:24px; display:flex; flex-direction:column; gap:16px; }
+h1 { font-size:24px; margin:0; } p { margin:0; }
+.workspace { display:flex; gap:20px; } aside { width:280px; flex-shrink:0; } section { flex:1; min-width:0; }
+input, textarea { box-sizing:border-box; width:100%; padding:10px; border:1px solid #bdc7d8; border-radius:6px; background:white; cursor:text; }
+textarea { min-height:130px; resize:vertical; }
+button { padding:10px 14px; border:1px solid #bdc7d8; border-radius:6px; background:white; cursor:pointer; }
+button:disabled { cursor:default; color:#7e8798; } .file { display:block; width:100%; text-align:left; margin-top:8px; }
+.panel { padding:20px; background:white; border:1px solid #dfe4ed; border-radius:10px; }
+.row { display:flex; gap:8px; margin-top:12px; } .hint { color:#65738b; font-size:14px; } #status { margin-top:12px; }
+</style></head><body><main>
+<h1>本地文件索引</h1><p id="intro" class="hint">只读取所选目录的第一层文件名和大小；文件内容和磁盘文件名保持不变。备注属于 Lapui 应用状态，仅在本次运行中保存。</p>
+<div class="workspace"><aside class="panel"><label for="search">搜索文件</label><input id="search" placeholder="支持中文搜索"><div id="file-list"></div></aside>
+<section class="panel"><p id="selected" role="status">尚未选择文件</p><p id="entity-version" class="hint" role="status"></p>
+<label for="note">Lapui 备注</label><textarea id="note" maxlength="2000" placeholder="为此文件添加应用内备注"></textarea><div class="row"><button id="save">保存备注</button><button id="refresh">重新索引目录</button></div>
+<p id="status" role="status">就绪</p><p id="count" class="hint"></p></section></div>
+<p id="app-version" class="hint" role="status"></p>
+</main></body></html>
