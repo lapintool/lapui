@@ -15,12 +15,35 @@ review are complete.
 
 1. Run the package checker and inspect its JSON report. A nonzero exit is
    expected while manual gates remain open, but stop if `missingResources` or
-   `problems` is nonempty. Then refresh the local review copy and preserve its
-   `PACKAGE-STATUS.json` and open gates.
+   `problems` is nonempty. Use the current staged directory if it exists; only
+   create it when absent. Do not use `--refresh` here because the package guide
+   file set may have changed since the candidate was first staged.
 
    ```powershell
    py -3 scripts/check_windows_preview_package.py
-   py -3 scripts/stage_windows_preview_package.py --refresh
+   $report = Get-Content target\windows-preview-package-check.json -Raw | ConvertFrom-Json
+   if (@($report.missingResources).Count -or @($report.problems).Count) {
+     throw 'Package report has missing resources or consistency problems.'
+   }
+   $stageRoot = (Resolve-Path target\windows-preview-package-6d8147c -ErrorAction SilentlyContinue).Path
+   if (-not $stageRoot) {
+     py -3 scripts/stage_windows_preview_package.py
+     if ($LASTEXITCODE -ne 0) { throw 'Could not stage the reviewed candidate.' }
+     $stageRoot = (Resolve-Path target\windows-preview-package-6d8147c).Path
+   }
+   $manifest = Get-Content (Join-Path $stageRoot 'PACKAGE-MANIFEST.json') -Raw | ConvertFrom-Json
+   $expected = @($manifest.files | ForEach-Object { $_.path } | Sort-Object)
+   $actual = @(Get-ChildItem -LiteralPath $stageRoot -File -Recurse |
+     Where-Object { $_.Name -ne 'PACKAGE-MANIFEST.json' } |
+     ForEach-Object { $_.FullName.Substring($stageRoot.Length + 1).Replace('\', '/') } |
+     Sort-Object)
+   if (Compare-Object $expected $actual) { throw 'Staged file set differs from its manifest.' }
+   foreach ($entry in $manifest.files) {
+     $file = Join-Path $stageRoot $entry.path
+     if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $entry.sha256) {
+       throw "Staged hash mismatch: $($entry.path)"
+     }
+   }
    ```
 
 2. Create `C:\LapuiAcceptance\host-input\package`,
