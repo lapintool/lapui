@@ -135,6 +135,17 @@ and the local-files query/update/conflict workflow. Keep this separate from
 the v1.30.0 compatibility smoke: SDK v2 negotiates the current protocol and
 falls back to legacy initialization for older servers.
 
+`tests/mcp_fixture_smoke.py` opens the form, shared-state, scroll, Chinese
+controls, popover, animation, modules, Vue, and React examples through the same
+stdio client. It checks the expected semantic controls, uses
+`page_wait_for_control` as a trace-independent readiness condition, and
+requires clean runtime diagnostics. It also saves post-readiness CPU screenshots
+under `target/m2-fixture-screenshots/` by default (override with `--artifacts`).
+The React fixture waits for its mount effect before capturing; a cold CLI snapshot
+can race that initial render. Run it with the same isolated SDK v2
+environment to catch missing example assets or startup regressions; it does
+not replace physical input or viewport/DPI checks.
+
 The official Python MCP SDK 1.30.0 smoke covers one combined
 workflow: Chinese page observation, semantic and causal waits, conflict/draft
 recovery, verified rename, scan, reload with stale-ref rejection, adapter
