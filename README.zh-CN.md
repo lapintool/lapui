@@ -24,9 +24,15 @@ cargo run --release --locked
 .\target\release\lapui.exe client 127.0.0.1:<port> increment
 .\target\release\lapui.exe client 127.0.0.1:<port> controls
 .\target\release\lapui.exe client 127.0.0.1:<port> diagnostics
+.\target\release\lapui.exe client 127.0.0.1:<port> screenshot target/current.png
 ```
 
 窗口按钮和本机客户端调用同一个 Rust 动作及校验逻辑。`describe` 返回协议方法和当前能力标记；`observe` 返回带版本号的状态和动作参数 schema。控制接口仅绑定本机回环地址，尚无认证机制，不能作为生产接口暴露。
+
+截图直接由运行时生成，无需外部桌面截图或 MCP SDK。Rust 宿主可调用
+`lapui::snapshot::capture(&mut document)` 获取独立持有像素的图像，再读取
+RGBA、编码或保存 PNG；结果包含文档 epoch、物理尺寸和 DPI。图像包含文档
+内容，系统 IME 候选窗和标题栏仍需桌面查看。详见[内置截图 API](guide/rendering.md#built-in-screenshot-api)。
 
 已在 Ubuntu 24.04 / WSL 上使用 Rust 1.91 和 `libfontconfig1-dev` 验证 Linux 编译与测试；WSLg 的 X11 路径已通过 React 窗口及 TCP 激活检查；当前环境的 Wayland 启动失败，物理输入及其他 Linux 桌面尚未验收。
 
@@ -51,6 +57,10 @@ cargo run --release --locked -- --demo files
 ```
 
 示例不会修改磁盘文件。自定义 Rust 后端、操作 ID 和有界追踪见[宿主动作指南](guide/host-actions.md)。
+
+真实目录工具使用 `lapui --demo local-files --directory <路径>`。它只索引顶层
+普通文件的名称和大小，不读取内容。界面和 MCP 共用查询、刷新及元数据动作；
+备注仅保存在当前进程中，退出后清除，不改名或删除磁盘文件。
 
 AI 客户端可通过 `actions.list` 分页发现动作、`actions.describe` 按需读取 schema、`actions.check` 查询业务阻塞原因。Rust 作用域支持临时动作随所有者或文档关闭而注销，见[动作发现与生命周期](guide/action-discovery.md)。
 
