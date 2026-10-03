@@ -3795,15 +3795,10 @@ impl Document for LapuiDocument {
                     true,
                 );
             }
-            // Read-only trace queries do not create their own redraw/trace loop.
-            changed |= !matches!(
-                method,
-                "debugTrace.read"
-                    | "debugTrace.configure"
-                    | "runtime.memoryUsage"
-                    | "pageChanges"
-                    | "renderStatus"
-            );
+            // Observations must not manufacture frames. In particular, an AI
+            // client polling controls/diagnostics used to keep an idle window
+            // repainting. DOM/resource work has its own redraw notifications.
+            changed |= mutating;
             request.finish(result);
         }
         let mut completion_count = 0;
@@ -6667,6 +6662,49 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         caller.join().unwrap()
+    }
+
+    #[test]
+    fn control_observations_do_not_request_idle_window_redraws() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body><input id='name'></body></html>",
+            "",
+        )
+        .unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(240, 240, 1.0, ColorScheme::Light));
+        while doc.poll(None) {}
+        let mut request = |command: Value| {
+            let controller = doc.controller();
+            let caller =
+                std::thread::spawn(move || controller.request(command, Duration::from_secs(2)));
+            let mut redraw = false;
+            while !caller.is_finished() {
+                redraw |= doc.poll(None);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            (caller.join().unwrap(), redraw)
+        };
+        let (controls, redraw) = request(json!({"method":"controls"}));
+        assert!(!redraw);
+        let controls = controls.unwrap();
+        for method in [
+            "controls",
+            "diagnostics",
+            "networkStatus",
+            "runtime.memoryUsage",
+        ] {
+            let (result, redraw) = request(json!({"method":method}));
+            assert!(result.is_ok(), "{method}");
+            assert!(!redraw, "read-only {method} requested a redraw");
+        }
+        let (filled, redraw) = request(json!({"method":"fill",
+            "documentEpoch":controls["documentEpoch"],
+            "ref":controls["controls"][0]["ref"], "value":"updated"}));
+        assert!(filled.is_ok());
+        assert!(redraw, "mutations must still repaint");
     }
 
     #[test]
@@ -9872,13 +9910,24 @@ mod tests {
             let (mut doc, _) = LapuiDocument::new_with_local_source(ActionRegistry::default(), None,
                 &html, "", path.parent().unwrap()).unwrap();
             doc.inner_mut().set_viewport(Viewport::new(1440, 1000, 1.0, ColorScheme::Dark));
-            for _ in 0..10 { doc.poll(None); doc.animation_frame(); }
+            for _ in 0..10 { doc.poll(None); doc.animation_frame(); doc.rendering_update(); }
             assert!(text(&doc, "app").contains("Lapstyle"));
             assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>("!!document.querySelector('#app[data-v-app] .demo-start')")).unwrap());
             for section in ["button", "card", "input", "checkbox", "dropdown", "tabs", "theme", "slider", "menu", "dialog", "color-picker", "progress", "table", "radio", "expand", "splitter", "icon", "tooltip", "scrollbar", "btngroup", "custom"] {
+                #[cfg(feature = "software-renderer")]
+                let navigation_started = Instant::now();
                 let js = format!("document.querySelector('.demo-nav a[href$=\"/{section}\"]').click()");
                 doc.js_context.with(|ctx| ctx.eval::<(), _>(js)).unwrap();
-                for _ in 0..10 { doc.poll(None); doc.animation_frame(); }
+                for _ in 0..10 { doc.poll(None); doc.animation_frame(); doc.rendering_update(); }
+                #[cfg(feature = "software-renderer")]
+                {
+                    let paint_started = Instant::now();
+                    let shot = crate::snapshot::capture_without_poll(&mut doc).unwrap();
+                    assert_eq!((shot.width(), shot.height()), (1440, 1000));
+                    eprintln!("Lapstyle {section}: CPU frame {:.2} ms; navigation through render {:.2} ms",
+                        paint_started.elapsed().as_secs_f64() * 1000.0,
+                        navigation_started.elapsed().as_secs_f64() * 1000.0);
+                }
                 let state = doc.js_context.with(|ctx| ctx.eval::<String, _>(
                     "JSON.stringify({heading:document.querySelector('.demo-section-title')?.textContent,errors:lapui.diagnostics()})"
                 )).unwrap();

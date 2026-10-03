@@ -247,10 +247,18 @@ impl<R: WindowRenderer> ApplicationHandler for LapuiApplication<R> {
                     && view.renderer.is_active()
                     && frame_document(view.doc.as_mut()).is_some()
                 {
-                    if due {
-                        self.frames.insert(id, now);
+                    if !due {
+                        // Coalesce redraws as well as callbacks. Repainting here
+                        // can otherwise spin native CSS animations faster than
+                        // 60 Hz and delay queued input. about_to_wait schedules
+                        // this deferred opportunity at the next frame deadline.
+                        frame_document(view.doc.as_mut())
+                            .unwrap()
+                            .defer_rendering_update();
+                        return;
                     }
-                    redraw_document(view, due);
+                    self.frames.insert(id, now);
+                    redraw_document(view);
                     self.proxy
                         .send_event(BlitzShellEvent::Poll { window_id: id });
                     return;
@@ -426,18 +434,14 @@ mod window_chrome_tests {
 
 // Native engine resolve/paint through public APIs, retaining Blitz's resource
 // and visibility gates. Renderer return is not a display-server presentation ack.
-fn redraw_document<R: WindowRenderer>(view: &mut View<R>, callbacks_due: bool) {
+fn redraw_document<R: WindowRenderer>(view: &mut View<R>) {
     let layout_time = view.current_animation_time();
     let document = frame_document(view.doc.as_mut()).unwrap();
     let frame = document.frame_trace("window");
     let measured = frame.sequence().is_some();
     let callbacks_start = measured.then(Instant::now);
-    if callbacks_due {
-        document.animation_frame_at(layout_time);
-        document.rendering_update_at(layout_time);
-    } else {
-        document.defer_rendering_update();
-    }
+    document.animation_frame_at(layout_time);
+    document.rendering_update_at(layout_time);
     let callbacks_millis = callbacks_start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
     let layout = document.layout_trace();
     let mut dom = view.doc.inner_mut();
@@ -473,7 +477,7 @@ fn redraw_document<R: WindowRenderer>(view: &mut View<R>, callbacks_due: bool) {
         .unwrap()
         .complete_render_revision(!blocked && scene_built);
     frame.finish(json!({"outcome":if blocked{"blocked_resources"}else if scene_built{"renderer_returned"}else{"renderer_no_scene"},
-        "callbackPhaseMillis":callbacks_millis,"callbacksDue":callbacks_due,"sceneBuildMillis":scene_millis,
+        "callbackPhaseMillis":callbacks_millis,"callbacksDue":true,"sceneBuildMillis":scene_millis,
         "rendererCallMillis":if blocked{None}else{renderer_millis},"width":width,"height":height,
         "physicalPresentation":"unknown"}),false);
     if !blocked && animating {
@@ -481,8 +485,8 @@ fn redraw_document<R: WindowRenderer>(view: &mut View<R>, callbacks_due: bool) {
     }
 }
 
-// A soft 60 Hz maximum for JS callback batches; not monitor VSync or a
-// presentation guarantee. No missed-frame replay or animation worker.
+// A soft 60 Hz maximum for redraw opportunities and their JS callback batches;
+// not monitor VSync or a presentation guarantee. No missed-frame replay/worker.
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 
 #[derive(Default)]

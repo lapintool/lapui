@@ -96,6 +96,8 @@ On the development Windows machine, from the Lapui repository root:
 
 This checks and builds the actual `lapstyle-ui` Vue application with relative asset URLs, readable JavaScript and source maps, then loads `dist/lapui-debug/index.html` in Lapui with file watching and debug tracing. Its default app location is `C:\Dev\Projects\Web\lapstyle-ui`; pass `-AppDirectory <path>` for a different checkout. The launcher uses the installed Rust 1.99.0 toolchain and locates Python 3 through `py -3` for Stylo's build. Pass `-RustToolchain <version>` to use a different compatible toolchain. Node/pnpm dependencies must already be installed in the app checkout.
 
+The development Cargo profile keeps debug information and assertions, with optimization enabled for Lapui and its dependencies. CPU rasterization in an unoptimized build can block the UI thread for seconds per frame; readable JavaScript does not require unoptimized Rust. The first build after changing profiles recompiles dependencies and takes longer.
+
 Use `-SkipBuild` to reuse the frontend build, or `-Renderer gpu` to select GPU drawing. A script failure exits with an error. `console.error`, framework errors and uncaught script exceptions appear in the terminal and the runtime diagnostics. To inspect the running page in a second terminal, replace the address with the printed `LAPUI_CONTROL` value:
 
 ```powershell
@@ -111,6 +113,14 @@ To run the full-app integration check without opening a window:
 ```
 
 This requires the real app build and checks its mount, component navigation, shared Chinese input model and runtime diagnostics. It is deliberately separate from the regular Rust suite so that cloning Lapui alone does not require the external app checkout.
+
+The check also delivers rendering observers and, with the default software-renderer feature, paints each component page and prints CPU frame/navigation timings. To measure a running native window, keep it in the foreground and run:
+
+```powershell
+.\scripts\measure-lapstyle-ui.ps1 -Address 127.0.0.1:<port> -Exercise -OutputPath .\performance.json
+```
+
+This samples five seconds of idle process CPU time and completed frames, then navigates Input, Card, Checkbox, Button and Input through the real Vue controls. The app must use English navigation labels. Omit `-Exercise` for an idle-only sample. It reports time from the control request through renderer return, plus frame/render timings from the bounded trace; this does not measure physical screen presentation. It temporarily enables tracing and restores its original enabled state. Input/resource activity can affect an idle sample, and trace overflow is reported rather than treated as complete evidence.
 
 ## Run the React DOM example
 
