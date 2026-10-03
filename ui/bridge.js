@@ -64,6 +64,14 @@
   globalThis.Event = Event;
   globalThis.UIEvent = UIEvent;
   globalThis.CustomEvent = CustomEvent;
+  const consoleMessage = values => values.map(value => {
+    if (value instanceof Error) return value.stack ? `${value.message}\n${value.stack}` : value.message;
+    if (typeof value === 'string') return value;
+    try { return JSON.stringify(value) ?? String(value); } catch { return String(value); }
+  }).join(' ');
+  globalThis.console = Object.fromEntries(['log', 'info', 'debug', 'warn', 'error', 'trace'].map(level =>
+    [level, (...values) => __lapui_console(level, consoleMessage(values))]));
+  console.assert = (condition, ...values) => { if (!condition) console.error('Assertion failed:', ...values); };
   const styleViews = new WeakSet();
   class CSSStyleDeclaration {
     constructor() { throw new TypeError('Illegal constructor'); }
@@ -185,7 +193,8 @@
     }
     constructor(reference, tagName = '') {
       this.__ref = reference;
-      this.tagName = (tagName || __lapui_tag(reference)).toUpperCase();
+      const localName = tagName || __lapui_tag(reference);
+      this.tagName = __lapui_namespace(reference) === 'http://www.w3.org/1999/xhtml' ? localName.toUpperCase() : localName;
       const cssName = name => name.startsWith('--') ? name : name.replace(/[A-Z]/g, char => `-${char.toLowerCase()}`);
       const cssValue = name => __lapui_get_style(reference, String(name)).replace(/\s*!important\s*$/i, '').trim();
       const style = {
@@ -284,8 +293,17 @@
       };
     }
     get nodeType() { return documentFragments.has(this.__ref) ? 11 : __lapui_node_type(this.__ref); }
+    get [Symbol.toStringTag]() {
+      return ({1:this.namespaceURI === 'http://www.w3.org/2000/svg' ? 'SVGElement' : 'HTMLElement',3:'Text',8:'Comment',9:'Document',11:'DocumentFragment'})[this.nodeType] || 'Node';
+    }
     get ownerDocument() { return this.nodeType === 9 ? null : document; }
-    get namespaceURI() { return this.nodeType === 1 ? 'http://www.w3.org/1999/xhtml' : null; }
+    get namespaceURI() { return this.nodeType === 1 ? (__lapui_namespace(this.__ref) || null) : null; }
+    get localName() { return this.nodeType === 1 ? __lapui_tag(this.__ref) : null; }
+    getRootNode() {
+      let root = this;
+      while (root.parentNode) root = root.parentNode;
+      return root;
+    }
     get type() { return this.getAttribute('type') || (this.tagName === 'INPUT' ? 'text' : this.tagName === 'BUTTON' ? 'submit' : ''); }
     set type(value) { this.setAttribute('type', value); }
     get nodeName() {
@@ -507,19 +525,30 @@
         if(previous.tagName==='TEXTAREA')globalThis.__lapui_form_tree?.(previous);
       }
     }
-    setAttribute(name, value) { __lapui_set_attribute(this.__ref, String(name).toLowerCase(), String(value)); }
+    attributeName(name) { return this.namespaceURI === 'http://www.w3.org/1999/xhtml' ? String(name).toLowerCase() : String(name); }
+    setAttribute(name, value) { __lapui_set_attribute(this.__ref, this.attributeName(name), String(value)); }
     getAttribute(name) {
-      name = String(name).toLowerCase();
+      name = this.attributeName(name);
       return __lapui_has_attribute(this.__ref, name) ? __lapui_get_attribute(this.__ref, name) : null;
     }
-    hasAttribute(name) { return __lapui_has_attribute(this.__ref, String(name).toLowerCase()); }
-    removeAttribute(name) { __lapui_remove_attribute(this.__ref, String(name).toLowerCase()); }
+    hasAttribute(name) { return __lapui_has_attribute(this.__ref, this.attributeName(name)); }
+    removeAttribute(name) { __lapui_remove_attribute(this.__ref, this.attributeName(name)); }
     querySelector(selector) {
       const reference = __lapui_query(String(selector), this.__ref);
       return reference ? getElement(reference) : null;
     }
     querySelectorAll(selector) {
       return JSON.parse(__lapui_query_all(String(selector), this.__ref)).map(getElement);
+    }
+    matches(selector) { return __lapui_matches(this.__ref, String(selector)); }
+    closest(selector) {
+      selector = String(selector);
+      // Validate even when this node is disconnected.
+      if (this.matches(selector)) return this;
+      for (let parent = this.parentElement; parent; parent = parent.parentElement) {
+        if (parent.matches(selector)) return parent;
+      }
+      return null;
     }
     addEventListener(type, callback, options = false) {
       if (callback == null) return;
@@ -835,10 +864,8 @@
     ? value
     : getElement(__lapui_create_text(String(value)));
 
-  // Vue and other renderers use these browser constructors for mount-time
-  // type checks. The host currently exposes HTML nodes only, so the SVG and
-  // MathML constructors serve as compatibility sentinels until namespace
-  // aware element creation is implemented.
+  // Platform objects expose non-Object tags so reactive frameworks preserve
+  // DOM identity rather than wrapping nodes in JavaScript object proxies.
   globalThis.Node = class Node {
     constructor() { throw new TypeError('Illegal constructor'); }
     static [Symbol.hasInstance](value) { return value !== globalThis && nodeState.has(value); }
@@ -847,13 +874,61 @@
     Object.defineProperty(Node,name,{value});
   }
   globalThis.Element = Element;
-  globalThis.HTMLElement = Element;
+  globalThis.HTMLElement = class HTMLElement {
+    static [Symbol.hasInstance](value) { return value instanceof Element && value.namespaceURI === 'http://www.w3.org/1999/xhtml'; }
+  };
   globalThis.HTMLIFrameElement = class HTMLIFrameElement {
     static [Symbol.hasInstance](value) { return value instanceof Element && value.tagName === 'IFRAME'; }
   };
   globalThis.window = globalThis;
   globalThis.self = globalThis;
   globalThis.location = Object.freeze(JSON.parse(__lapui_location));
+  class URLSearchParams {
+    constructor(init = '') {
+      if (typeof init === 'string') {
+        this._pairs = JSON.parse(__lapui_search_params_decode(init.startsWith('?') ? init.slice(1) : init));
+      } else if (init != null && typeof init[Symbol.iterator] === 'function') {
+        this._pairs = Array.from(init, pair => {
+          const values = Array.from(pair);
+          if (values.length !== 2) throw new TypeError('Expected a name/value pair');
+          return values.map(String);
+        });
+      } else {
+        this._pairs = Object.entries(init ?? {}).map(([key, value]) => [key, String(value)]);
+      }
+    }
+    get [Symbol.toStringTag]() { return 'URLSearchParams'; }
+    get size() { return this._pairs.length; }
+    append(name, value) { this._pairs.push([String(name), String(value)]); }
+    delete(name, value) {
+      name = String(name);
+      const useValue = arguments.length > 1;
+      value = String(value);
+      this._pairs = this._pairs.filter(pair => pair[0] !== name || (useValue && pair[1] !== value));
+    }
+    get(name) { return this._pairs.find(pair => pair[0] === String(name))?.[1] ?? null; }
+    getAll(name) { return this._pairs.filter(pair => pair[0] === String(name)).map(pair => pair[1]); }
+    has(name, value) {
+      name = String(name);
+      const useValue = arguments.length > 1;
+      value = String(value);
+      return this._pairs.some(pair => pair[0] === name && (!useValue || pair[1] === value));
+    }
+    set(name, value) {
+      name = String(name); value = String(value);
+      const index = this._pairs.findIndex(pair => pair[0] === name);
+      this.delete(name);
+      this._pairs.splice(index < 0 ? this._pairs.length : index, 0, [name, value]);
+    }
+    sort() { this._pairs.sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0); }
+    *entries() { for (let index = 0; index < this._pairs.length; index++) yield this._pairs[index].slice(); }
+    *keys() { for (const [key] of this.entries()) yield key; }
+    *values() { for (const [, value] of this.entries()) yield value; }
+    [Symbol.iterator]() { return this.entries(); }
+    forEach(callback, thisArg) { for (const [key, value] of this.entries()) callback.call(thisArg, value, key, this); }
+    toString() { return __lapui_search_params_encode(JSON.stringify(this._pairs)); }
+  }
+  globalThis.URLSearchParams = URLSearchParams;
   class Storage {
     constructor() { this._values = new Map(); }
     get length() { return this._values.size; }
@@ -904,8 +979,16 @@
     };
     return media;
   };
-  globalThis.SVGElement = class SVGElement {};
-  globalThis.MathMLElement = class MathMLElement {};
+  globalThis.SVGElement = class SVGElement {
+    static [Symbol.hasInstance](value) { return value instanceof Element && value.namespaceURI === 'http://www.w3.org/2000/svg'; }
+  };
+  globalThis.MathMLElement = class MathMLElement {
+    static [Symbol.hasInstance](value) { return value instanceof Element && value.namespaceURI === 'http://www.w3.org/1998/Math/MathML'; }
+  };
+  globalThis.Document = class Document {
+    static [Symbol.hasInstance](value) { return value === globalThis.document; }
+  };
+  globalThis.ShadowRoot = class ShadowRoot {};
   globalThis.DocumentFragment = class DocumentFragment {
     static [Symbol.hasInstance](value) {
       return Boolean(value && documentFragments.has(value.__ref));
@@ -1043,9 +1126,10 @@
       if (namespace !== null && !['http://www.w3.org/1999/xhtml', 'http://www.w3.org/2000/svg', 'http://www.w3.org/1998/Math/MathML'].includes(String(namespace))) {
         throw new DOMException('Unsupported namespace', 'NotSupportedError');
       }
-      // Blitz currently creates HTML-namespace nodes only. Keeping the local
-      // name lets framework-generated SVG tags participate in the same DOM.
-      return this.createElement(String(qualifiedName).split(':').pop());
+      const tag = String(qualifiedName).split(':').pop();
+      const reference = __lapui_create_element(tag, namespace === null ? '' : String(namespace));
+      if (!reference) throw new DOMException('Invalid element name', 'InvalidCharacterError');
+      return getElement(reference);
     },
     createTextNode(value) {
       return getElement(__lapui_create_text(String(value)));

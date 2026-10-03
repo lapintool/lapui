@@ -165,7 +165,7 @@
         childList:Boolean(options.childList), attributes, characterData,
         subtree:Boolean(options.subtree), attributeOldValue:Boolean(options.attributeOldValue),
         characterDataOldValue:Boolean(options.characterDataOldValue),
-        attributeFilter:options.attributeFilter == null ? null : [...options.attributeFilter].map(name=>String(name).toLowerCase())
+        attributeFilter:options.attributeFilter == null ? null : [...options.attributeFilter].map(String)
       };
       if (!normalized.childList && !normalized.attributes && !normalized.characterData) throw new TypeError('At least one mutation type must be enabled');
       if (!state.targets.has(target) && targetCount >= limits.mutationTargets) throw new RangeError('Mutation target capacity exceeded');
@@ -197,13 +197,13 @@
     const target = __lapui_element(reference), oldValue = __lapui_has_attribute(reference, name) ? __lapui_get_attribute(reference, name) : null;
     setAttribute(reference, name, value);
     const current = __lapui_get_attribute(reference, name);
-    if (oldValue !== current) enqueue({type:'attributes', target, attributeName:String(name).toLowerCase(), oldValue});
+    if (oldValue !== current) enqueue({type:'attributes', target, attributeName:target.attributeName(name), oldValue});
   };
   const removeAttribute = __lapui_remove_attribute;
   globalThis.__lapui_remove_attribute = (reference, name) => {
     const target = __lapui_element(reference), oldValue = __lapui_has_attribute(reference, name) ? __lapui_get_attribute(reference, name) : null;
     const removed = removeAttribute(reference, name);
-    if (removed && oldValue !== null) enqueue({type:'attributes', target, attributeName:String(name).toLowerCase(), oldValue});
+    if (removed && oldValue !== null) enqueue({type:'attributes', target, attributeName:target.attributeName(name), oldValue});
     return removed;
   };
 

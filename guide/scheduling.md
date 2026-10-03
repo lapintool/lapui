@@ -1,5 +1,7 @@
 # Task scheduling
 
+On Windows, the Lapui executable reserves 8 MiB for its main thread. QuickJS may use up to 4 MiB, capped to the current host thread's available stack while leaving 512 KiB for native DOM callbacks. Library embedders with smaller stacks get a smaller JavaScript allowance. Other platforms retain a 1 MiB allowance. Recursion overflow remains a JavaScript exception; enlarging the executable's reservation does not disable the heap or execution deadlines.
+
 The JavaScript bridge provides function-based `setTimeout`, `setInterval`, their clear functions, and `queueMicrotask`:
 
 ```js
@@ -23,6 +25,8 @@ Promise checkpoints have a 1,024-job budget and a soft 20 ms slice checked betwe
 
 ## Animation callbacks
 
+`Element.animate()` and `getAnimations()` support the two-keyframe numeric style animations used by Lapstyle's expand and menu components. Width/height/position/opacity values with matching units interpolate on native rendering frames, including linear or cubic-bezier easing, finish/cancel callbacks and promises, and forwards fill. This selected API does not implement the complete Web Animations model: repeating/delayed animations, additive composition, transform interpolation, pause/reverse, or CSS animation enumeration are unsupported.
+
 `requestAnimationFrame()` and `cancelAnimationFrame()` use a separate callback-ID space:
 
 ```js
@@ -41,7 +45,7 @@ The CLI uses `lapui::shell::LapuiApplication`, wrapping Blitz's window applicati
 
 Existing requests run in registration order; cancellation can remove a later callback in the batch. New requests, including those made from Promise checkpoints, wait for a subsequent opportunity. Delivered callbacks share the batch timestamp; `performance.now()` can advance between them. A Promise checkpoint follows each callback, and exceptions enter diagnostics while other callbacks continue. Requests are removed before invocation so a one-shot callback can schedule its successor.
 
-At most 1,024 callbacks may be pending. Non-functions throw TypeError; capacity/ID exhaustion throws RangeError. A soft 20 ms slice is checked between callbacks, deferring remaining requests. This differs from unrestricted browser processing. Individual callbacks have the 250 ms cooperative deadline; native work can exceed it, so there is no hard whole-frame guarantee. Cancellation, drop, reload and script suspension retire native requests. Suspended JS callback objects remain subject to the managed-heap limit until reload/drop.
+At most 1,024 callbacks may be pending. Non-functions throw TypeError; capacity/ID exhaustion throws RangeError. A soft 20 ms slice is checked between callbacks, deferring remaining requests. This differs from unrestricted browser processing. Individual callbacks have the application's cooperative deadline described below; native work can exceed it, so there is no hard whole-frame guarantee. Cancellation, drop, reload and script suspension retire native requests. Suspended JS callback objects remain subject to the managed-heap limit until reload/drop.
 
 `performance.now()` is a monotonic millisecond clock relative to document creation; `performance.timeOrigin` supplies its initial Unix-millisecond origin. Reload creates a new origin. Other Performance APIs are unsupported. JS timing, native layout/render time and screen presentation are separate: callback completion is not a presentation acknowledgement.
 
@@ -49,7 +53,7 @@ Rust window embedders should use LapuiApplication instead of bare BlitzApplicati
 
 ## Execution limits and recovery
 
-The preview limits QuickJS-managed heap allocations to 128 MiB. Startup entries have a two-second cooperative deadline; entries containing at least 256 KiB of source and file-backed modules receive ten seconds so production bundles can initialize without weakening the short-script guard. UI event/control calls, timer/animation callbacks, host completion dispatch and individual Promise jobs have 250 ms deadlines. Each synchronous window/observer rendering update shares a 250 ms deadline. Nested bridge calls share the outer deadline. `describe` exposes both startup limits in `scriptExecutionLimits`. These are per-entry limits, not a whole-frame latency budget, process-memory cap, or sandbox. Native Rust calls, filesystem reads, parsing and other operations that do not poll QuickJS's interrupt handler cannot be preempted by this mechanism.
+The preview limits QuickJS-managed heap allocations to 128 MiB. Startup entries have a two-second cooperative deadline; entries containing at least 256 KiB of source and file-backed modules receive ten seconds. Documents containing such entries use a five-second callback deadline so a synchronous framework render with native layout can finish; other documents retain the 250 ms guard. UI event/control calls, timer/animation callbacks, host completion dispatch, individual Promise jobs and synchronous window/observer updates use that document's callback deadline. Nested bridge calls share the outer deadline. `describe` exposes both startup and callback limits in `scriptExecutionLimits`. These are per-entry limits, not a whole-frame latency budget, process-memory cap, or sandbox. Native Rust calls, filesystem reads, parsing and other operations that do not poll QuickJS's interrupt handler cannot be preempted by this mechanism.
 
 On a time-limit interrupt, scripting is suspended for the whole document. QuickJS's uncatchable interrupt skips JavaScript `catch` and `finally`, so continuing the partially unwound bridge would be unsafe. The runtime stops its timers and document-owned network work, rejects new host work and skips queued host calls (already running Rust handlers must finish), skips queued JS completions and jobs, and retains native control observations and diagnostics. Effects already applied to the DOM or Rust application state are not rolled back. Application-scoped background operations retain their separate lifecycle. Heap exhaustion is an allocation error and can prevent diagnostic allocations; it is not the same as a time-limit suspension.
 

@@ -86,6 +86,32 @@ cargo run --release --locked -- --html examples/vue-demo/index.html
 
 The example exercises Vue's runtime DOM renderer against Lapui's Blitz-backed DOM: text input, reactive task insertion/removal, conditional dialog nodes, class updates, and button state. Its integration test runs the same checked-in bundle with `cargo test --locked vue3_runtime_dom_bundle_renders_and_patches_the_blitz_tree`.
 
+## Debug the complete Lapstyle UI application
+
+On the development Windows machine, from the Lapui repository root:
+
+```powershell
+.\scripts\debug-lapstyle-ui.ps1
+```
+
+This checks and builds the actual `lapstyle-ui` Vue application with relative asset URLs, readable JavaScript and source maps, then loads `dist/lapui-debug/index.html` in Lapui with file watching and debug tracing. Its default app location is `C:\Dev\Projects\Web\lapstyle-ui`; pass `-AppDirectory <path>` for a different checkout. The launcher uses the installed Rust 1.99.0 toolchain and locates Python 3 through `py -3` for Stylo's build. Pass `-RustToolchain <version>` to use a different compatible toolchain. Node/pnpm dependencies must already be installed in the app checkout.
+
+Use `-SkipBuild` to reuse the frontend build, or `-Renderer gpu` to select GPU drawing. A script failure exits with an error. `console.error`, framework errors and uncaught script exceptions appear in the terminal and the runtime diagnostics. To inspect the running page in a second terminal, replace the address with the printed `LAPUI_CONTROL` value:
+
+```powershell
+.\target\debug\lapui.exe client 127.0.0.1:<port> diagnostics
+.\target\debug\lapui.exe client 127.0.0.1:<port> controls
+.\target\debug\lapui.exe client 127.0.0.1:<port> screenshot .\lapstyle-ui.png
+```
+
+To run the full-app integration check without opening a window:
+
+```powershell
+.\scripts\debug-lapstyle-ui.ps1 -SkipBuild -CheckOnly
+```
+
+This requires the real app build and checks its mount, component navigation, shared Chinese input model and runtime diagnostics. It is deliberately separate from the regular Rust suite so that cloning Lapui alone does not require the external app checkout.
+
 ## Run the React DOM example
 
 ```powershell

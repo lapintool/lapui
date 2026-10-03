@@ -82,7 +82,9 @@
   Object.defineProperty(proto,'checked',{configurable:true,get:oldChecked.get,set(value){const previous=Boolean(oldChecked.get.call(this));state(this).checkedDirty=true;oldChecked.set.call(this,value);reportControlProperty(this,'checked',previous);}});
   Object.defineProperty(proto,'defaultChecked',{configurable:true,get(){return this.hasAttribute('checked');},set(value){if(value)this.setAttribute('checked','');else this.removeAttribute('checked');}});
   function changeAttribute(target,name,operation){
-    name=String(name).toLowerCase();const own=state(target);
+    name=target.attributeName(name);
+    if(target.namespaceURI!=='http://www.w3.org/1999/xhtml'){operation(name);return;}
+    const own=state(target);
     const previous=valueMode(target)&&own.dirty&&name==='value'?__lapui_get_value(target.__ref):null;
     const checked=target.tagName==='INPUT'&&['checkbox','radio'].includes(target.type)&&name==='checked'?target.checked:null;
     operation(name);

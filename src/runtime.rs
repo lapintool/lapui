@@ -39,6 +39,7 @@ use style::servo_arc::Arc as ServoArc;
 const HTML: &str = include_str!("../ui/index.html");
 const SCRIPT: &str = include_str!("../ui/app.js");
 const BRIDGE: &str = include_str!("../ui/bridge.js");
+const ANIMATIONS: &str = include_str!("../ui/animations.js");
 const RESIZE_OBSERVER: &str = include_str!("../ui/resize-observer.js");
 const INTERSECTION_OBSERVER: &str = include_str!("../ui/intersection-observer.js");
 const FORM_BRIDGE: &str = include_str!("../ui/forms.js");
@@ -49,8 +50,29 @@ struct LocalDirectoryNetProvider {
 }
 
 fn read_local_resource(root: &Path, request: &Request) -> Result<Vec<u8>, String> {
-    if request.method != blitz::traits::net::Method::GET || request.url.scheme() != "file" {
+    if request
+        .signal
+        .as_ref()
+        .is_some_and(|signal| signal.aborted())
+    {
+        return Err("resource request was cancelled".into());
+    }
+    if request.method != blitz::traits::net::Method::GET {
         return Err("only local file GET requests are supported".into());
+    }
+    if request.url.scheme() == "data" {
+        if request.url.as_str().len() > 32 * 1024 * 1024 {
+            return Err("data resource exceeds 32 MiB".into());
+        }
+        let data = data_url::DataUrl::process(request.url.as_str())
+            .map_err(|error| format!("invalid data URL: {error}"))?;
+        return data
+            .decode_to_vec()
+            .map(|(bytes, _)| bytes)
+            .map_err(|error| format!("invalid data resource: {error}"));
+    }
+    if request.url.scheme() != "file" {
+        return Err("only local file and data GET requests are supported".into());
     }
     let path = request
         .url
@@ -60,13 +82,6 @@ fn read_local_resource(root: &Path, request: &Request) -> Result<Vec<u8>, String
         .map_err(|error| format!("resource file could not be resolved: {error}"))?;
     if !path.starts_with(root) {
         return Err("resource path is outside the application directory".into());
-    }
-    if request
-        .signal
-        .as_ref()
-        .is_some_and(|signal| signal.aborted())
-    {
-        return Err("resource request was cancelled".into());
     }
     let metadata = std::fs::metadata(&path)
         .map_err(|error| format!("resource metadata is unavailable: {error}"))?;
@@ -191,7 +206,7 @@ fn javascript_error(context: &Context, error: &rquickjs::Error, budget: &ScriptB
     if !error.is_exception() {
         return error.to_string();
     }
-    let detail = budget.run(CALLBACK_LIMIT, || {
+    let detail = budget.run_callback(|| {
         context.with(|ctx| {
             let thrown = ctx.catch();
             if let Some(exception) = thrown
@@ -649,7 +664,7 @@ impl LapuiDocument {
             if !self.frames.borrow_mut().take(id) {
                 continue;
             }
-            let result = self.script_budget.run(CALLBACK_LIMIT, || {
+            let result = self.script_budget.run_callback(|| {
                 self.js_context.with(|ctx| {
                     let function: Function = ctx.globals().get("__lapui_fire_animation_frame")?;
                     function.call::<_, ()>((id, timestamp))
@@ -700,7 +715,7 @@ impl LapuiDocument {
             frames.in_frame = true;
             frames.rendering_pending = false;
         }
-        let result = self.script_budget.run(CALLBACK_LIMIT, || {
+        let result = self.script_budget.run_callback(|| {
             self.js_context.with(|ctx| {
                 let function: Function = ctx.globals().get("__lapui_rendering_update")?;
                 function.call::<_, bool>(())
@@ -815,7 +830,9 @@ impl LapuiDocument {
     pub fn script_limits() -> Value {
         json!({
             "heapBytes": crate::script_budget::HEAP_LIMIT,
+            "maximumStackBytes": crate::script_budget::STACK_LIMIT,
             "callbackMillis": CALLBACK_LIMIT.as_millis(),
+            "largeApplicationCallbackMillis": crate::script_budget::LARGE_CALLBACK_LIMIT.as_millis(),
             "startupMillis": STARTUP_LIMIT.as_millis(),
             "largeStartupMillis": LARGE_STARTUP_LIMIT.as_millis(),
             "checkpointSliceMillis": CHECKPOINT_SLICE.as_millis(),
@@ -927,7 +944,7 @@ impl LapuiDocument {
             snapshot["validationAvailable"] = json!(false);
             return snapshot;
         }
-        let result = self.script_budget.run(CALLBACK_LIMIT, || {
+        let result = self.script_budget.run_callback(|| {
             self.js_context.with(|ctx| {
                 let function: Function = ctx.globals().get("__lapui_form_snapshot_json")?;
                 function.call::<_, String>((snapshot.to_string(),))
@@ -1185,7 +1202,7 @@ impl LapuiDocument {
             }
             let encoded = self
                 .script_budget
-                .run(CALLBACK_LIMIT, || {
+                .run_callback(|| {
                     self.js_context.with(|ctx| {
                         let function: Function = ctx.globals().get("__lapui_page_changes")?;
                         function.call::<_, String>((after_sequence, limit))
@@ -1393,7 +1410,7 @@ impl LapuiDocument {
             .map_or(0, |entry| entry.sequence);
         let result = self
             .script_budget
-            .run(CALLBACK_LIMIT, || {
+            .run_callback(|| {
                 self.js_context.with(|ctx| -> rquickjs::Result<bool> {
                     let lapui: rquickjs::Object = ctx.globals().get("lapui")?;
                     let function: Function = lapui.get(method)?;
@@ -1607,7 +1624,16 @@ impl LapuiDocument {
             });
         }
         let js_runtime = Runtime::new().map_err(|e| e.to_string())?;
-        let script_budget = ScriptBudget::install(&js_runtime);
+        let large_application = startup_scripts.iter().any(|script| match script {
+            StartupScript::Classic { source, .. }
+            | StartupScript::Module {
+                source: Some(source),
+                ..
+            } => source.len() >= LARGE_STARTUP_SOURCE_BYTES,
+            StartupScript::Module { source: None, .. } => true,
+        });
+        let script_budget =
+            ScriptBudget::install(&js_runtime).with_large_application(large_application);
         scripts::install_loader(
             &js_runtime,
             app_root.clone(),
@@ -1677,6 +1703,17 @@ impl LapuiDocument {
                     "hash":base_url.fragment().map(|fragment| format!("#{fragment}")).unwrap_or_default(),
                 });
                 globals.set("__lapui_location", location.to_string())?;
+                globals.set("__lapui_search_params_decode", Func::from(|query: String| -> String {
+                    let mut url = Url::parse("https://lapui.invalid/").unwrap();
+                    url.set_query(Some(&query));
+                    serde_json::to_string(&url.query_pairs().into_owned().collect::<Vec<_>>()).unwrap()
+                }))?;
+                globals.set("__lapui_search_params_encode", Func::from(|pairs: String| -> String {
+                    let pairs: Vec<(String, String)> = serde_json::from_str(&pairs).unwrap_or_default();
+                    let mut url = Url::parse("https://lapui.invalid/").unwrap();
+                    url.query_pairs_mut().extend_pairs(pairs);
+                    url.query().unwrap_or_default().to_owned()
+                }))?;
                 let window_proxy = proxy.clone();
                 globals.set(
                     "__lapui_window_command",
@@ -2005,6 +2042,20 @@ impl LapuiDocument {
                     }),
                 )?;
                 globals.set(
+                    "__lapui_namespace",
+                    Func::from({
+                        let dom = dom.clone();
+                        move |reference: String| -> String {
+                            let doc = dom.borrow();
+                            resolve_node_ref(&doc, &reference)
+                                .and_then(|id| doc.get_node(id))
+                                .and_then(|node| node.data.downcast_element())
+                                .map(|element| element.name.ns.to_string())
+                                .unwrap_or_default()
+                        }
+                    }),
+                )?;
+                globals.set(
                     "__lapui_tag",
                     Func::from({
                         let dom = dom.clone();
@@ -2080,6 +2131,18 @@ impl LapuiDocument {
                                 .and_then(|index| parent.children.get(index).copied())
                                 .map(|node| canonical_node_ref(doc_id, node))
                                 .unwrap_or_default()
+                        }
+                    }),
+                )?;
+                globals.set(
+                    "__lapui_matches",
+                    Func::from({
+                        let dom = dom.clone();
+                        move |ctx: rquickjs::Ctx<'_>, reference: String, selector: String| -> rquickjs::Result<bool> {
+                            let doc = dom.borrow();
+                            let Some(node) = resolve_node_ref(&doc, &reference) else { return Ok(false) };
+                            doc.matches_selector(node, &selector)
+                                .map_err(|_| Exception::throw_syntax(&ctx, "Invalid selector"))
                         }
                     }),
                 )?;
@@ -2323,7 +2386,7 @@ impl LapuiDocument {
                     "__lapui_create_element",
                     Func::from({
                         let dom = dom.clone();
-                        move |tag: String| -> String {
+                        move |tag: String, namespace: rquickjs::function::Opt<String>| -> String {
                             if tag.is_empty()
                                 || !tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
                             {
@@ -2331,11 +2394,9 @@ impl LapuiDocument {
                             }
                             let mut doc = dom.borrow_mut();
                             let mut mutator = doc.mutate();
-                            let name = QualName::new(
-                                None,
-                                blitz::dom::ns!(html),
-                                LocalName::from(tag.to_ascii_lowercase()),
-                            );
+                            let ns = namespace.0.unwrap_or_else(|| "http://www.w3.org/1999/xhtml".into());
+                            let tag = if ns == "http://www.w3.org/1999/xhtml" { tag.to_ascii_lowercase() } else { tag };
+                            let name = QualName::new(None, ns.into(), LocalName::from(tag));
                             let node = mutator.create_element(name, Vec::new());
                             canonical_node_ref(doc_id, node)
                         }
@@ -2590,7 +2651,7 @@ impl LapuiDocument {
                             let name = QualName::new(
                                 None,
                                 blitz::dom::ns!(),
-                                LocalName::from(name.to_ascii_lowercase()),
+                                LocalName::from(name),
                             );
                             doc.mutate().clear_attribute(node, name);
                             true
@@ -2995,6 +3056,19 @@ impl LapuiDocument {
                     stream_status(&status_streams).to_string()
                 }))?;
                 globals.set(
+                    "__lapui_console",
+                    Func::from({
+                        let diagnostics = diagnostics.clone();
+                        move |level: String, message: String| {
+                            if level == "error" {
+                                scripts::report(&diagnostics, "console", "console", message);
+                            } else {
+                                eprintln!("Lapui console [{level}]: {}", scripts::console_text(&message));
+                            }
+                        }
+                    }),
+                )?;
+                globals.set(
                     "__lapui_report_script_error",
                     Func::from({
                         let diagnostics = diagnostics.clone();
@@ -3027,6 +3101,7 @@ impl LapuiDocument {
                     }),
                 )?;
                 script_budget.run(STARTUP_LIMIT, || ctx.eval::<(), _>(BRIDGE))?;
+                script_budget.run(STARTUP_LIMIT, || ctx.eval::<(), _>(ANIMATIONS))?;
                 script_budget.run(STARTUP_LIMIT, || ctx.eval::<(), _>(RESIZE_OBSERVER))?;
                 script_budget.run(STARTUP_LIMIT, || ctx.eval::<(), _>(INTERSECTION_OBSERVER))?;
                 script_budget.run(STARTUP_LIMIT, || ctx.eval::<(), _>(FORM_BRIDGE))?;
@@ -3069,7 +3144,7 @@ impl LapuiDocument {
                         Ok(())
                     });
                     if let Err(error) = result {
-                        let detail = script_budget.run(CALLBACK_LIMIT, || ctx
+                        let detail = script_budget.run_callback(|| ctx
                             .catch()
                             .into_object()
                             .and_then(Exception::from_object)
@@ -3389,7 +3464,7 @@ fn drain_jobs(runtime: &Runtime, budget: &ScriptBudget) -> Result<(), String> {
         if index > 0 && started.elapsed() >= CHECKPOINT_SLICE {
             return Ok(());
         }
-        let result = budget.run(CALLBACK_LIMIT, || runtime.execute_pending_job());
+        let result = budget.run_callback(|| runtime.execute_pending_job());
         match result {
             Ok(_) if budget.interrupted() => return Err(INTERRUPTED_MESSAGE.into()),
             Ok(true) => {}
@@ -3491,7 +3566,7 @@ impl EventHandler for JsHandler {
             _ => json!({}),
         }
         .to_string();
-        let result = self.budget.run(CALLBACK_LIMIT, || {
+        let result = self.budget.run_callback(|| {
             self.context.with(|ctx| {
                 let function: Function = ctx.globals().get("__lapui_dispatch")?;
                 function.call::<_, String>((event.name(), target_id, path, detail))
@@ -3581,7 +3656,7 @@ impl Document for LapuiDocument {
         if tab_pressed && !self.script_budget.interrupted() {
             let current_focus = self.dom.borrow().get_focussed_node_id();
             if previous_focus != current_focus {
-                let notified_focus = self.script_budget.run(CALLBACK_LIMIT, || {
+                let notified_focus = self.script_budget.run_callback(|| {
                     self.js_context.with(|ctx| {
                         let function: Function =
                             ctx.globals().get("__lapui_take_focus_transition")?;
@@ -3600,7 +3675,7 @@ impl Document for LapuiDocument {
                     .map(|node| canonical_node_ref(doc_id, node))
                     .unwrap_or_default();
                 if previous_ref != current_ref {
-                    let transition = self.script_budget.run(CALLBACK_LIMIT, || {
+                    let transition = self.script_budget.run_callback(|| {
                         self.js_context.with(|ctx| {
                             let function: Function =
                                 ctx.globals().get("__lapui_dispatch_focus_transition")?;
@@ -3656,7 +3731,7 @@ impl Document for LapuiDocument {
             let timer_trace = self
                 .debug_trace
                 .span("timer", json!({"callbackId":id}), None);
-            let result = self.script_budget.run(CALLBACK_LIMIT, || {
+            let result = self.script_budget.run_callback(|| {
                 self.js_context.with(|ctx| {
                     let callback: Function = ctx.globals().get("__lapui_fire_timer")?;
                     callback.call::<_, ()>((id,))
@@ -3752,7 +3827,7 @@ impl Document for LapuiDocument {
                     json!({"code":completion.error_code.unwrap_or_else(|| "action_failed".into()),"message":message}).to_string(),
                 ),
             };
-            let result = self.script_budget.run(CALLBACK_LIMIT, || {
+            let result = self.script_budget.run_callback(|| {
                 self.js_context.with(|ctx| {
                     let globals = ctx.globals();
                     let function: Function = globals.get("__lapui_complete")?;
@@ -3795,7 +3870,7 @@ impl Document for LapuiDocument {
             let stream_trace =
                 self.debug_trace
                     .span("stream_delivery", json!({"streamId":id}), None);
-            let result = self.script_budget.run(CALLBACK_LIMIT, || {
+            let result = self.script_budget.run_callback(|| {
                 self.js_context.with(|ctx| {
                     let event = stream_value(ctx.clone(), data)?;
                     let function: Function = ctx.globals().get("__lapui_stream_event")?;
@@ -7315,7 +7390,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&result).unwrap(),
-            json!({"svg":"SVG","path":"PATH","mounted":"Ready","fragmentEmpty":true})
+            json!({"svg":"svg","path":"path","mounted":"Ready","fragmentEmpty":true})
         );
     }
 
@@ -9672,6 +9747,186 @@ mod tests {
             .unwrap();
         drain_jobs(&doc.js_runtime, &doc.script_budget).unwrap();
         assert!(!text(&doc, "app").contains("一个本地界面"));
+    }
+
+    #[test]
+    fn platform_nodes_preserve_identity_and_match_detached_ancestors() {
+        let (doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body><main id='mount'></main></body></html>",
+            "",
+        )
+        .unwrap();
+        let result = doc.js_context.with(|ctx| ctx.eval::<bool, _>(r#"
+            (() => {
+              const parent = document.createElement('section'); parent.className = 'ls-menu';
+              const child = document.createElement('button'); parent.appendChild(child);
+              if (Object.prototype.toString.call(child) === '[object Object]') throw new Error('DOM is reactive');
+              if (child.closest('.ls-menu') !== parent || !child.matches('section > button')) throw new Error('detached selector');
+              let invalid = false; try { child.matches('['); } catch (error) { invalid = error instanceof SyntaxError; }
+              if (!invalid) throw new Error('selector validation');
+              document.getElementById('mount').appendChild(parent);
+              if (child.getRootNode() !== document || !(document instanceof Document)) throw new Error('document root');
+              const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+              const observer = new MutationObserver(() => {});
+              observer.observe(svg, {attributes:true,attributeFilter:['viewBox']});
+              svg.setAttribute('viewBox', '0 0 24 24');
+              if (!(svg instanceof SVGElement) || svg instanceof HTMLElement || svg.namespaceURI !== 'http://www.w3.org/2000/svg') throw new Error('namespace');
+              if (svg.getAttribute('viewBox') !== '0 0 24 24' || svg.getAttribute('viewbox') !== null) throw new Error('SVG attribute case');
+              if (observer.takeRecords()[0]?.attributeName !== 'viewBox') throw new Error('SVG mutation case');
+              observer.disconnect();
+              svg.removeAttribute('viewBox');
+              if (svg.hasAttribute('viewBox')) throw new Error('SVG attribute removal');
+              let clicks = 0; child.addEventListener('click', () => clicks++); child.click();
+              console.info('loaded', {ready:true}); console.warn('warning fixture');
+              return clicks === 1;
+            })()
+        "#)).unwrap_or_else(|error| panic!("{}", javascript_error(&doc.js_context, &error, &doc.script_budget)));
+        assert!(result);
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn search_parameters_encode_unicode_spaces_duplicates_and_records() {
+        let (doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body></body></html>",
+            "",
+        )
+        .unwrap();
+        let result = doc.js_context.with(|ctx| ctx.eval::<bool, _>(r#"
+            (() => {
+              const params = new URLSearchParams('?q=%E4%B8%AD%E6%96%87+test&a=1&a=2');
+              if (params.get('q') !== '中文 test' || params.getAll('a').join(',') !== '1,2') return false;
+              params.set('a', '3'); params.append('a', '4'); params.delete('a', '3');
+              if (!params.has('a', '4') || params.has('a', '3') || params.size !== 2) return false;
+              const encoded = new URLSearchParams({icons:'arrow-left,arrow-right',query:'中文 &+=#'}).toString();
+              const decoded = new URLSearchParams(encoded);
+              const seen = []; decoded.forEach((value,key) => seen.push([key,value]));
+              return decoded.get('query') === '中文 &+=#' && seen.length === 2
+                && encoded.includes('icons=arrow-left%2Carrow-right') && encoded.includes('+')
+                && new URLSearchParams([...decoded]).toString() === encoded;
+            })()
+        "#)).unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn style_animations_interpolate_finish_and_cancel_on_rendering_frames() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body><div id='animated' style='width:100px;opacity:1'></div></body></html>",
+            "",
+        )
+        .unwrap();
+        doc.js_context.with(|ctx| ctx.eval::<(), _>(r#"
+            globalThis.animated = document.getElementById('animated');
+            globalThis.animation = animated.animate([{width:'0px'},{width:'80px'}], {duration:2000,fill:'forwards'});
+            animation.startTime = performance.now() - 500;
+            globalThis.finished = false;
+            animation.finished.then(() => finished = true);
+        "#)).unwrap();
+        doc.animation_frame();
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(
+            "parseFloat(animated.style.width)>0 && parseFloat(animated.style.width)<80 && animated.getAnimations().length===1"
+        )).unwrap());
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("animation.finish();"))
+            .unwrap();
+        doc.poll(None);
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>(
+                "finished && animation.playState==='finished' && animated.style.width==='80px'"
+            ))
+            .unwrap());
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>(
+                    r#"
+            animation.cancel();
+            globalThis.canceled = '';
+            const fade = animated.animate([{opacity:0},{opacity:1}], {duration:100});
+            fade.finished.catch(error => canceled = error.name);
+            fade.cancel();
+        "#,
+                )
+            })
+            .unwrap();
+        doc.poll(None);
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(
+            "animated.getAnimations().length===0 && animated.style.width==='100px' && animated.style.opacity==='1' && canceled==='AbortError'"
+        )).unwrap());
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires a built lapstyle-ui; set LAPUI_LAPSTYLE_HTML or use scripts/debug-lapstyle-ui.ps1 -CheckOnly"]
+    fn lapstyle_ui_full_application_mounts_and_navigates() {
+        std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let path = PathBuf::from(std::env::var("LAPUI_LAPSTYLE_HTML").expect("set LAPUI_LAPSTYLE_HTML"));
+            let html = std::fs::read_to_string(&path).unwrap();
+            let (mut doc, _) = LapuiDocument::new_with_local_source(ActionRegistry::default(), None,
+                &html, "", path.parent().unwrap()).unwrap();
+            doc.inner_mut().set_viewport(Viewport::new(1440, 1000, 1.0, ColorScheme::Dark));
+            for _ in 0..10 { doc.poll(None); doc.animation_frame(); }
+            assert!(text(&doc, "app").contains("Lapstyle"));
+            assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>("!!document.querySelector('#app[data-v-app] .demo-start')")).unwrap());
+            for section in ["button", "card", "input", "checkbox", "dropdown", "tabs", "theme", "slider", "menu", "dialog", "color-picker", "progress", "table", "radio", "expand", "splitter", "icon", "tooltip", "scrollbar", "btngroup", "custom"] {
+                let js = format!("document.querySelector('.demo-nav a[href$=\"/{section}\"]').click()");
+                doc.js_context.with(|ctx| ctx.eval::<(), _>(js)).unwrap();
+                for _ in 0..10 { doc.poll(None); doc.animation_frame(); }
+                let state = doc.js_context.with(|ctx| ctx.eval::<String, _>(
+                    "JSON.stringify({heading:document.querySelector('.demo-section-title')?.textContent,errors:lapui.diagnostics()})"
+                )).unwrap();
+                let state: Value = serde_json::from_str(&state).unwrap();
+                assert!(!state["heading"].as_str().unwrap_or_default().is_empty(), "section {section}: {state}");
+                assert_eq!(state["errors"], json!([]), "section {section}: {state}");
+                if section == "input" {
+                    doc.js_context.with(|ctx| ctx.eval::<(), _>(
+                        "const field=document.querySelector('input[name^=\"demo-input-name\"]'); lapui.fill(field.__ref, '中文 Lapui 验证');"
+                    )).unwrap();
+                    for _ in 0..5 { doc.poll(None); }
+                    assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(
+                        "Array.from(document.querySelectorAll('input[name^=\"demo-input-name\"]')).every(el=>el.value==='中文 Lapui 验证')"
+                    )).unwrap());
+                }
+                eprintln!("Lapstyle section verified: {section}");
+            }
+            assert!(doc.script_diagnostics.borrow().is_empty());
+        }).unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn local_resources_decode_inline_svg_and_base64_without_network_access() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for (url, expected) in [
+            (
+                "data:image/svg+xml,%3Csvg%20viewBox='0%200%2024%2024'%3E%3C/svg%3E",
+                b"<svg viewBox='0 0 24 24'></svg>".as_slice(),
+            ),
+            (
+                "data:application/octet-stream;base64,AP9B",
+                b"\0\xffA".as_slice(),
+            ),
+        ] {
+            assert_eq!(
+                read_local_resource(root, &Request::get(Url::parse(url).unwrap())).unwrap(),
+                expected
+            );
+        }
+        assert!(
+            read_local_resource(root, &Request::get(Url::parse("data:;base64,@").unwrap()))
+                .is_err()
+        );
+        assert!(read_local_resource(
+            root,
+            &Request::get(Url::parse("https://example.test/icon.svg").unwrap())
+        )
+        .is_err());
     }
 
     #[test]

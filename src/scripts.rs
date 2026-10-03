@@ -37,6 +37,10 @@ fn bounded_text(text: &str, limit: usize) -> String {
     format!("{}{SUFFIX}", &text[..end])
 }
 
+pub(crate) fn console_text(text: &str) -> String {
+    bounded_text(text, MAX_DIAGNOSTIC_MESSAGE_BYTES)
+}
+
 pub(crate) fn report(diagnostics: &ScriptDiagnostics, source: &str, phase: &str, message: String) {
     let source = bounded_text(source, MAX_DIAGNOSTIC_SOURCE_BYTES);
     let phase = bounded_text(phase, 64);
