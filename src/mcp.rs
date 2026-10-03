@@ -28,14 +28,6 @@ const MAX_TOOL_RESULT_BYTES: usize = 24 * 1024;
 const MAX_ACTION_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_ACTIVE_WAITS: usize = 4;
 
-/// MCP structured outputs are JSON objects whose operation-specific fields can
-/// vary by document state and action result. Keep the declared boundary honest:
-/// constrain the top-level container while allowing those documented fields.
-#[derive(schemars::JsonSchema)]
-#[schemars(transparent)]
-#[allow(dead_code)] // Used as a schema-only output type.
-struct StructuredToolOutput(HashMap<String, Value>);
-
 #[derive(schemars::JsonSchema)]
 #[schemars(rename_all = "camelCase")]
 #[allow(dead_code)] // Used as a schema-only output type.
