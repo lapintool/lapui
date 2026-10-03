@@ -190,6 +190,9 @@ fn redraw_document<R: WindowRenderer>(view: &mut View<R>, callbacks_due: bool) {
     }
     let renderer_millis = renderer_start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
     drop(dom);
+    frame_document(view.doc.as_mut())
+        .unwrap()
+        .complete_render_revision(!blocked && scene_built);
     frame.finish(json!({"outcome":if blocked{"blocked_resources"}else if scene_built{"renderer_returned"}else{"renderer_no_scene"},
         "callbackPhaseMillis":callbacks_millis,"callbacksDue":callbacks_due,"sceneBuildMillis":scene_millis,
         "rendererCallMillis":if blocked{None}else{renderer_millis},"width":width,"height":height,

@@ -59,7 +59,7 @@ The initial tool set is deliberately small:
 | `page_control` | Activate, fill, check, focus a control, or scroll a rendered element using its current reference and document epoch. |
 | `page_reload` | Reload the trusted local document source; prior page references become stale. |
 | `page_wait_for_control` | Wait for a visible semantic control to match a bounded value or state condition. |
-| `page_wait_for_render` | Wait for the frame causally linked to a control mutation to return from the renderer. |
+| `page_wait_for_render` | Wait for a renderer opportunity after a control mutation, with or without detailed tracing. |
 | `page_cancel_wait` | Cancel an active semantic, render, or page-change wait by its wait ID. |
 | `page_diagnostics` | Read script/runtime and network diagnostics. |
 | `runtime_memory_usage` | Read QuickJS allocator and heap counters; optionally request cycle collection. |
@@ -88,8 +88,11 @@ never the submitted value. This journal does not include DOM edits
 performed directly by native Rust code and is not the application-state
 `changes` feed. Other IDL property assignments without one of these tracked
 form properties or an `input`/`change` event are not journal entries.
-With `--debug-trace`, each record also carries a `debugTraceSequence` that can
-be passed to `page_wait_for_render` to wait for a causally linked renderer frame.
+Each successful control mutation carries a bounded `renderRevision`; pass it as
+`afterRevision` to `page_wait_for_render` to wait for the next native renderer
+opportunity without enabling detailed tracing. With `--debug-trace`, the same
+response also carries `debugTraceSequence`; pass that as `afterSequence` when
+you need a causally linked trace explanation.
 `page_wait_for_changes` accepts a cursor returned by `page_changes` and waits
 for a batch, resynchronization requirement, document reload, or bounded timeout.
 It shares the four-active-wait limit and four-second maximum with the other
@@ -103,11 +106,15 @@ one `equals` or `contains` condition. Supported fields are `value`, `checked`,
 semantic type. The wait is bounded to four seconds and shares a four-wait
 concurrency limit with render waits. It observes control state only, without
 claiming a frame was painted.
-`page_wait_for_render` requires `--debug-trace` and the `debugTraceSequence`
-returned by a successful `page_control` mutation or a `page_changes` record. It waits for the causally
-linked frame and resolved layout to return from the renderer, with a maximum
-four-second timeout and at most four concurrent waits. The result does not
-confirm physical presentation by the native window or operating system.
+`page_wait_for_render` accepts exactly one of `afterRevision` or `afterSequence`.
+The revision path works with tracing disabled and waits for the next renderer
+opportunity after a successful `page_control` mutation. The sequence path
+requires `--debug-trace` and follows the causal trace from a control or page
+change record. Both paths have a four-second maximum timeout and share the
+four-active-wait limit. A returned `rendered` means layout resolved and the
+renderer call returned; it does not confirm physical presentation by the
+native window or operating system. A blocked or unavailable scene returns
+`render_unavailable`.
 `page_cancel_wait` sets a cancellation flag for any active page wait. The wait
 returns `wait_cancelled`; cancellation wakes a blocked page-change wait
 immediately. Unknown or already-completed IDs return `found=false`.

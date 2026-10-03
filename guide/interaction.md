@@ -61,13 +61,19 @@ Use exactly one selector (`id` or a current `ref`) and one condition (`equals` o
 
 The wait is bounded to four seconds and returns `status: "matched"` or `"timed_out"` with the last semantic control snapshot; cancellation returns `wait_cancelled`. Reload during the wait returns `stale_document`; a control that disappears returns `stale_reference`. `describe` publishes the schemas, `controlWaitMaximumMs`, and `activeWaitLimit`. This waits for the control snapshot only: it does not guarantee that style/layout ran, a frame was painted, or the operating system presented pixels. Use application operation waits for Rust jobs and the debug trace to inspect the separate render path.
 
-When debug tracing is enabled, a control mutation response includes `debugTraceSequence`. Pass that sequence to `waitForRender` to await a frame whose recorded causes descend from that control request:
+Every successful control mutation returns a lightweight `renderRevision`. Pass it to `waitForRender` as `afterRevision` to await the next renderer opportunity without enabling detailed tracing:
+
+```json
+{"method":"waitForRender","documentEpoch":7,"afterRevision":12,"timeoutMs":2000,"waitId":"render-01"}
+```
+
+When debug tracing is enabled, a control mutation response also includes `debugTraceSequence`. Pass that sequence as `afterSequence` when you need a frame whose recorded causes descend from that control request:
 
 ```json
 {"method":"waitForRender","documentEpoch":7,"afterSequence":42,"timeoutMs":2000,"waitId":"render-01"}
 ```
 
-The trace must remain enabled and retain the requested sequence. Use `cancelWait` with the same `waitId` to stop it. The result distinguishes `rendered`, `render_unavailable`, and `timed_out`. `rendered` means a causally linked frame's layout resolved and renderer call returned; `physicalPresentation` remains `unknown` because the current backends provide no OS presentation acknowledgement. This is a trace boundary, not proof that an arbitrary later async UI state has painted; first wait for the relevant semantic condition, then wait for a causally linked render if the caller has its trace root.
+Use `cancelWait` with the same `waitId` to stop either wait. Both return `rendered`, `render_unavailable`, or `timed_out`; `rendered` means layout resolved and the renderer call returned. The revision path waits for the next renderer opportunity, while the trace path additionally proves causal linkage to the control request. `physicalPresentation` remains `unknown` because the current backends provide no OS presentation acknowledgement. For later asynchronous UI state, first wait for the relevant semantic condition, then use that operation's trace root when available.
 
 The CLI supports `client <address> controls`, `client <address> diagnostics`, and `client <address> request-file <request.json>` for arbitrary supported requests. Responses retain the existing `{ ok, observation }` or `{ ok: false, error }` envelope. Successful control dispatches include `dispatchErrors`, containing bounded diagnostics reported during that dispatch/checkpoint. Listener exceptions are reported without preventing later listeners or undoing already-applied effects, so a dispatched operation can carry errors. Requests are limited to 64 KiB and the document queue to 64 entries. A queued timeout cancels the command before dispatch; a timeout after dispatch reports `outcome_unknown`, requiring observation before retry. A controller for a closed document reports `document_closed`.
 

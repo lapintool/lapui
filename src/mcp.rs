@@ -4,9 +4,12 @@
 //! JavaScript evaluation or arbitrary DOM access.
 
 use crate::{
-    action::ActionRegistry, control::DocumentController, control_wait::wait_for_control_with,
-    page_change_wait::wait_for_page_changes_with, reload::ReloadHandle,
-    render_wait::wait_for_render_with,
+    action::ActionRegistry,
+    control::DocumentController,
+    control_wait::wait_for_control_with,
+    page_change_wait::wait_for_page_changes_with,
+    reload::ReloadHandle,
+    render_wait::{wait_for_render_revision_with, wait_for_render_with},
 };
 use rmcp::{
     handler::server::tool::schema_for_type,
@@ -253,8 +256,12 @@ struct ControlInput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WaitForRenderInput {
     document_epoch: u64,
+    #[serde(default)]
     #[schemars(range(min = 1))]
-    after_sequence: u64,
+    after_sequence: Option<u64>,
+    #[serde(default)]
+    #[schemars(range(min = 1))]
+    after_revision: Option<u64>,
     #[serde(default)]
     #[schemars(range(max = 4000))]
     timeout_ms: Option<u16>,
@@ -645,7 +652,7 @@ impl LapuiMcpServer {
 
     #[tool(
         output_schema = schema_for_type::<StructuredToolOutput>(),
-        description = "Wait for the renderer to return from the frame causally linked to a page_control mutation or a page_changes record. Requires --debug-trace and a debugTraceSequence returned by the mutation or journal record; this does not confirm physical screen presentation."
+        description = "Wait for a renderer opportunity after a page_control mutation using its renderRevision (works with tracing off), or use afterSequence with --debug-trace for causal trace detail. Renderer return does not confirm physical screen presentation."
     )]
     async fn page_wait_for_render(
         &self,
@@ -657,8 +664,17 @@ impl LapuiMcpServer {
                 return mcp_result(json!({"ok":false,"code":error.code,"message":error.message}))
             }
         };
-        let mut request = json!({"method":"waitForRender","documentEpoch":input.document_epoch,
-            "afterSequence":input.after_sequence,"waitId":input.wait_id});
+        if input.after_sequence.is_some() == input.after_revision.is_some() {
+            return mcp_result(
+                json!({"ok":false,"code":"invalid_request","message":"provide exactly one of afterSequence or afterRevision"}),
+            );
+        }
+        let mut request = if let Some(revision) = input.after_revision {
+            json!({"method":"waitForRenderRevision","documentEpoch":input.document_epoch,"afterRevision":revision,"waitId":input.wait_id})
+        } else {
+            json!({"method":"waitForRender","documentEpoch":input.document_epoch,
+                "afterSequence":input.after_sequence,"waitId":input.wait_id})
+        };
         if let Some(timeout_ms) = input.timeout_ms {
             request["timeoutMs"] = json!(timeout_ms);
         }
@@ -666,11 +682,12 @@ impl LapuiMcpServer {
         let token = guard.token();
         match tokio::task::spawn_blocking(move || {
             let _guard = guard;
-            wait_for_render_with(
-                &request,
-                |command, timeout| controller.request(command, timeout),
-                || token.is_cancelled(),
-            )
+            let read = |command, timeout| controller.request(command, timeout);
+            if request["method"] == "waitForRenderRevision" {
+                wait_for_render_revision_with(&request, read, || token.is_cancelled())
+            } else {
+                wait_for_render_with(&request, read, || token.is_cancelled())
+            }
         })
         .await
         {
@@ -1096,6 +1113,15 @@ mod tests {
                 "tool {} output schema",
                 tool.name
             );
+            if tool.name == "page_wait_for_render" {
+                let properties = tool
+                    .input_schema
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .unwrap();
+                assert!(properties.contains_key("afterRevision"));
+                assert!(properties.contains_key("afterSequence"));
+            }
             if tool.name == "app_describe" {
                 let properties = schema.get("properties").and_then(Value::as_object).unwrap();
                 for (field, expected_type) in [

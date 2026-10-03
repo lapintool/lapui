@@ -8,7 +8,7 @@ use lapui::control_wait::wait_for_control_with;
 use lapui::reload::{DocumentSource, ReloadDocument, ReloadHandle};
 #[cfg(test)]
 use lapui::render_wait::consume_render_trace_page;
-use lapui::render_wait::wait_for_render_with;
+use lapui::render_wait::{wait_for_render_revision_with, wait_for_render_with};
 use lapui::runtime::LapuiDocument;
 use lapui::shell::LapuiApplication;
 use serde_json::{json, Value};
@@ -137,11 +137,12 @@ fn wait_for_render(controller: &DocumentController, request: &Value) -> Result<V
         .and_then(Value::as_str)
         .ok_or_else(|| ActionError::new("invalid_request", "waitId is required"))?;
     let (cancelled, _active) = wait_registry().register(wait_id)?;
-    wait_for_render_with(
-        request,
-        |command, timeout| controller.request(command, timeout),
-        || cancelled.load(Ordering::Acquire),
-    )
+    let read = |command, timeout| controller.request(command, timeout);
+    if request.get("afterRevision").is_some() {
+        wait_for_render_revision_with(request, read, || cancelled.load(Ordering::Acquire))
+    } else {
+        wait_for_render_with(request, read, || cancelled.load(Ordering::Acquire))
+    }
 }
 
 fn respond(
@@ -280,9 +281,10 @@ fn respond(
                         "equals":{"type":["string","boolean"]},"contains":{"type":"string","minLength":1,"maxLength":256},
                         "waitId":{"type":"string","minLength":1,"maxLength":128},
                         "timeoutMs":{"type":"integer","minimum":0,"maximum":4000,"default":1000}}},
-                    "waitForRenderSchema":{"type":"object","additionalProperties":false,"required":["method","documentEpoch","afterSequence","waitId"],"properties":{
+                    "waitForRenderSchema":{"type":"object","additionalProperties":false,"required":["method","documentEpoch","waitId"],"oneOf":[{"required":["afterSequence"],"not":{"required":["afterRevision"]}},{"required":["afterRevision"],"not":{"required":["afterSequence"]}}],"properties":{
                         "method":{"const":"waitForRender"},"documentEpoch":{"type":"integer","minimum":1},
-                        "afterSequence":{"type":"integer","minimum":1,"description":"debugTraceSequence returned by a control mutation"},
+                        "afterSequence":{"type":"integer","minimum":1,"description":"debugTraceSequence returned by a control mutation; requires debug trace"},
+                        "afterRevision":{"type":"integer","minimum":1,"description":"renderRevision returned by a control mutation; works without debug trace"},
                         "waitId":{"type":"string","minLength":1,"maxLength":128},
                         "timeoutMs":{"type":"integer","minimum":0,"maximum":4000,"default":1000}}},
                     "cancelWaitSchema":{"type":"object","additionalProperties":false,"required":["method","waitId"],"properties":{

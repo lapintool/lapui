@@ -5,6 +5,101 @@ use std::time::Duration;
 const MAX_CONTROL_WAIT: Duration = Duration::from_secs(4);
 const CONTROL_WAIT_POLL: Duration = Duration::from_millis(20);
 
+/// Wait for a renderer opportunity using the bounded frame revision counter.
+/// This stays available when detailed tracing is disabled.
+pub fn wait_for_render_revision_with(
+    request: &Value,
+    mut read_status: impl FnMut(Value, Duration) -> Result<Value, ActionError>,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Result<Value, ActionError> {
+    let invalid = |message: &str| ActionError::new("invalid_request", message);
+    let fields = request
+        .as_object()
+        .ok_or_else(|| invalid("waitForRender requires an object"))?;
+    if fields.keys().any(|key| {
+        ![
+            "method",
+            "documentEpoch",
+            "afterRevision",
+            "timeoutMs",
+            "waitId",
+        ]
+        .contains(&key.as_str())
+    }) {
+        return Err(invalid("unknown waitForRender field"));
+    }
+    let epoch = request
+        .get("documentEpoch")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| invalid("documentEpoch must be a positive integer"))?;
+    let revision = request
+        .get("afterRevision")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| invalid("afterRevision must be a positive render revision"))?;
+    let timeout = request
+        .get("timeoutMs")
+        .map(|value| {
+            value
+                .as_u64()
+                .filter(|millis| *millis <= MAX_CONTROL_WAIT.as_millis() as u64)
+                .map(Duration::from_millis)
+                .ok_or_else(|| invalid("timeoutMs must be between 0 and 4000"))
+        })
+        .transpose()?
+        .unwrap_or(Duration::from_secs(1));
+    if request
+        .get("waitId")
+        .and_then(Value::as_str)
+        .is_none_or(|id| id.is_empty() || id.len() > 128)
+    {
+        return Err(invalid("waitId must be 1..128 bytes"));
+    }
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if is_cancelled() {
+            return Err(ActionError::new(
+                "wait_cancelled",
+                "render wait was cancelled",
+            ));
+        }
+        let status = read_status(
+            json!({"method":"renderStatus","documentEpoch":epoch,"afterRevision":revision}),
+            Duration::from_secs(1),
+        )?;
+        if status.get("documentEpoch").and_then(Value::as_u64) != Some(epoch) {
+            return Err(ActionError::new(
+                "stale_document",
+                "document changed during render wait",
+            ));
+        }
+        if status
+            .get("issuedRevision")
+            .and_then(Value::as_u64)
+            .is_none_or(|issued| issued < revision)
+        {
+            return Err(invalid(
+                "afterRevision is ahead of the current render revision",
+            ));
+        }
+        match status.get("status").and_then(Value::as_str) {
+            Some("rendered") | Some("render_unavailable") => return Ok(status),
+            Some("pending") => {}
+            _ => return Err(invalid("render status response is invalid")),
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Ok(
+                json!({"status":"timed_out","documentEpoch":epoch,"afterRevision":revision,
+                "issuedRevision":status["issuedRevision"],"completedRevision":status["completedRevision"],
+                "boundary":"renderer_returned","physicalPresentation":"unknown"}),
+            );
+        }
+        std::thread::sleep(CONTROL_WAIT_POLL.min(deadline.saturating_duration_since(now)));
+    }
+}
+
 pub fn trace_is_descendant(
     mut sequence: u64,
     ancestor: u64,
@@ -235,5 +330,50 @@ pub fn wait_for_render_with(
             );
         }
         std::thread::sleep(CONTROL_WAIT_POLL.min(deadline.saturating_duration_since(now)));
+    }
+}
+
+#[cfg(test)]
+mod revision_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn revision_wait_succeeds_without_debug_trace() {
+        let reads = Cell::new(0);
+        let result = wait_for_render_revision_with(
+            &json!({"method":"waitForRenderRevision","documentEpoch":7,"afterRevision":3,"timeoutMs":100,"waitId":"ready-1"}),
+            |request, _| {
+                assert_eq!(request["method"], "renderStatus");
+                assert_eq!(request["afterRevision"], 3);
+                let read = reads.get() + 1;
+                reads.set(read);
+                Ok(json!({"documentEpoch":7,"afterRevision":3,"issuedRevision":3,
+                    "completedRevision":if read == 1 {0} else {3},
+                    "status":if read == 1 {"pending"} else {"rendered"},
+                    "frameOutcome":"renderer_returned","boundary":"renderer_returned",
+                    "physicalPresentation":"unknown"}))
+            },
+            || false,
+        ).unwrap();
+        assert_eq!(result["status"], "rendered");
+        assert_eq!(reads.get(), 2);
+    }
+
+    #[test]
+    fn revision_wait_rejects_out_of_range_and_times_out_boundedly() {
+        let ahead = wait_for_render_revision_with(
+            &json!({"documentEpoch":7,"afterRevision":4,"timeoutMs":0,"waitId":"ready-2"}),
+            |_, _| Ok(json!({"documentEpoch":7,"status":"pending","issuedRevision":3,"completedRevision":0})),
+            || false,
+        ).unwrap_err();
+        assert_eq!(ahead.code, "invalid_request");
+
+        let result = wait_for_render_revision_with(
+            &json!({"documentEpoch":7,"afterRevision":3,"timeoutMs":0,"waitId":"ready-3"}),
+            |_, _| Ok(json!({"documentEpoch":7,"status":"pending","issuedRevision":3,"completedRevision":0})),
+            || false,
+        ).unwrap();
+        assert_eq!(result["status"], "timed_out");
     }
 }

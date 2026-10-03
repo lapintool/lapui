@@ -737,6 +737,16 @@ impl LapuiDocument {
         self.frames.borrow().rendering_pending
     }
 
+    pub(crate) fn complete_render_revision(&mut self, renderer_returned: bool) {
+        self.frames
+            .borrow_mut()
+            .complete_render_revision(if renderer_returned {
+                "renderer_returned"
+            } else {
+                "renderer_unavailable"
+            });
+    }
+
     pub fn has_animation_callbacks(&self) -> bool {
         self.frames.borrow().is_pending()
     }
@@ -1006,6 +1016,48 @@ impl LapuiDocument {
                 return Err(failure("invalid_request", "limit must be 1..128"));
             }
             return self.debug_trace(after, limit as usize);
+        }
+        if method == "renderStatus" {
+            if request.as_object().is_none_or(|fields| {
+                fields.keys().any(|key| {
+                    !["method", "documentEpoch", "afterRevision"].contains(&key.as_str())
+                })
+            }) {
+                return Err(failure(
+                    "invalid_request",
+                    "renderStatus accepts only method, documentEpoch, and afterRevision",
+                ));
+            }
+            let document_epoch = request.get("documentEpoch").and_then(Value::as_u64);
+            if document_epoch != Some(self.dom.borrow().id() as u64) {
+                return Err(failure(
+                    "stale_document",
+                    "renderStatus requires the current documentEpoch",
+                ));
+            }
+            let after_revision = request
+                .get("afterRevision")
+                .and_then(Value::as_u64)
+                .filter(|revision| *revision > 0)
+                .ok_or_else(|| {
+                    failure(
+                        "invalid_request",
+                        "afterRevision must be a positive render revision",
+                    )
+                })?;
+            let (issued, completed, outcome) = self.frames.borrow().render_status();
+            if after_revision > issued {
+                return Err(failure(
+                    "invalid_request",
+                    "afterRevision is ahead of the current render revision",
+                ));
+            }
+            return Ok(
+                json!({"documentEpoch":document_epoch,"afterRevision":after_revision,
+                "issuedRevision":issued,"completedRevision":completed,
+                "status":if completed >= after_revision { if outcome == "renderer_returned" {"rendered"} else {"render_unavailable"} } else {"pending"},
+                "frameOutcome":outcome,"boundary":"renderer_returned","physicalPresentation":"unknown"}),
+            );
         }
         if method == "controls" {
             return Ok(self.semantic_controls());
@@ -3594,7 +3646,7 @@ impl Document for LapuiDocument {
                 .get("method")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            let mutating = matches!(method, "activate" | "fill" | "check" | "focus");
+            let mutating = matches!(method, "activate" | "fill" | "check" | "focus" | "scroll");
             let diagnostic_before = self
                 .script_diagnostics
                 .borrow()
@@ -3605,6 +3657,12 @@ impl Document for LapuiDocument {
                     .span("control", json!({"method":method}), None)
             });
             let mut result = self.execute_control_command(&request.command);
+            if mutating {
+                if let Ok(value) = &mut result {
+                    let revision = self.frames.borrow_mut().request_render_revision();
+                    value["renderRevision"] = json!(revision);
+                }
+            }
             if let (Some(sequence), Ok(value)) =
                 (span.as_ref().and_then(Span::sequence), &mut result)
             {
@@ -3619,7 +3677,11 @@ impl Document for LapuiDocument {
             // Read-only trace queries do not create their own redraw/trace loop.
             changed |= !matches!(
                 method,
-                "debugTrace.read" | "debugTrace.configure" | "runtime.memoryUsage" | "pageChanges"
+                "debugTrace.read"
+                    | "debugTrace.configure"
+                    | "runtime.memoryUsage"
+                    | "pageChanges"
+                    | "renderStatus"
             );
             request.finish(result);
         }
@@ -6484,6 +6546,47 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         caller.join().unwrap()
+    }
+
+    #[test]
+    fn control_mutation_exposes_trace_independent_render_revision() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body><input id='name'></body></html>",
+            "",
+        )
+        .unwrap();
+        let epoch = doc.inner().id();
+        let controls = control_request(&mut doc, json!({"method":"controls"})).unwrap();
+        let reference = controls["controls"][0]["ref"].clone();
+        let result = control_request(
+            &mut doc,
+            json!({"method":"fill","documentEpoch":epoch,
+            "ref":reference,"value":"ready"}),
+        )
+        .unwrap();
+        assert_eq!(result["renderRevision"], 1);
+        assert!(result.get("debugTraceSequence").is_none());
+        let status = control_request(
+            &mut doc,
+            json!({"method":"renderStatus","documentEpoch":epoch,
+            "afterRevision":1}),
+        )
+        .unwrap();
+        assert_eq!(status["status"], "pending");
+        assert_eq!(status["issuedRevision"], 1);
+        assert_eq!(status["completedRevision"], 0);
+        assert_eq!(
+            control_request(
+                &mut doc,
+                json!({"method":"renderStatus","documentEpoch":epoch,
+            "afterRevision":2})
+            )
+            .unwrap_err()
+            .code,
+            "invalid_request"
+        );
     }
 
     #[test]

@@ -11,6 +11,9 @@ pub(crate) struct Frames {
     pub layout_time: f64,
     pub in_frame: bool,
     pub rendering_pending: bool,
+    render_revision: u64,
+    completed_render_revision: u64,
+    render_outcome: &'static str,
     pending: BTreeSet<i32>,
     stopped: bool,
 }
@@ -29,6 +32,9 @@ impl Frames {
             layout_time: 0.0,
             in_frame: false,
             rendering_pending: false,
+            render_revision: 0,
+            completed_render_revision: 0,
+            render_outcome: "pending",
             stopped: false,
         }
     }
@@ -61,5 +67,27 @@ impl Frames {
         self.stopped = true;
         self.pending.clear();
         self.rendering_pending = false;
+    }
+
+    /// A bounded, trace-independent marker for callers that need to wait for
+    /// the next native renderer opportunity after a semantic control action.
+    pub fn request_render_revision(&mut self) -> u64 {
+        self.render_revision = self.render_revision.saturating_add(1);
+        self.render_revision
+    }
+
+    pub fn complete_render_revision(&mut self, outcome: &'static str) {
+        if self.completed_render_revision < self.render_revision {
+            self.completed_render_revision = self.render_revision;
+            self.render_outcome = outcome;
+        }
+    }
+
+    pub fn render_status(&self) -> (u64, u64, &'static str) {
+        (
+            self.render_revision,
+            self.completed_render_revision,
+            self.render_outcome,
+        )
     }
 }
