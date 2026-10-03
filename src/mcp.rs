@@ -74,6 +74,26 @@ struct PageChangesOutput {
     cursor: String,
 }
 
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct PageWaitForRenderOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    status: Option<String>,
+    document_epoch: Option<u64>,
+    after_revision: Option<u64>,
+    issued_revision: Option<u64>,
+    completed_revision: Option<u64>,
+    root_sequence: Option<u64>,
+    frame_sequence: Option<u64>,
+    frame_outcome: Option<String>,
+    latest_sequence: Option<u64>,
+    boundary: Option<String>,
+    physical_presentation: Option<String>,
+}
+
 static ACTIVE_WAITS: OnceLock<Mutex<HashMap<String, Arc<WaitToken>>>> = OnceLock::new();
 
 struct WaitToken {
@@ -651,7 +671,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<PageWaitForRenderOutput>(),
         description = "Wait for a renderer opportunity after a page_control mutation using its renderRevision (works with tracing off), or use afterSequence with --debug-trace for causal trace detail. Renderer return does not confirm physical screen presentation."
     )]
     async fn page_wait_for_render(
@@ -1114,6 +1134,25 @@ mod tests {
                 tool.name
             );
             if tool.name == "page_wait_for_render" {
+                let properties = schema.get("properties").and_then(Value::as_object).unwrap();
+                for field in [
+                    "status",
+                    "documentEpoch",
+                    "afterRevision",
+                    "issuedRevision",
+                    "completedRevision",
+                    "rootSequence",
+                    "frameSequence",
+                    "boundary",
+                    "physicalPresentation",
+                    "code",
+                    "message",
+                ] {
+                    assert!(
+                        properties.contains_key(field),
+                        "render wait output missing {field}"
+                    );
+                }
                 let properties = tool
                     .input_schema
                     .get("properties")
@@ -1185,7 +1224,7 @@ mod tests {
                         "page_changes output property {field}"
                     );
                 }
-            } else {
+            } else if tool.name != "page_wait_for_render" {
                 assert!(
                     schema.contains_key("additionalProperties"),
                     "tool {} output schema must leave dynamic response fields open",
