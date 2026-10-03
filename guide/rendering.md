@@ -68,7 +68,9 @@ OS IME candidate windows require desktop inspection. The CPU image can be
 captured while a GPU window is in use, but does not certify GPU pixel parity or
 physical screen presentation. The API requires `software-renderer`, which is
 enabled by default. `page_screenshot` uses this same capture and PNG encoder,
-adds `scaleFactor` metadata, and applies the separate 4 MiB MCP PNG budget.
+adds `scaleFactor` metadata and a `single_ui_thread_document_snapshot`
+consistency label, and applies the separate 4 MiB MCP PNG budget. The document
+epoch identifies the document instance; it is not a DOM revision.
 
 Run `py -3 tests/screenshot_smoke.py --binary target/release/lapui.exe` for a
 live CLI regression without an MCP SDK. It opens the maintained forms fixture,

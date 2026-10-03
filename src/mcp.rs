@@ -94,6 +94,211 @@ struct PageWaitForRenderOutput {
     physical_presentation: Option<String>,
 }
 
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct PageControlOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    status: Option<String>,
+    document_epoch: Option<u64>,
+    #[schemars(rename = "ref")]
+    reference: Option<String>,
+    controls: Option<Vec<Value>>,
+    dispatch_errors: Option<Vec<Value>>,
+    render_revision: Option<u64>,
+    debug_trace_sequence: Option<u64>,
+    scrolled: Option<bool>,
+    metrics: Option<Value>,
+}
+
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct PageWaitForControlOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    status: Option<String>,
+    document_epoch: Option<u64>,
+    control: Option<Value>,
+    boundary: Option<String>,
+    physical_presentation: Option<String>,
+}
+
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct PageWaitForChangesOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    status: Option<String>,
+    latest_sequence: Option<u64>,
+    next_sequence: Option<u64>,
+    oldest_sequence: Option<u64>,
+    has_more: Option<bool>,
+    resync_required: Option<bool>,
+    sequence_exhausted: Option<bool>,
+    records: Option<Vec<Value>>,
+    document_epoch: Option<u64>,
+    cursor: Option<String>,
+}
+
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct PageCancelWaitOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    found: Option<bool>,
+    status: Option<String>,
+    wait_id: Option<String>,
+}
+
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct PageControlsOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    document_epoch: Option<u64>,
+    controls: Option<Vec<Value>>,
+    validation_available: Option<bool>,
+}
+
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct PageScreenshotOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    document_epoch: Option<u64>,
+    width: Option<u32>,
+    height: Option<u32>,
+    scale_factor: Option<f64>,
+    boundary: Option<String>,
+    consistency: Option<String>,
+    physical_presentation: Option<String>,
+}
+
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct PageDiagnosticsOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    document_epoch: Option<u64>,
+    script_status: Option<String>,
+    errors: Option<Vec<Value>>,
+}
+
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct ActionListOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    revision: Option<u64>,
+    has_more: Option<bool>,
+    next_cursor: Option<String>,
+    items: Option<Vec<Value>>,
+}
+
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct ActionDescriptionOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    id: Option<String>,
+    description: Option<String>,
+    input_schema: Option<Value>,
+    output_schema: Option<Value>,
+    kind: Option<String>,
+    scope: Option<String>,
+    scope_name: Option<String>,
+    has_availability_check: Option<bool>,
+}
+
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct ActionInvokeOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    version: Option<u64>,
+    request_id: Option<String>,
+    result: Option<Value>,
+}
+
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct OperationOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    operation_id: Option<String>,
+    action: Option<String>,
+    execution: Option<String>,
+    revision: Option<u64>,
+    progress: Option<f64>,
+    output: Option<Value>,
+    error: Option<Value>,
+}
+
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct ChangesOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    scope: Option<String>,
+    cursor: Option<String>,
+    resync_required: Option<bool>,
+    resync_reason: Option<String>,
+    has_more: Option<bool>,
+    records: Option<Vec<Value>>,
+    baseline: Option<Value>,
+}
+
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct PageReloadOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    previous_document_epoch: Option<u64>,
+    document_epoch: Option<u64>,
+    execution: Option<String>,
+    application_version: Option<u64>,
+}
+
+#[derive(schemars::JsonSchema)]
+#[schemars(rename_all = "camelCase")]
+#[allow(dead_code)] // Used as a schema-only output type.
+struct RuntimeMemoryOutput {
+    ok: Option<bool>,
+    code: Option<String>,
+    message: Option<String>,
+    document_epoch: Option<u64>,
+    collection_requested: Option<bool>,
+    usage: Option<Value>,
+    before_collection: Option<Value>,
+    after_collection: Option<Value>,
+}
+
 static ACTIVE_WAITS: OnceLock<Mutex<HashMap<String, Arc<WaitToken>>>> = OnceLock::new();
 
 struct WaitToken {
@@ -489,7 +694,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<PageControlsOutput>(),
         description = "List visible semantic controls with stable references and current values. Sensitive values are redacted by the runtime."
     )]
     async fn page_controls(&self) -> CallToolResult {
@@ -572,7 +777,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<PageWaitForChangesOutput>(),
         description = "Wait from a page_changes cursor for the next bounded batch of value-free DOM/control changes, a resync signal, or timeout. A reload returns stale_document. This is a semantic journal wait and does not confirm layout, rendering, or physical presentation."
     )]
     async fn page_wait_for_changes(
@@ -618,7 +823,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<PageWaitForControlOutput>(),
         description = "Wait until one current semantic control matches a bounded state condition. Provide exactly one of id or ref, and exactly one of equals or contains. This observes the semantic control snapshot; it does not confirm rendering or physical presentation."
     )]
     async fn page_wait_for_control(
@@ -722,7 +927,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<PageCancelWaitOutput>(),
         description = "Request cancellation of an active page_wait_for_changes, page_wait_for_control, or page_wait_for_render call by its waitId. The active wait returns wait_cancelled; unknown or completed identifiers return found=false."
     )]
     async fn page_cancel_wait(
@@ -741,7 +946,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<PageReloadOutput>(),
         description = "Reload the current trusted local document source. All prior page references become stale and must be observed again."
     )]
     async fn page_reload(&self, Parameters(input): Parameters<ReloadInput>) -> CallToolResult {
@@ -765,7 +970,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<PageScreenshotOutput>(),
         description = "Capture the current viewport as a bounded PNG image. This is a CPU-rendered document snapshot and does not confirm native screen presentation."
     )]
     async fn page_screenshot(&self) -> CallToolResult {
@@ -805,8 +1010,8 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
-        description = "Read runtime diagnostics, including script errors and network stream status."
+        output_schema = schema_for_type::<PageDiagnosticsOutput>(),
+        description = "Read document script errors and whether scripts are running or suspended."
     )]
     async fn page_diagnostics(&self) -> CallToolResult {
         let controller = self.controller();
@@ -826,7 +1031,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<RuntimeMemoryOutput>(),
         description = "Read QuickJS runtime allocation and heap counters. Set collectGarbage only when a diagnostic cycle collection is intended; this runs on the UI thread. These counters exclude Rust, DOM, renderer, GPU, and process allocator-retained memory."
     )]
     async fn runtime_memory_usage(
@@ -853,7 +1058,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<PageControlOutput>(),
         description = "Activate, fill, check, or focus a semantic control, or scroll a rendered element. Use the current documentEpoch and canonical ref from page_observe/page_controls; stale references are rejected."
     )]
     async fn page_control(&self, Parameters(input): Parameters<ControlInput>) -> CallToolResult {
@@ -909,7 +1114,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<ActionListOutput>(),
         description = "Discover registered business actions. Results are paged and restricted by the runtime's action catalog."
     )]
     fn actions_list(&self, Parameters(input): Parameters<ActionListInput>) -> CallToolResult {
@@ -931,7 +1136,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<ActionDescriptionOutput>(),
         description = "Read the full description and input/output schemas for a registered action before invoking it."
     )]
     fn actions_describe(
@@ -948,7 +1153,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<ActionInvokeOutput>(),
         description = "Invoke one previously registered Lapui business action by its exact action id. Provide a stable requestId for retry deduplication and, for writes based on an observed state, expectedVersion to reject stale writes. Returns only the committed version and action result, not the whole application state."
     )]
     async fn action_invoke(&self, Parameters(input): Parameters<ActionInput>) -> CallToolResult {
@@ -979,7 +1184,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<OperationOutput>(),
         description = "Read, wait for a newer revision of, or request cancellation of a registered asynchronous operation. A wait blocks only for the bounded timeout."
     )]
     async fn operation(&self, Parameters(input): Parameters<OperationInput>) -> CallToolResult {
@@ -1023,7 +1228,7 @@ impl LapuiMcpServer {
     }
 
     #[tool(
-        output_schema = schema_for_type::<StructuredToolOutput>(),
+        output_schema = schema_for_type::<ChangesOutput>(),
         description = "Subscribe to bounded application, state, action, operation, or host changes. Omit cursor for a baseline; continue with the returned cursor and restart from the supplied baseline when resyncRequired is true."
     )]
     async fn changes(&self, Parameters(input): Parameters<ChangesInput>) -> CallToolResult {
@@ -1161,6 +1366,97 @@ mod tests {
                 assert!(properties.contains_key("afterRevision"));
                 assert!(properties.contains_key("afterSequence"));
             }
+            let stable_fields: &[&str] = match tool.name.as_ref() {
+                "page_controls" => &["documentEpoch", "controls"],
+                "page_screenshot" => &[
+                    "documentEpoch",
+                    "width",
+                    "height",
+                    "scaleFactor",
+                    "boundary",
+                    "consistency",
+                    "physicalPresentation",
+                ],
+                "page_diagnostics" => &["documentEpoch", "scriptStatus", "errors"],
+                "page_reload" => &[
+                    "previousDocumentEpoch",
+                    "documentEpoch",
+                    "execution",
+                    "applicationVersion",
+                ],
+                "runtime_memory_usage" => &[
+                    "documentEpoch",
+                    "collectionRequested",
+                    "usage",
+                    "beforeCollection",
+                    "afterCollection",
+                ],
+                "page_wait_for_changes" => &[
+                    "status",
+                    "documentEpoch",
+                    "cursor",
+                    "records",
+                    "resyncRequired",
+                ],
+                "page_wait_for_control" => &[
+                    "status",
+                    "documentEpoch",
+                    "control",
+                    "boundary",
+                    "physicalPresentation",
+                ],
+                "page_cancel_wait" => &["found", "status", "waitId"],
+                "page_control" => &[
+                    "documentEpoch",
+                    "ref",
+                    "status",
+                    "controls",
+                    "dispatchErrors",
+                    "renderRevision",
+                    "debugTraceSequence",
+                    "scrolled",
+                    "metrics",
+                ],
+                "actions_list" => &["revision", "hasMore", "nextCursor", "items"],
+                "actions_describe" => &[
+                    "id",
+                    "inputSchema",
+                    "outputSchema",
+                    "kind",
+                    "hasAvailabilityCheck",
+                ],
+                "action_invoke" => &["version", "requestId", "result"],
+                "operation" => &[
+                    "operationId",
+                    "action",
+                    "execution",
+                    "revision",
+                    "progress",
+                    "output",
+                    "error",
+                ],
+                "changes" => &[
+                    "scope",
+                    "cursor",
+                    "resyncRequired",
+                    "hasMore",
+                    "records",
+                    "baseline",
+                ],
+                _ => &[],
+            };
+            if !stable_fields.is_empty() {
+                let properties = schema.get("properties").and_then(Value::as_object).unwrap();
+                for field in stable_fields {
+                    assert!(
+                        properties.contains_key(*field),
+                        "tool {} output missing {field}",
+                        tool.name
+                    );
+                }
+                assert!(properties.contains_key("code"));
+                assert!(properties.contains_key("message"));
+            }
             if tool.name == "app_describe" {
                 let properties = schema.get("properties").and_then(Value::as_object).unwrap();
                 for (field, expected_type) in [
@@ -1224,7 +1520,25 @@ mod tests {
                         "page_changes output property {field}"
                     );
                 }
-            } else if tool.name != "page_wait_for_render" {
+            } else if ![
+                "page_wait_for_render",
+                "page_controls",
+                "page_screenshot",
+                "page_diagnostics",
+                "page_reload",
+                "runtime_memory_usage",
+                "page_wait_for_changes",
+                "page_wait_for_control",
+                "page_cancel_wait",
+                "page_control",
+                "actions_list",
+                "actions_describe",
+                "action_invoke",
+                "operation",
+                "changes",
+            ]
+            .contains(&tool.name.as_ref())
+            {
                 assert!(
                     schema.contains_key("additionalProperties"),
                     "tool {} output schema must leave dynamic response fields open",

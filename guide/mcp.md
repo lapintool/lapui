@@ -130,8 +130,11 @@ Screenshot requests paint one rendering opportunity with the software
 renderer at the current physical viewport size and scale, without resizing the
 window. They call the public [built-in screenshot API](rendering.md#built-in-screenshot-api);
 the result includes physical `width`, `height`, `scaleFactor` and `documentEpoch`.
-PNG payloads are capped at 4 MiB; the result identifies CPU rendering
-but does not acknowledge presentation by the native window or operating system.
+Its `consistency` is `single_ui_thread_document_snapshot`: the pixels came from
+one synchronous document snapshot, while `documentEpoch` identifies only the
+document instance and is not a DOM revision. PNG payloads are capped at 4 MiB;
+the result identifies CPU rendering but does not acknowledge presentation by
+the native window or operating system.
 The tools do not expose arbitrary JavaScript evaluation, arbitrary DOM access,
 or process discovery. The bridge is the only listener and is authenticated and
 loopback-only. A current-line Python client check is available at

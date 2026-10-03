@@ -1281,6 +1281,7 @@ impl LapuiDocument {
                     "height":screenshot.height(),
                     "scaleFactor":screenshot.scale_factor(),
                     "boundary":"cpu_rendered",
+                    "consistency":"single_ui_thread_document_snapshot",
                     "physicalPresentation":"not_confirmed",
                     "pngBase64":base64::engine::general_purpose::STANDARD.encode(png)
                 }));
@@ -8056,6 +8057,10 @@ mod tests {
         assert_eq!(screenshot["width"], 320);
         assert_eq!(screenshot["height"], 200);
         assert_eq!(screenshot["boundary"], "cpu_rendered");
+        assert_eq!(
+            screenshot["consistency"],
+            "single_ui_thread_document_snapshot"
+        );
         assert_eq!(screenshot["physicalPresentation"], "not_confirmed");
         assert_eq!(screenshot["documentEpoch"], doc.dom.borrow().id());
         assert_eq!(doc.inner().viewport(), &before);
