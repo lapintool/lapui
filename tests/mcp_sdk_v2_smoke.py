@@ -271,6 +271,26 @@ async def run_sensitive_content_smoke(binary: Path) -> None:
                 },
             )
             require(not filled.is_error, f"password fill failed: {filled.structured_content}")
+            render_revision = filled.structured_content.get("renderRevision")
+            require(isinstance(render_revision, int) and render_revision > 0, "page_control omitted renderRevision")
+            require("debugTraceSequence" not in filled.structured_content, "trace-off control unexpectedly exposed a trace sequence")
+            rendered = await client.call_tool(
+                "page_wait_for_render",
+                arguments={
+                    "documentEpoch": epoch,
+                    "afterRevision": render_revision,
+                    "timeoutMs": 2000,
+                    "waitId": "sdk-v2-render-ready",
+                },
+            )
+            require(not rendered.is_error, f"trace-off render wait failed: {rendered.structured_content}")
+            require(rendered.structured_content.get("status") == "rendered", f"renderer did not complete: {rendered.structured_content}")
+            screenshot = await client.call_tool("page_screenshot")
+            require(not screenshot.is_error, f"screenshot failed: {screenshot.structured_content}")
+            require(
+                screenshot.structured_content.get("consistency") == "single_ui_thread_document_snapshot",
+                f"screenshot consistency boundary missing: {screenshot.structured_content}",
+            )
 
             after = await client.call_tool(
                 "page_changes",
@@ -290,6 +310,7 @@ async def run_sensitive_content_smoke(binary: Path) -> None:
             )
             semantic_outputs = json.dumps(
                 [snapshot.structured_content, observed.structured_content, filled.structured_content,
+                 rendered.structured_content, screenshot.structured_content,
                  after.structured_content, diagnostics.structured_content]
             )
             for secret in (
@@ -305,6 +326,8 @@ async def run_sensitive_content_smoke(binary: Path) -> None:
                             "password and one-time-code values omitted from controls and observation",
                             "password values omitted from change journal and diagnostics",
                             "ordinary email value remains observable",
+                            "trace-independent render wait returned renderer completion",
+                            "screenshot reports its epoch and single-document consistency boundary",
                             "screenshot content is outside semantic redaction checks",
                         ]
                     },
