@@ -15,10 +15,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_SOURCE = "523571d2a6549f410937ec33f55a94ef17267f89"
-RELEASE_SHA256 = "6791A373C7F23AB747FF94B7D3693693E4481E08755DE4548CCC1A2A9997591C"
-RELEASE_BYTES = 33_582_592
-EXPECTED_DEPENDENCIES = 338
+RELEASE_SOURCE = "2216726ce5ff3416b660d6c069f6aec66aba71f8"
+RELEASE_SHA256 = "083B516CD5278A6583DD125A29F55FAAA6637BC1B8AF475C2D82C062808D1926"
+RELEASE_BYTES = 33_589_760
+EXPECTED_DEPENDENCIES = 341
 
 
 def sha256(path: Path) -> str:
@@ -145,7 +145,7 @@ def check_package() -> dict:
             if bad_member is not None:
                 problems.append(f"The source archive has a corrupt ZIP member: {bad_member}")
             if manifest.get("dependencyCount") != EXPECTED_DEPENDENCIES or crate_count != EXPECTED_DEPENDENCIES:
-                problems.append("The source archive does not contain all 338 reviewed dependency archives.")
+                problems.append(f"The source archive does not contain all {EXPECTED_DEPENDENCIES} reviewed dependency archives.")
             if bad_checksums:
                 problems.append(f"The source archive has missing or checksum-mismatched crate entries: {bad_checksums[:5]}")
             if missing_locked or unexpected_packages or lockfile_checksum_mismatches:
@@ -195,7 +195,7 @@ def check_package() -> dict:
                 }
             )
             if audit_info["dependencyCount"] != EXPECTED_DEPENDENCIES:
-                problems.append("The license audit does not cover all 338 dependencies.")
+                problems.append(f"The license audit does not cover all {EXPECTED_DEPENDENCIES} dependencies.")
             if any(
                 audit_info[key]
                 for key in ("missingSourceArchives", "missingLicenseMetadata", "missingLicenseText")
