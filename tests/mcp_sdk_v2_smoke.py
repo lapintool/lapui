@@ -58,13 +58,41 @@ async def run(binary: Path) -> None:
             require("requestId" in invoke_schema.get("required", []), "action_invoke lost its retry ID contract")
             for tool_name, stable_fields in {
                 "app_describe": {"protocolVersion", "runtime", "capabilities", "scriptEvaluation"},
+                "page_controls": {"documentEpoch", "controls"},
                 "page_observe": {"documentEpoch", "items", "truncated", "cursorConsistency"},
                 "page_changes": {"documentEpoch", "cursor", "records", "resyncRequired"},
+                "page_wait_for_changes": {"status", "documentEpoch", "cursor", "records", "resyncRequired"},
+                "page_wait_for_control": {"status", "documentEpoch", "control", "boundary"},
+                "page_wait_for_render": {
+                    "status", "documentEpoch", "afterRevision", "issuedRevision", "completedRevision",
+                    "rootSequence", "frameSequence", "boundary", "physicalPresentation",
+                },
+                "page_cancel_wait": {"found", "status", "waitId"},
+                "page_control": {"documentEpoch", "status", "renderRevision", "debugTraceSequence"},
+                "page_screenshot": {
+                    "documentEpoch", "width", "height", "scaleFactor", "boundary", "consistency",
+                    "physicalPresentation",
+                },
+                "page_diagnostics": {"documentEpoch", "scriptStatus", "errors"},
+                "page_reload": {"previousDocumentEpoch", "documentEpoch", "execution", "applicationVersion"},
+                "runtime_memory_usage": {"documentEpoch", "collectionRequested", "usage"},
+                "actions_list": {"revision", "hasMore", "nextCursor", "items"},
+                "actions_describe": {"id", "inputSchema", "outputSchema", "kind", "hasAvailabilityCheck"},
+                "action_invoke": {"version", "requestId", "result"},
+                "operation": {"operationId", "action", "execution", "revision", "progress", "output", "error"},
+                "changes": {"scope", "cursor", "resyncRequired", "hasMore", "records", "baseline"},
             }.items():
                 output_schema = by_name[tool_name].output_schema
                 require(isinstance(output_schema, dict), f"{tool_name} is missing its output schema")
                 properties = output_schema.get("properties", {})
                 require(stable_fields <= set(properties), f"{tool_name} schema is missing {stable_fields - set(properties)}")
+
+            render_wait_schema = by_name["page_wait_for_render"].input_schema
+            render_wait_fields = set(render_wait_schema.get("properties", {}))
+            require(
+                {"afterSequence", "afterRevision"} <= render_wait_fields,
+                "page_wait_for_render must expose trace and trace-independent cursors",
+            )
 
             discovered = await client.call_tool("actions_list", arguments={"prefix": "local_files."})
             require(not discovered.is_error, f"action discovery failed: {discovered.structured_content}")
