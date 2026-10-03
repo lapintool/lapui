@@ -373,6 +373,14 @@
   ],
   "upstreamFilesUnavailable": [
     {
+      "repository": "DoumanAsh/clipboard-win",
+      "commit": "3b27cf2bfd1adcfa6e0264eb51c1025ddaf0f342",
+      "packages": [
+        "clipboard-win 5.4.1"
+      ],
+      "reason": "no exact upstream license/notice file; canonical SPDX text is included"
+    },
+    {
       "repository": "lifthrasiir/hexf",
       "commit": "4225763d744183d720f575ae96d04161b4d08ea0",
       "packages": [

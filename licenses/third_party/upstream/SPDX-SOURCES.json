@@ -2,6 +2,12 @@
   "source": "SPDX License List",
   "licenses": [
     {
+      "licenseId": "BSL-1.0",
+      "path": "SPDX/BSL-1.0.txt",
+      "url": "https://spdx.org/licenses/BSL-1.0.txt",
+      "sha256": "6f320cd63543c68dd7769b146459eac9608574db0abf480f68328ae85460fdf5"
+    },
+    {
       "licenseId": "CC0-1.0",
       "path": "SPDX/CC0-1.0.txt",
       "url": "https://spdx.org/licenses/CC0-1.0.txt",

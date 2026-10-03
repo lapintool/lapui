@@ -41,6 +41,11 @@ winit = { version = "=0.31.0-beta.2", default-features = false }
 [dev-dependencies]
 cursor-icon = "=1.2.0"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# Blitz disables its shell's default features. Windows editing needs the real
+# clipboard provider for Ctrl+C/X/V and clipboard-based text injection.
+blitz-shell = { version = "=0.3.0-beta.2", default-features = false, features = ["clipboard"] }
+
 [profile.release]
 strip = true
 lto = "thin"

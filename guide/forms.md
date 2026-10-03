@@ -1,5 +1,11 @@
 # Form interaction
 
+Windows builds enable the native shell's text clipboard provider for Ctrl+C,
+Ctrl+X and Ctrl+V. This applies to default and minimal-feature builds. Clipboard
+images are excluded. Unicode text replacement and copy/delete/paste are tested
+through a real Windows 11 window at 150% DPI; this does not certify IME candidate
+composition, clipboard contention or other platforms.
+
 Lapui's current form bridge supports text values, checkbox/radio checked state, a basic single-select list, labels, focus, keyboard activation, selected constraint validation, and local submit/reset events. The same click dispatch runs for `element.click()`, `lapui.activate(ref)`, TCP `activate`, and Blitz pointer events. This is a tested application-UI subset, not complete HTML forms.
 
 ```js

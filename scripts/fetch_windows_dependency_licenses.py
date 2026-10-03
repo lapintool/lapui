@@ -25,6 +25,7 @@ LICENSE_NAME = re.compile(r"^(LICENSE|LICENCE|COPYING|COPYRIGHT|NOTICE)(?:[-_.].
 API_BASE = "https://api.github.com"
 RAW_BASE = "https://raw.githubusercontent.com"
 SPDX_TEXTS = {
+    "BSL-1.0": "https://spdx.org/licenses/BSL-1.0.txt",
     "CC0-1.0": "https://spdx.org/licenses/CC0-1.0.txt",
     "MIT": "https://spdx.org/licenses/MIT.txt",
     "MPL-2.0": "https://spdx.org/licenses/MPL-2.0.txt",
