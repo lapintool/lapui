@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 pub(crate) const HEAP_LIMIT: usize = 128 * 1024 * 1024;
 pub(crate) const CALLBACK_LIMIT: Duration = Duration::from_millis(250);
 pub(crate) const STARTUP_LIMIT: Duration = Duration::from_secs(2);
+pub(crate) const LARGE_STARTUP_LIMIT: Duration = Duration::from_secs(10);
+pub(crate) const LARGE_STARTUP_SOURCE_BYTES: usize = 256 * 1024;
 pub(crate) const CHECKPOINT_SLICE: Duration = Duration::from_millis(20);
 pub(crate) const INTERRUPTED_MESSAGE: &str =
     "JavaScript execution limit exceeded; scripting is suspended until document reload";

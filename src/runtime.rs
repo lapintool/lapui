@@ -6,7 +6,8 @@ use crate::frames::Frames;
 use crate::host_work::HostWork;
 use crate::lifecycle::Cancellation;
 use crate::script_budget::{
-    ScriptBudget, CALLBACK_LIMIT, CHECKPOINT_SLICE, INTERRUPTED_MESSAGE, STARTUP_LIMIT,
+    ScriptBudget, CALLBACK_LIMIT, CHECKPOINT_SLICE, INTERRUPTED_MESSAGE, LARGE_STARTUP_LIMIT,
+    LARGE_STARTUP_SOURCE_BYTES, STARTUP_LIMIT,
 };
 use crate::scripts::{self, ScriptDiagnostics, StartupScript};
 use crate::stream_work::{Data as StreamData, StreamWork};
@@ -816,6 +817,7 @@ impl LapuiDocument {
             "heapBytes": crate::script_budget::HEAP_LIMIT,
             "callbackMillis": CALLBACK_LIMIT.as_millis(),
             "startupMillis": STARTUP_LIMIT.as_millis(),
+            "largeStartupMillis": LARGE_STARTUP_LIMIT.as_millis(),
             "checkpointSliceMillis": CHECKPOINT_SLICE.as_millis(),
             "animationCallbacks": crate::frames::MAX_CALLBACKS,
             "animationSliceMillis": CHECKPOINT_SLICE.as_millis(),
@@ -1584,6 +1586,12 @@ impl LapuiDocument {
         let diagnostics: ScriptDiagnostics = Rc::new(RefCell::new(Default::default()));
         let mut startup_scripts =
             scripts::html_scripts(&dom.borrow(), app_root.as_deref(), &diagnostics);
+        if proxy.is_some() {
+            startup_scripts.push(StartupScript::Classic {
+                name: "lapui:window-chrome".into(),
+                source: crate::shell::WINDOW_CHROME_SCRIPT.into(),
+            });
+        }
         let fetch_base_url = {
             let doc = dom.borrow();
             if app_root.is_some() || matches!(doc.base_url().scheme(), "http" | "https") {
@@ -1655,6 +1663,33 @@ impl LapuiDocument {
         js_context
             .with(|ctx| -> rquickjs::Result<()> {
                 let globals = ctx.globals();
+                let base_url = dom.borrow().base_url().clone();
+                let origin = base_url.origin().ascii_serialization();
+                let location = json!({
+                    "href":base_url.as_str(),
+                    "origin":origin,
+                    "protocol":format!("{}:",base_url.scheme()),
+                    "host":base_url.host_str().unwrap_or(""),
+                    "hostname":base_url.host_str().unwrap_or(""),
+                    "port":base_url.port().map(|port| port.to_string()).unwrap_or_default(),
+                    "pathname":base_url.path(),
+                    "search":base_url.query().map(|query| format!("?{query}")).unwrap_or_default(),
+                    "hash":base_url.fragment().map(|fragment| format!("#{fragment}")).unwrap_or_default(),
+                });
+                globals.set("__lapui_location", location.to_string())?;
+                let window_proxy = proxy.clone();
+                globals.set(
+                    "__lapui_window_command",
+                    Func::from(move |action: String| -> bool {
+                        let Some(proxy) = &window_proxy else {
+                            return false;
+                        };
+                        proxy.send_event(BlitzShellEvent::embedder_event(
+                            crate::shell::WindowCommand { document_id: doc_id, action },
+                        ));
+                        true
+                    }),
+                )?;
                 let page_change_notifications = page_change_notifier.clone();
                 let page_change_trace = page_change_trace.clone();
                 globals.set(
@@ -2998,7 +3033,17 @@ impl LapuiDocument {
                 script_budget.run(STARTUP_LIMIT, || ctx.eval::<(), _>(MUTATION_OBSERVER))?;
                 for script in &startup_scripts {
                     if script_budget.interrupted() { break; }
-                    let result = script_budget.run(STARTUP_LIMIT, || -> rquickjs::Result<()> {
+                    let startup_limit = match script {
+                        StartupScript::Classic { source, .. } => {
+                            if source.len() >= LARGE_STARTUP_SOURCE_BYTES { LARGE_STARTUP_LIMIT } else { STARTUP_LIMIT }
+                        }
+                        StartupScript::Module { source: Some(source), .. } => {
+                            if source.len() >= LARGE_STARTUP_SOURCE_BYTES { LARGE_STARTUP_LIMIT } else { STARTUP_LIMIT }
+                        }
+                        // A file-backed module is loaded by QuickJS's async module loader.
+                        StartupScript::Module { source: None, .. } => LARGE_STARTUP_LIMIT,
+                    };
+                    let result = script_budget.run(startup_limit, || -> rquickjs::Result<()> {
                         match script {
                             StartupScript::Classic { name, source } => {
                                 let mut options = EvalOptions::default();
@@ -7200,6 +7245,114 @@ mod tests {
     }
 
     #[test]
+    fn browser_event_constructors_dispatch_synthetic_input_and_read_document_title() {
+        let html =
+            "<html><head><title>Lapstyle</title></head><body><input id='editor'></body></html>";
+        let (doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        let result: String = doc.js_context.with(|ctx| ctx.eval(r#"
+            (() => {
+              const input = document.getElementById('editor');
+              const seen = [];
+              document.addEventListener('input', event => seen.push(`${event.type}:${event.target.id}:${event.bubbles}`));
+              input.value = 'updated';
+              input.addEventListener('input', event => {
+                if (!(event instanceof Event)) throw new Error('event constructor mismatch');
+                if (event.composedPath()[0] !== input) throw new Error('synthetic event target missing');
+              });
+              const accepted = input.dispatchEvent(new Event('input', {bubbles:true}));
+              if (!(new UIEvent('test') instanceof UIEvent)) throw new Error('UIEvent constructor mismatch');
+              const custom = new CustomEvent('lapstyle', {detail:{ready:true}, cancelable:true});
+              input.addEventListener('lapstyle', event => { if (event.detail.ready) event.preventDefault(); });
+              const customAccepted = input.dispatchEvent(custom);
+              return JSON.stringify({title:document.title, seen, accepted, customAccepted, defaultPrevented:custom.defaultPrevented});
+            })()
+        "#)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&result).unwrap(),
+            json!({
+                "title":"Lapstyle",
+                "seen":["input:editor:true"],
+                "accepted":true,
+                "customAccepted":false,
+                "defaultPrevented":true
+            })
+        );
+    }
+
+    #[test]
+    fn framework_namespace_elements_and_template_fragments_can_mount() {
+        let (doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body><main id='mount'></main></body></html>",
+            "",
+        )
+        .unwrap();
+        let result: String = doc
+            .js_context
+            .with(|ctx| {
+                ctx.eval(
+                    r#"
+            (() => {
+              const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+              const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+              svg.appendChild(path);
+              const template = document.createElement('template');
+              template.innerHTML = '<span id="from-template">Ready</span>';
+              const fragment = template.content;
+              document.getElementById('mount').appendChild(fragment);
+              return JSON.stringify({
+                svg:svg.tagName,
+                path:svg.firstChild.tagName,
+                mounted:document.getElementById('from-template')?.textContent,
+                fragmentEmpty:fragment.childNodes.length===0
+              });
+            })()
+        "#,
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&result).unwrap(),
+            json!({"svg":"SVG","path":"PATH","mounted":"Ready","fragmentEmpty":true})
+        );
+    }
+
+    #[test]
+    fn local_storage_history_and_media_query_shims_cover_app_startup_usage() {
+        let (doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body></body></html>",
+            "",
+        )
+        .unwrap();
+        {
+            let mut inner = doc.dom.borrow_mut();
+            inner.set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Dark));
+            inner.resolve(0.0);
+        }
+        let result = doc
+            .js_context
+            .with(|ctx| {
+                ctx.eval::<bool, _>(
+                    r#"
+            localStorage.setItem('theme', 'dark');
+            sessionStorage.setItem('session', 1);
+            history.replaceState({section:'button'}, '', '/button');
+            const query = matchMedia('(max-width: 800px)');
+            localStorage.getItem('theme') === 'dark' && localStorage.length === 1 &&
+              sessionStorage.getItem('session') === '1' && history.state.section === 'button' &&
+              query.matches && query.media === '(max-width: 800px)'
+        "#,
+                )
+            })
+            .unwrap();
+        assert!(result);
+    }
+
+    #[test]
     fn quickjs_event_promise_and_external_action_update_blitz_document() {
         let actions = ActionRegistry::default();
         let (mut doc, external) = LapuiDocument::new(actions.clone(), None).unwrap();
@@ -9094,6 +9247,31 @@ mod tests {
             assert!(!serialized.contains(secret), "snapshot exposed {secret}");
         }
         assert!(serialized.contains("visible@example.test"));
+    }
+
+    #[test]
+    fn element_dataset_maps_camel_case_to_data_attributes() {
+        let (doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html data-theme='dark'><body><div id='target' data-user-id='saved'></div></body></html>",
+            "",
+        )
+        .unwrap();
+        let result = doc
+            .js_context
+            .with(|ctx| {
+                ctx.eval::<bool, _>(r#"(() => {
+                  const root=document.documentElement, target=document.getElementById('target');
+                  if(root.dataset.theme!=='dark'||target.dataset.userId!=='saved')return false;
+                  target.dataset.userId='next';target.dataset.ready=true;
+                  if(target.getAttribute('data-user-id')!=='next'||target.getAttribute('data-ready')!=='true')return false;
+                  delete target.dataset.userId;
+                  return target.getAttribute('data-user-id')===null&&target.dataset.ready==='true';
+                })()"#)
+            })
+            .unwrap();
+        assert!(result);
     }
 
     #[test]

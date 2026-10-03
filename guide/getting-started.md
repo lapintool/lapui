@@ -13,6 +13,8 @@ In the tested WSLg environment, the X11 window/reload path passed while Wayland 
 
 Run `cargo test --locked` to exercise the action registry, JavaScript event/Promise path, and Blitz document updates. Run `cargo run --release --locked` to launch the demo window.
 
+Lapui windows use a custom title bar with frontend minimize, maximize/restore and close buttons, plus native edge resizing. `Ctrl+=` / `Ctrl++` and `Ctrl+-` adjust page zoom; `Ctrl+0` resets it. The zoom, window position, size and maximized state are restored on the next launch. On Windows the state file is `%APPDATA%\lapui\window-state.json`; set `LAPUI_WINDOW_STATE_FILE` to choose another path. macOS and Linux use their standard application-configuration directories.
+
 The program prints a loopback control address. With the actual printed port, another terminal can run:
 
 ```text

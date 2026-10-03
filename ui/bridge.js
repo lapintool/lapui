@@ -29,6 +29,41 @@
   }
   globalThis.DOMRect = DOMRect;
   globalThis.DOMRectReadOnly = DOMRectReadOnly;
+  class Event {
+    constructor(type, init = {}) {
+      if (arguments.length === 0) throw new TypeError('Event type is required');
+      this.type = String(type);
+      this.bubbles = Boolean(init?.bubbles);
+      this.cancelable = Boolean(init?.cancelable);
+      this.composed = Boolean(init?.composed);
+      this.defaultPrevented = false;
+      this.eventPhase = 0;
+      this.target = null;
+      this.currentTarget = null;
+      this.timeStamp = performance.now();
+      this.__stopped = false;
+    }
+    preventDefault() { if (this.cancelable && !this.__passive) this.defaultPrevented = true; }
+    stopPropagation() { this.__stopped = true; }
+    stopImmediatePropagation() { this.__stopped = true; this.__immediate = true; }
+    composedPath() { return this.target ? [this.target] : []; }
+  }
+  class UIEvent extends Event {
+    constructor(type, init = {}) {
+      super(type, init);
+      this.view = init?.view ?? null;
+      this.detail = Number(init?.detail ?? 0);
+    }
+  }
+  class CustomEvent extends Event {
+    constructor(type, init = {}) {
+      super(type, init);
+      this.detail = init?.detail ?? null;
+    }
+  }
+  globalThis.Event = Event;
+  globalThis.UIEvent = UIEvent;
+  globalThis.CustomEvent = CustomEvent;
   const styleViews = new WeakSet();
   class CSSStyleDeclaration {
     constructor() { throw new TypeError('Illegal constructor'); }
@@ -296,6 +331,31 @@
     set id(value) { this.setAttribute('id', value); }
     get className() { return __lapui_get_attribute(this.__ref, 'class'); }
     set className(value) { this.setAttribute('class', value); }
+    get dataset() {
+      const element = this;
+      const attributeName = property => 'data-' + String(property).replace(/[A-Z]/g, character => `-${character.toLowerCase()}`);
+      return new Proxy(Object.create(null), {
+        get(_target, property) {
+          if (property === Symbol.toStringTag) return 'DOMStringMap';
+          if (typeof property !== 'string') return undefined;
+          const value = element.getAttribute(attributeName(property));
+          return value === null ? undefined : value;
+        },
+        set(_target, property, value) {
+          if (typeof property !== 'string') return false;
+          element.setAttribute(attributeName(property), String(value));
+          return true;
+        },
+        deleteProperty(_target, property) {
+          if (typeof property !== 'string') return false;
+          element.removeAttribute(attributeName(property));
+          return true;
+        },
+        has(_target, property) {
+          return typeof property === 'string' && element.hasAttribute(attributeName(property));
+        }
+      });
+    }
     get disabled() { return this.hasAttribute('disabled'); }
     set disabled(value) {
       if (Boolean(value)) this.setAttribute('disabled', '');
@@ -494,6 +554,11 @@
         listeners.delete(key);
         if (key === 'scroll') scrollWatches.delete(this.__ref);
       }
+    }
+    dispatchEvent(event) {
+      if (!(event instanceof Event)) throw new TypeError('dispatchEvent requires an Event');
+      const result = JSON.parse(dispatch(event.type, this.__ref, __lapui_event_path(this.__ref), '{}', {}, event));
+      return !result.defaultPrevented;
     }
   }
 
@@ -788,6 +853,57 @@
   };
   globalThis.window = globalThis;
   globalThis.self = globalThis;
+  globalThis.location = Object.freeze(JSON.parse(__lapui_location));
+  class Storage {
+    constructor() { this._values = new Map(); }
+    get length() { return this._values.size; }
+    key(index) { return [...this._values.keys()][Number(index)] ?? null; }
+    getItem(key) { return this._values.has(String(key)) ? this._values.get(String(key)) : null; }
+    setItem(key, value) { this._values.set(String(key), String(value)); }
+    removeItem(key) { this._values.delete(String(key)); }
+    clear() { this._values.clear(); }
+  }
+  globalThis.Storage = Storage;
+  globalThis.localStorage = new Storage();
+  globalThis.sessionStorage = new Storage();
+  globalThis.history = {
+    state: null,
+    pushState(state) { this.state = state; },
+    replaceState(state) { this.state = state; },
+    back() {}, forward() {}, go() {}
+  };
+  globalThis.open = () => null;
+  globalThis.navigator = Object.freeze({
+    userAgent: 'Lapui',
+    platform: 'Lapui',
+    language: 'en-US',
+    languages: Object.freeze(['en-US']),
+    onLine: true
+  });
+  globalThis.matchMedia = query => {
+    const listeners = new Set();
+    const media = {
+      media: String(query),
+      get matches() {
+        const maxWidth = this.media.match(/max-width\s*:\s*(\d+(?:\.\d+)?)px/i);
+        const minWidth = this.media.match(/min-width\s*:\s*(\d+(?:\.\d+)?)px/i);
+        const width = Number(__lapui_layout_metrics(document.documentElement.__ref)[2]);
+        return (!maxWidth || width <= Number(maxWidth[1])) && (!minWidth || width >= Number(minWidth[1]));
+      },
+      onchange: null,
+      addEventListener(type, callback) { if (type === 'change' && typeof callback === 'function') listeners.add(callback); },
+      removeEventListener(type, callback) { if (type === 'change') listeners.delete(callback); },
+      addListener(callback) { if (typeof callback === 'function') listeners.add(callback); },
+      removeListener(callback) { listeners.delete(callback); },
+      dispatchEvent(event) {
+        if (event?.type !== 'change') return true;
+        for (const callback of [...listeners]) callback.call(this, event);
+        this.onchange?.call(this, event);
+        return !event.defaultPrevented;
+      }
+    };
+    return media;
+  };
   globalThis.SVGElement = class SVGElement {};
   globalThis.MathMLElement = class MathMLElement {};
   globalThis.DocumentFragment = class DocumentFragment {
@@ -868,11 +984,32 @@
     ownerDocument: null,
     defaultView: globalThis,
     oninput: null,
+    get title() { return this.querySelector('title')?.textContent ?? ''; },
+    set title(value) {
+      let title = this.querySelector('title');
+      if (!title) {
+        title = this.createElement('title');
+        const head = this.querySelector('head');
+        if (head) head.appendChild(title);
+      }
+      if (title) title.textContent = String(value);
+    },
     addEventListener(...args) { Element.prototype.addEventListener.apply(this, args); },
     removeEventListener(...args) { Element.prototype.removeEventListener.apply(this, args); },
+    dispatchEvent(event) {
+      if (!(event instanceof Event)) throw new TypeError('dispatchEvent requires an Event');
+      const result = JSON.parse(dispatch(event.type, this.__ref, __lapui_event_path(this.__ref), '{}', {}, event));
+      return !result.defaultPrevented;
+    },
     get documentElement() { return this.querySelector('html'); },
     get scrollingElement() { return this.documentElement; },
     get body() { return getElement(__lapui_body()); },
+    queryCommandSupported(command) {
+      // Lapui currently handles clipboard shortcuts through native window
+      // input. It has no script-facing system clipboard API, so report these
+      // legacy commands as unsupported rather than advertising a false path.
+      return false;
+    },
     get activeElement() {
       const active = getElement(__lapui_get_active_element());
       if (!active || !active.isConnected) return this.body;
@@ -886,7 +1023,29 @@
       const tag = String(tagName).toLowerCase();
       const reference = __lapui_create_element(tag);
       if (!reference) throw new Error(`unsupported element name: ${tag}`);
-      return getElement(reference);
+      const element = getElement(reference);
+      if (tag === 'template') {
+        let content = null;
+        Object.defineProperty(element, 'content', {
+          configurable: true,
+          get() {
+            if (!content) {
+              content = document.createDocumentFragment();
+              for (const child of element.childNodes.slice()) content.appendChild(child);
+            }
+            return content;
+          }
+        });
+      }
+      return element;
+    },
+    createElementNS(namespace, qualifiedName) {
+      if (namespace !== null && !['http://www.w3.org/1999/xhtml', 'http://www.w3.org/2000/svg', 'http://www.w3.org/1998/Math/MathML'].includes(String(namespace))) {
+        throw new DOMException('Unsupported namespace', 'NotSupportedError');
+      }
+      // Blitz currently creates HTML-namespace nodes only. Keeping the local
+      // name lets framework-generated SVG tags participate in the same DOM.
+      return this.createElement(String(qualifiedName).split(':').pop());
     },
     createTextNode(value) {
       return getElement(__lapui_create_text(String(value)));
@@ -924,6 +1083,11 @@
   nodeState.set(globalThis,{listeners:new Map()});
   globalThis.addEventListener = (...args) => Element.prototype.addEventListener.apply(globalThis,args);
   globalThis.removeEventListener = (...args) => Element.prototype.removeEventListener.apply(globalThis,args);
+  globalThis.dispatchEvent = event => {
+    if (!(event instanceof Event)) throw new TypeError('dispatchEvent requires an Event');
+    const result = JSON.parse(dispatch(event.type, windowReference, '', '{}', {}, event));
+    return !result.defaultPrevented;
+  };
   // Actual viewport and native scroll changes are checked at rendering time.
   // Weak target references do not retain otherwise unreachable detached nodes.
   globalThis.__lapui_render_window_notifications = () => {
@@ -1134,7 +1298,7 @@
   };
 
   let armedSpace = null;
-  const dispatch = (type, targetId, path = '', detail = '{}', fields = {}) => {
+  const dispatch = (type, targetId, path = '', detail = '{}', fields = {}, suppliedEvent = null) => {
     if (type === 'keydown' && keydownDispatchDepth === 0) focusTransitionDuringKeydown = null;
     const target = getElement(targetId);
     if ((type === 'blur' || type === 'focusout') && armedSpace?.deref() === target) armedSpace = null;
@@ -1164,7 +1328,7 @@
     let dispatched = false;
     const bubbles = type === 'scroll' ? target === document : !['focus', 'blur', 'mouseenter', 'mouseleave', 'pointerenter', 'pointerleave', 'resize', 'invalid'].includes(type);
     const cancelable = ['keydown', 'keyup', 'keypress', 'click', 'dblclick', 'submit', 'reset', 'invalid'].includes(type);
-    const event = {
+    const event = suppliedEvent ?? {
       ...JSON.parse(detail),
       ...fields,
       type,
@@ -1181,6 +1345,15 @@
       composedPath() { return ids.map(getElement); },
       __stopped: false
     };
+    if (suppliedEvent) {
+      event.target = target;
+      event.currentTarget = null;
+      event.eventPhase = 0;
+      event.defaultPrevented = Boolean(event.defaultPrevented);
+      event.timeStamp ||= performance.now();
+      event.__stopped = false;
+      event.composedPath = () => ids.map(getElement);
+    }
     const invoke = (id, capture, phase) => {
       event.currentTarget = getElement(id);
       event.eventPhase = phase;

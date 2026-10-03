@@ -11,6 +11,7 @@ use lapui::render_wait::consume_render_trace_page;
 use lapui::render_wait::{wait_for_render_revision_with, wait_for_render_with};
 use lapui::runtime::LapuiDocument;
 use lapui::shell::LapuiApplication;
+use lapui::window_state::WindowStateStore;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -845,18 +846,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if software_renderer {
         #[cfg(feature = "software-renderer")]
         {
-            let mut app = LapuiApplication::new(proxy, events);
-            app.add_window(WindowConfig::new(
+            let window_state = WindowStateStore::load_default();
+            let attributes = window_state.window_attributes();
+            let mut app = LapuiApplication::with_window_state(proxy, events, window_state);
+            app.add_window(WindowConfig::with_attributes(
                 Box::new(document),
                 anyrender_vello_cpu::VelloCpuWindowRenderer::new(),
+                attributes,
             ));
             event_loop.run_app(app)?;
         }
     } else {
-        let mut app = LapuiApplication::new(proxy, events);
-        app.add_window(WindowConfig::new(
+        let window_state = WindowStateStore::load_default();
+        let attributes = window_state.window_attributes();
+        let mut app = LapuiApplication::with_window_state(proxy, events, window_state);
+        app.add_window(WindowConfig::with_attributes(
             Box::new(document),
             VelloWindowRenderer::new(),
+            attributes,
         ));
         event_loop.run_app(app)?;
     }
