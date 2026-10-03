@@ -6,6 +6,10 @@ images are excluded. Unicode text replacement and copy/delete/paste are tested
 through a real Windows 11 window at 150% DPI; this does not certify IME candidate
 composition, clipboard contention or other platforms.
 
+Tab and Shift+Tab remain navigation in read-only editors, including native
+Windows events that carry a tab character in their text payload. Read-only
+controls still reject text insertion, paste, cut and IME edits.
+
 Lapui's current form bridge supports text values, checkbox/radio checked state, a basic single-select list, labels, focus, keyboard activation, selected constraint validation, and local submit/reset events. The same click dispatch runs for `element.click()`, `lapui.activate(ref)`, TCP `activate`, and Blitz pointer events. This is a tested application-UI subset, not complete HTML forms.
 
 ```js

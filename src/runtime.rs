@@ -3362,7 +3362,7 @@ impl EventHandler for JsHandler {
                     | blitz::traits::events::DomEventData::Ime(_)
             );
             if (!crate::forms::enabled(&inner, control) && interaction && !tab)
-                || (crate::forms::read_only(&inner, control) && editing)
+                || (crate::forms::read_only(&inner, control) && editing && !tab)
             {
                 state.prevent_default();
             }
@@ -8110,6 +8110,54 @@ mod tests {
             document.getElementById('fields').removeAttribute('disabled');
             lapui.activate('blocked') && blocked.checked && document.getElementById('readonly').value==='keep';
         "#)).unwrap());
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn readonly_editors_allow_native_tab_text_navigation_without_editing() {
+        use blitz::traits::events::{BlitzKeyEvent, KeyState};
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(), None,
+            r#"<html><body><input id="before"><input id="readonly" readonly value="keep"><textarea id="area" readonly>keep area</textarea><button id="after">After</button></body></html>"#,
+            "",
+        ).unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(600, 400, 1.5, ColorScheme::Light));
+        doc.dom.borrow_mut().resolve(0.0);
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("document.getElementById('readonly').focus()"))
+            .unwrap();
+        for (reverse, expected) in [
+            (false, "area"),
+            (false, "after"),
+            (true, "area"),
+            (true, "readonly"),
+            (true, "before"),
+        ] {
+            // Windows can attach a tab character to the native Tab key event.
+            // It remains navigation, including when the editor is read-only.
+            doc.handle_ui_event(UiEvent::KeyDown(BlitzKeyEvent {
+                key: Key::Tab,
+                code: Code::Tab,
+                location: Location::Standard,
+                modifiers: if reverse {
+                    Modifiers::SHIFT
+                } else {
+                    Modifiers::empty()
+                },
+                is_auto_repeating: false,
+                is_composing: false,
+                state: KeyState::Pressed,
+                text: Some("\t".into()),
+            }));
+            assert_eq!(
+                doc.js_context
+                    .with(|ctx| ctx.eval::<String, _>("document.activeElement.id"))
+                    .unwrap(),
+                expected
+            );
+        }
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>("document.getElementById('readonly').value==='keep' && document.getElementById('area').value==='keep area'")).unwrap());
         assert!(doc.script_diagnostics.borrow().is_empty());
     }
 
