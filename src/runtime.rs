@@ -5351,7 +5351,7 @@ mod tests {
         let value: String = doc.js_context.with(|ctx|ctx.eval(r#"
             globalThis.parent = document.getElementById('parent');
             globalThis.child = document.getElementById('child');
-            JSON.stringify([child.offsetLeft,child.offsetTop,child.offsetWidth,child.offsetHeight,child.offsetParent.id,parent.offsetLeft,parent.offsetTop,parent.offsetParent.nodeName])
+            JSON.stringify([child.offsetLeft,child.offsetTop,child.offsetWidth,child.offsetHeight,child.offsetParent?.id ?? null,parent.offsetLeft,parent.offsetTop,parent.offsetParent?.nodeName ?? null])
         "#)).unwrap();
         assert_eq!(value, "[25,35,58,28,\"parent\",30,40,\"BODY\"]");
         assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"(() => {
@@ -5571,6 +5571,73 @@ mod tests {
         doc.inner_mut()
             .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
         assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>("document.getElementById('text').style.display='block';innerWidth===800 && innerHeight===600 && rects.length>1 && inline.getClientRects().length===rects.length")).unwrap());
+    }
+
+    #[test]
+    fn fixed_table_layout_honors_colgroup_widths_and_keeps_rows_aligned() {
+        let html = r#"<html><head><style>
+            html,body{margin:0}
+            table{table-layout:fixed;width:600px;border-collapse:collapse;border:0}
+            th,td{padding:0;border:0}
+        </style></head><body>
+            <table id="grid"><colgroup><col style="width:120px"><col style="width:180px"><col></colgroup>
+                <thead><tr><th id="h1">A</th><th id="h2">B</th><th id="h3">C</th></tr></thead>
+                <tbody><tr><td id="c1">short</td><td id="c2">a deliberately long value that must not resize the fixed column</td><td id="c3">3</td></tr></tbody>
+            </table>
+        </body></html>"#;
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        let widths: Vec<f64> = doc
+            .js_context
+            .with(|ctx| {
+                ctx.eval(
+                    "['h1','h2','h3','c1','c2','c3'].map(id => document.getElementById(id).getBoundingClientRect().width)",
+                )
+            })
+            .unwrap();
+        assert_eq!(widths, vec![120.0, 180.0, 300.0, 120.0, 180.0, 300.0]);
+    }
+
+    #[test]
+    fn nested_flex_preserves_fixed_header_and_scrolls_min_sized_content() {
+        let html = r#"<html><head><style>
+            html,body{margin:0}
+            #shell{display:flex;width:300px;height:200px}
+            #nav{flex:0 0 80px}
+            #main{display:flex;flex:1;min-width:0;flex-direction:column}
+            #header{flex:0 0 40px}
+            #scroll{flex:1;min-height:0;overflow:auto}
+            #content{height:420px;display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:4px}
+            .tile{height:30px}
+        </style></head><body>
+            <div id="shell"><div id="nav"></div><div id="main"><div id="header"></div>
+                <div id="scroll"><div id="content"><div class="tile"></div><div class="tile"></div><div class="tile"></div></div></div>
+            </div></div>
+        </body></html>"#;
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(320, 240, 1.0, ColorScheme::Light));
+        let metrics: Vec<f64> = doc
+            .js_context
+            .with(|ctx| {
+                ctx.eval(
+                    "(() => { const rect=id=>document.getElementById(id).getBoundingClientRect(); const scroll=document.getElementById('scroll'); return [rect('nav').width,rect('main').width,rect('main').height,rect('header').height,rect('scroll').y,rect('scroll').height,scroll.scrollHeight,rect('content').width,document.querySelector('.tile').getBoundingClientRect().width]; })()",
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            metrics,
+            vec![80.0, 220.0, 200.0, 40.0, 40.0, 160.0, 420.0, 220.0, 108.0]
+        );
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>(
+                "(() => { const scroll=document.getElementById('scroll'); scroll.scrollTop=100; return scroll.scrollTop===100 && document.getElementById('header').getBoundingClientRect().y===0; })()"
+            ))
+            .unwrap());
     }
 
     #[test]

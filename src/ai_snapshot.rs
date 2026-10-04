@@ -89,7 +89,7 @@ fn attr<'a>(element: &'a blitz::dom::ElementData, name: &str) -> Option<&'a str>
     element
         .attrs
         .iter()
-        .find(|attribute| attribute.name.local.as_ref() == name)
+        .find(|attribute| attribute.name.local.as_str() == name)
         .map(|attribute| attribute.value.as_str())
 }
 

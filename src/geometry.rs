@@ -242,7 +242,7 @@ pub(crate) fn offset_parent(doc: &BaseDocument, id: NodeId) -> Option<NodeId> {
         return None;
     }
     let node = doc.get_node(id)?;
-    let tag = node.element_data()?.name.local.as_ref();
+    let tag = node.element_data()?.name.local.as_str();
     if tag == "body"
         || tag == "html"
         || node.primary_styles()?.get_box().position
@@ -250,7 +250,30 @@ pub(crate) fn offset_parent(doc: &BaseDocument, id: NodeId) -> Option<NodeId> {
     {
         return None;
     }
-    node.offset_parent().map(|parent| parent.id)
+
+    // Blitz's offset_parent() follows the containing-block chain. CSSOM
+    // offsetParent instead searches DOM ancestors and includes a static body;
+    // absolute descendants can have the initial containing block while body
+    // still remains their offsetParent.
+    let mut parent = node.parent;
+    while let Some(parent_id) = parent {
+        let ancestor = doc.get_node(parent_id)?;
+        if ancestor.has_boxes() {
+            if let Some(element) = ancestor.element_data() {
+                let tag = element.name.local.as_str();
+                let is_always_offset_parent = matches!(tag, "body" | "td" | "th");
+                let is_positioned = ancestor.primary_styles().is_some_and(|styles| {
+                    styles.get_box().position
+                        != style::properties::generated::longhands::position::computed_value::T::Static
+                });
+                if is_always_offset_parent || is_positioned {
+                    return Some(parent_id);
+                }
+            }
+        }
+        parent = ancestor.parent;
+    }
+    None
 }
 
 /// [padding x/y, content width/height, border width/height, vertical, depth,

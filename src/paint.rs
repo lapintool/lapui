@@ -86,7 +86,7 @@ fn collect_layout_nodes(
         return;
     };
     let children = node.children.clone();
-    if node.stylo_element_data_opt().is_some() {
+    if node.try_stylo_element_data().is_some() {
         output.push((
             id,
             [

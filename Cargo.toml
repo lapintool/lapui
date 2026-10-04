@@ -15,9 +15,9 @@ complex-scripts = ["blitz-dom/complex-scripts"]
 software-renderer = ["dep:anyrender_vello_cpu", "dep:image"]
 
 [dependencies]
-anyrender_vello = "=0.14.0"
-anyrender_vello_cpu = { version = "=0.17.0", optional = true, default-features = false, features = ["softbuffer_window_renderer"] }
-anyrender = "=0.13.0"
+anyrender_vello = "=0.15.0"
+anyrender_vello_cpu = { version = "=0.18.0", optional = true, default-features = false, features = ["softbuffer_window_renderer"] }
+anyrender = "=0.14.0"
 base64 = "=0.23.1"
 data-url = "=0.3.2"
 blitz-paint = { version = "=0.3.0-beta.2", default-features = false, features = ["svg"] }
@@ -34,10 +34,10 @@ rmcp = { version = "=3.5.0", default-features = false, features = ["server", "ma
 reqwest = { version = "=0.13.5", default-features = false, features = ["native-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-style = { package = "stylo", version = "=0.20.0" }
+style = { package = "stylo", version = "=0.22.0" }
 tokio = { version = "=1.53.1", features = ["macros", "net", "rt", "time", "io-util", "io-std"] }
 tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["connect", "native-tls"] }
-winit = { version = "=0.31.0-beta.2", default-features = false }
+winit = { version = "=0.31.0-beta.3", default-features = false }
 
 [dev-dependencies]
 cursor-icon = "=1.2.0"
@@ -46,6 +46,20 @@ cursor-icon = "=1.2.0"
 # Blitz disables its shell's default features. Windows editing needs the real
 # clipboard provider for Ctrl+C/X/V and clipboard-based text injection.
 blitz-shell = { version = "=0.3.0-beta.2", default-features = false, features = ["clipboard"] }
+
+# Candidate upstream snapshot for U1 table/layout compatibility. Registry beta.2
+# lacks table-layout:fixed and column-group sizing already present on upstream
+# main at this pinned commit. Keep all in-repository Blitz crates on one source
+# revision; remove this override when an adequate registry release is adopted.
+[patch.crates-io]
+blitz = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
+blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
+blitz-shell = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
+stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
 
 # Software rasterization and style/layout run on the UI thread. Unoptimized
 # dependency code can take seconds per frame, starving input even in dev builds.

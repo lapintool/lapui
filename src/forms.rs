@@ -16,7 +16,7 @@ fn attr<'a>(doc: &'a BaseDocument, id: NodeId, name: &str) -> Option<&'a str> {
 fn tag(doc: &BaseDocument, id: NodeId, name: &str) -> bool {
     doc.get_node(id)
         .and_then(|node| node.data.downcast_element())
-        .is_some_and(|element| element.name.local.as_ref() == name)
+        .is_some_and(|element| element.name.local.as_str() == name)
 }
 
 pub(crate) fn value(doc: &BaseDocument, id: NodeId) -> Option<String> {

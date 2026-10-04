@@ -218,7 +218,7 @@ pub(crate) fn html_scripts(
     ) {
         let Some(node) = doc.get_node(id) else { return };
         if let Some(element) = node.data.downcast_element() {
-            if element.name.local.as_ref() == "script" {
+            if element.name.local.as_str() == "script" {
                 *ordinal += 1;
                 let kind = element
                     .attr(LocalName::from("type"))
