@@ -3,7 +3,12 @@
 [简体中文](README.zh-CN.md) · [Documentation](guide/README.md)
 
 Lapui is an experimental desktop UI runtime written in Rust. It combines Blitz for HTML/CSS rendering with QuickJS-ng for JavaScript, aiming to support local interfaces without bundling Chromium or requiring a system WebView.
-**Status: temporary, unfinished development preview.** P1–P3 acceptance remains in progress, behavior and APIs may change, and this build is not intended for production use. The current build demonstrates a single window, a limited dynamic DOM and form subset, capture/bubble listeners, local modules and timers, semantic controls and diagnostics, asynchronous Rust actions, HTTP/WebSocket/SSE, and runnable Vue 3 and React DOM examples. It is not a general-purpose browser or production-ready framework runtime.
+
+**Project status: paused (October 2026).** The prototype has major rendering mismatches on real frontend interfaces, including tables, and significant interaction gaps. Passing automated tests and mounting example/component pages do not mean that a usable or browser-compatible UI has been achieved. Do not use this build for production or user-facing applications.
+
+Development is paused while the underlying rendering and layout dependencies mature. The current branch pins an unreleased Blitz source snapshot and carries Lapui compatibility patches; this is an evaluation baseline, not a stable dependency release. Work may resume after upstream table/layout/rendering behavior has matured enough to reduce these patches, followed by a fresh compatibility review and real-application visual and interaction testing. See the [compatibility matrix](guide/compatibility.md), [upstream compatibility patch ledger](guide/upstream-compatibility-patches.md), and [known limitations](guide/limitations.md) for the verified subset and gaps.
+
+The commands and examples below are for developers evaluating the prototype. They demonstrate selected runtime paths only; they do not imply production readiness or broad frontend compatibility.
 
 ## Try the prototype
 
