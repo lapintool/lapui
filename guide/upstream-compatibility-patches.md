@@ -46,4 +46,4 @@ The dependency graph is locked in `Cargo.lock`. The source upgrade passed the al
 
 ## Current table coverage boundary
 
-The selected upstream snapshot passes a fixed-layout `<colgroup>` geometry test with long cell content and aligned header/body tracks. Lapui has not yet established broad automatic-layout, span placement, or collapsed-border conflict conformance. The full application integration test confirms all Lapstyle UI sections, including its table page, mount and navigate without script diagnostics; it does not replace visual UI-01 inspection.
+The selected upstream snapshot passes fixed-layout `<colgroup>` geometry tests with long cell content, aligned header/body tracks, and a case combining `colspan` with `rowspan`. Lapui has not yet established broad automatic-layout, span-edge-case, or collapsed-border conflict conformance. The full application integration test confirms all Lapstyle UI sections, including its table page, mount and navigate without script diagnostics; it does not replace visual UI-01 inspection.

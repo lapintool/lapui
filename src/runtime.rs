@@ -5601,6 +5601,43 @@ mod tests {
     }
 
     #[test]
+    fn fixed_table_spans_reserve_columns_and_keep_following_rows_in_place() {
+        let html = r#"<html><head><style>
+            html,body{margin:0}
+            table{table-layout:fixed;width:600px;border-collapse:collapse;border:0}
+            td{padding:0;border:0}
+            tr{height:20px}
+        </style></head><body>
+            <table><colgroup><col style="width:100px"><col style="width:200px"><col style="width:300px"></colgroup>
+                <tbody>
+                    <tr><td id="span" colspan="2" rowspan="2">merged</td><td id="a">A</td></tr>
+                    <tr><td id="b">B</td></tr>
+                    <tr><td id="c">C</td><td id="d">D</td><td id="e">E</td></tr>
+                </tbody>
+            </table>
+        </body></html>"#;
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        let rects: Vec<f64> = doc
+            .js_context
+            .with(|ctx| {
+                ctx.eval(
+                    "['span','a','b','c','d','e'].flatMap(id => { const r=document.getElementById(id).getBoundingClientRect(); return [r.x,r.y,r.width,r.height]; })",
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            rects,
+            vec![
+                0.0, 0.0, 300.0, 40.0, 300.0, 0.0, 300.0, 20.0, 300.0, 20.0, 300.0, 20.0, 0.0,
+                40.0, 100.0, 20.0, 100.0, 40.0, 200.0, 20.0, 300.0, 40.0, 300.0, 20.0,
+            ]
+        );
+    }
+
+    #[test]
     fn nested_flex_preserves_fixed_header_and_scrolls_min_sized_content() {
         let html = r#"<html><head><style>
             html,body{margin:0}
