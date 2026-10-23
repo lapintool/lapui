@@ -8,6 +8,7 @@
 * { box-sizing: border-box; }
 
 body { margin: 0; min-width: 360px; }
+#app { display: flow-root; min-height: 100vh; }
 
 .board {
   width: min(760px, calc(100vw - 48px));
@@ -36,6 +37,6 @@ button:disabled { cursor: default; background: #aab9bc; }
 .actions { display: flex; gap: 10px; margin-top: 20px; }
 .secondary { background: #e7f1f1; color: #17615f; }
 .status { min-height: 24px; margin: 17px 0 0; color: #54727d; }
-.dialog-backdrop { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; background: #142e3b80; }
+.dialog-backdrop { position: fixed; inset: 0; height: 100vh; display: grid; place-items: center; padding: 24px; background: #142e3b80; }
 .dialog { width: min(420px, 100%); padding: 24px; border-radius: 16px; background: white; box-shadow: 0 24px 80px #09233355; }
 .dialog h2 { margin-top: 0; }

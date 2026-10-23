@@ -2,6 +2,14 @@
 
 This demo uses Vue 3's runtime DOM renderer to mount a small Chinese task list into Lapui's Blitz-backed document. It covers input events, reactive list diffing, AI-driven checkbox state reflected back into Vue, boolean `disabled` reflection, and conditional dialog insertion/removal.
 
+The dialog is a sibling of the board in Vue's fragment root. A flow-root app
+container prevents margin collapse, and the overlay declares `height: 100vh`.
+This keeps the demo's overlay at the viewport origin and centered at both test
+sizes with the pinned layout engine; nested fixed containing blocks do not have
+browser-complete behavior. The runtime regression checks coverage and centering
+at 960×640 and 640×480. The [framework comparison](../ui-fixtures/README.md)
+retains the remaining font, control-size and scrollbar geometry differences.
+
 The built bundle is checked in so Rust users can run it without installing Node. From the repository root:
 
 ```powershell

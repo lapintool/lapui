@@ -9,12 +9,14 @@ mod runner {
 
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut output = PathBuf::from("target/fixture-comparison/lapui");
+        let mut suite = String::from("basic");
         let (mut width, mut height) = (960_u32, 640_u32);
         let mut arguments = std::env::args().skip(1);
         while let Some(argument) = arguments.next() {
             let value = arguments.next().ok_or("option requires a value")?;
             match argument.as_str() {
                 "--out" => output = PathBuf::from(value),
+                "--suite" => suite = value,
                 "--width" => width = value.parse()?,
                 "--height" => height = value.parse()?,
                 _ => return Err(format!("unknown option: {argument}").into()),
@@ -24,22 +26,49 @@ mod runner {
             return Err("fixture dimensions must be 1..4096".into());
         }
         std::fs::create_dir_all(&output)?;
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/ui-fixtures");
+        let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let root = project.join("examples/ui-fixtures");
         let manifest: Value = serde_json::from_slice(&std::fs::read(root.join("manifest.json"))?)?;
-        let html = std::fs::read_to_string(root.join("index.html"))?;
+        if !["basic", "frameworks", "all"].contains(&suite.as_str()) {
+            return Err("suite must be basic, frameworks or all".into());
+        }
+        let mut scenarios = Vec::new();
+        if suite != "frameworks" {
+            for scenario in manifest["scenarios"]
+                .as_array()
+                .ok_or("missing scenarios")?
+            {
+                scenarios.push((
+                    scenario.as_str().ok_or("invalid name")?.to_owned(),
+                    root.join("index.html"),
+                    format!("requestAnimationFrame(() => runFixture({scenario}));"),
+                ));
+            }
+        }
+        if suite != "basic" {
+            let source = std::fs::read_to_string(root.join("frameworks.js"))?;
+            for scenario in manifest["frameworkScenarios"]
+                .as_array()
+                .ok_or("missing framework scenarios")?
+            {
+                let name = scenario["name"].as_str().ok_or("invalid name")?.to_owned();
+                let page = project.join(scenario["page"].as_str().ok_or("missing page")?);
+                let script = format!(
+                    "{source}\nrequestAnimationFrame(() => runFrameworkFixture({}));",
+                    scenario["name"]
+                );
+                scenarios.push((name, page, script));
+            }
+        }
         let fonts = LapuiDocument::new_font_context();
-        for scenario in manifest["scenarios"]
-            .as_array()
-            .ok_or("missing scenarios")?
-        {
-            let name = scenario.as_str().ok_or("scenario must be a string")?;
-            let script = format!("requestAnimationFrame(() => runFixture({scenario}));");
+        for (name, page, script) in scenarios {
+            let html = std::fs::read_to_string(&page)?;
             let (mut document, _notify) = LapuiDocument::new_with_local_source_and_font_context(
                 ActionRegistry::default(),
                 None,
                 &html,
                 &script,
-                &root,
+                page.parent().ok_or("page has no parent")?,
                 fonts.clone(),
             )?;
             document.inner_mut().set_viewport(Viewport::new(
@@ -80,9 +109,9 @@ mod runner {
                 height,
             )?;
             if result["status"] != "ready"
-                || result["checks"]
-                    .as_object()
-                    .is_none_or(|checks| checks.values().any(|value| value != true))
+                || result["checks"].as_object().is_none_or(|checks| {
+                    checks.is_empty() || checks.values().any(|value| value != true)
+                })
             {
                 return Err(format!("fixture failed: {result}").into());
             }

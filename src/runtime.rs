@@ -9213,6 +9213,16 @@ mod tests {
             .unwrap();
         drain_jobs(&doc.js_runtime, &doc.script_budget).unwrap();
         assert!(text(&doc, "app").contains("一个本地界面"));
+        for (width, height) in [(960, 640), (640, 480)] {
+            doc.inner_mut()
+                .set_viewport(Viewport::new(width, height, 1.0, ColorScheme::Light));
+            assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(r#"(()=>{
+              const backdrop=document.querySelector('.dialog-backdrop').getBoundingClientRect();
+              const dialog=document.querySelector('.dialog').getBoundingClientRect();
+              return backdrop.x===0 && backdrop.y===0 && backdrop.width===innerWidth && backdrop.height===innerHeight
+                && Math.abs(dialog.y+dialog.height/2-innerHeight/2)<=1;
+            })()"#)).unwrap(), "Vue dialog must cover and center in {width}x{height}");
+        }
         doc.js_context
             .with(|ctx| ctx.eval::<(), _>("lapui.activate('close-details');"))
             .unwrap();

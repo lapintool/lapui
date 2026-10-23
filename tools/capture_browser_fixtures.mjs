@@ -12,6 +12,8 @@ for (let index = 2; index < process.argv.length; index += 2) {
   options.set(process.argv[index], process.argv[index + 1]);
 }
 if (!options.has('--browser')) throw new Error('--browser is required');
+const suite = options.get('--suite') || 'basic';
+if (!['basic', 'frameworks', 'all'].includes(suite)) throw new Error('Invalid suite');
 const output = path.resolve(options.get('--out') || path.join(root, 'target', 'fixture-comparison'));
 await mkdir(output, {recursive:true});
 const profile = await mkdtemp(path.join(output, 'browser-profile-'));
@@ -84,25 +86,32 @@ try {
   await protocol.call('Page.enable');
   const version = await protocol.call('Browser.getVersion');
   const manifest = JSON.parse(await readFile(path.join(fixture, 'manifest.json'), 'utf8'));
+  const cases = [];
+  if (suite !== 'frameworks') for (const name of manifest.scenarios) cases.push({name, page:'examples/ui-fixtures/index.html', framework:false});
+  if (suite !== 'basic') for (const item of manifest.frameworkScenarios) cases.push({...item, framework:true});
+  const frameworkSource = suite !== 'basic' ? await readFile(path.join(fixture, 'frameworks.js'), 'utf8') : '';
   for (const viewport of manifest.viewports) {
     const {width, height} = viewport;
     const directory = path.join(output, `${width}x${height}`);
     await mkdir(directory, {recursive:true});
     await protocol.call('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor:1, mobile:false});
-    for (const name of manifest.scenarios) {
-      const url = pathToFileURL(path.join(fixture, 'index.html'));
+    for (const item of cases) {
+      const {name} = item;
+      const url = pathToFileURL(path.join(root, item.page));
       url.searchParams.set('fixture', name);
       url.searchParams.set('viewport', `${width}x${height}`);
       await protocol.call('Page.navigate', {url:url.href});
       const readyDeadline = Date.now() + 5000;
       let loaded = false;
       while (Date.now() < readyDeadline) {
-        loaded = await protocol.evaluate(`location.href === ${JSON.stringify(url.href)} && document.readyState === 'complete' && typeof runFixture === 'function'`);
+        loaded = await protocol.evaluate(`location.href === ${JSON.stringify(url.href)} && document.readyState === 'complete' && ${item.framework ? 'true' : "typeof runFixture === 'function'"}`);
         if (loaded) break;
         await delay(10);
       }
       if (!loaded) throw new Error('Fixture document did not load: ' + name);
-      const result = await protocol.evaluate(`runFixture(${JSON.stringify(name)}).then(() => JSON.parse(document.getElementById('fixture-result').textContent))`);
+      if (item.framework) await protocol.evaluate(frameworkSource);
+      const run = item.framework ? 'runFrameworkFixture' : 'runFixture';
+      const result = await protocol.evaluate(`${run}(${JSON.stringify(name)}).then(() => JSON.parse(document.getElementById('fixture-result').textContent))`);
       await writeFile(path.join(directory, name + '-browser.json'), JSON.stringify(result, null, 2));
       if (result.status !== 'ready') throw new Error('Fixture failed: ' + JSON.stringify(result));
       if (result.viewport.width !== width || result.viewport.height !== height) throw new Error('Unexpected CSS viewport');

@@ -62,22 +62,33 @@ def main():
     parser.add_argument("--browser", required=True)
     parser.add_argument("--browser-version", help="Optional expected browser version, checked against Browser.getVersion")
     parser.add_argument("--node", default="node")
+    parser.add_argument("--suite", choices=("basic", "frameworks", "all"), default="basic")
     parser.add_argument("--lapui-runner", default=str(ROOT / "target/debug/examples" / ("fixture_runner.exe" if os.name == "nt" else "fixture_runner")))
-    parser.add_argument("--out", default=str(ROOT / "target/fixture-comparison"))
+    parser.add_argument("--out")
     arguments = parser.parse_args()
     browser, runner = Path(arguments.browser).resolve(), Path(arguments.lapui_runner).resolve()
     if not browser.is_file() or not runner.is_file():
         parser.error("browser and native fixture runner must exist; build the example first")
-    output = Path(arguments.out).resolve()
+    default_output = {"basic":"fixture-comparison", "frameworks":"framework-comparison", "all":"fixture-comparison-all"}[arguments.suite]
+    output = Path(arguments.out).resolve() if arguments.out else ROOT / "target" / default_output
     output.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((FIXTURE / "manifest.json").read_text(encoding="utf-8"))
+    scenarios = list(manifest["scenarios"]) if arguments.suite != "frameworks" else []
+    framework_inputs = {}
+    if arguments.suite != "basic":
+        scenarios += [item["name"] for item in manifest["frameworkScenarios"]]
+        for item in manifest["frameworkScenarios"]:
+            page = ROOT / item["page"]
+            for source in (page, page.parent / "dist/app.js", page.parent / "style.css", page.parent / "package-lock.json"):
+                if source.is_file():
+                    framework_inputs[source.relative_to(ROOT).as_posix()] = digest(source)
     for viewport in manifest["viewports"]:
         width, height = viewport["width"], viewport["height"]
         native = output / f"{width}x{height}" / "lapui"
-        subprocess.run([str(runner), "--out", str(native), "--width", str(width), "--height", str(height)], check=True, timeout=45)
+        subprocess.run([str(runner), "--out", str(native), "--width", str(width), "--height", str(height), "--suite", arguments.suite], check=True, timeout=45)
     subprocess.run([
         arguments.node, str(ROOT / "tools/capture_browser_fixtures.mjs"),
-        "--browser", str(browser), "--out", str(output),
+        "--browser", str(browser), "--out", str(output), "--suite", arguments.suite,
     ], check=True, timeout=90)
     browser_metadata = json.loads((output / "browser-metadata.json").read_text(encoding="utf-8"))
     if arguments.browser_version and arguments.browser_version not in browser_metadata["product"]:
@@ -86,7 +97,7 @@ def main():
     for viewport in manifest["viewports"]:
         width, height = viewport["width"], viewport["height"]
         directory = output / f"{width}x{height}"
-        for name in manifest["scenarios"]:
+        for name in scenarios:
             native = json.loads((directory / "lapui" / f"{name}.json").read_text(encoding="utf-8"))
             reference = json.loads((directory / f"{name}-browser.json").read_text(encoding="utf-8"))
             failures = compare(native, reference, viewport, manifest["geometryToleranceCssPx"])
@@ -94,14 +105,20 @@ def main():
                 size = png_size(image)
                 if size != viewport:
                     failures.append({"field": engine + ".pngDimensions", "actual": size, "expected": viewport})
-            reports.append({"scenario": name, "viewport": viewport, "failures": failures})
+            behavior_checks = all(report.get("checks") and all(value is True for value in report["checks"].values()) for report in (native, reference))
+            reports.append({"scenario": name, "viewport": viewport, "behaviorChecksPassed": behavior_checks,
+                            "stateComparisonPassed": native.get("states") == reference.get("states"),
+                            "geometryComparisonPassed": not any(item["field"].startswith("metrics.") or item["field"] == "metricIds" for item in failures),
+                            "layoutViewports": {"lapui":native.get("layoutViewport"), "browser":reference.get("layoutViewport")},
+                            "failures": failures})
             print(f"{width}x{height} {name}: {'FAIL' if failures else 'PASS'} ({len(failures)} differences)")
     summary = {
         "recordedUtc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "platform": platform.platform(), "pythonVersion": platform.python_version(), "browser": browser_metadata,
         "browserExecutableSha256": digest(browser), "lapuiRunnerSha256": digest(runner),
         "cargoLockSha256": digest(ROOT / "Cargo.lock"),
-        "fixtureSha256": {name: digest(FIXTURE / name) for name in ("index.html", "app.js", "manifest.json")},
+        "suite": arguments.suite, "frameworkInputsSha256": framework_inputs,
+        "fixtureSha256": {name: digest(FIXTURE / name) for name in ("index.html", "app.js", "frameworks.js", "manifest.json")},
         "driverSha256": {name: digest(ROOT / name) for name in ("tools/compare_ui_fixtures.py", "tools/capture_browser_fixtures.mjs", "examples/fixture_runner.rs")},
         "geometryToleranceCssPx": manifest["geometryToleranceCssPx"], "pngDimensionsChecked": True,
         "pixelEqualityChecked": False, "physicalInputChecked": False,

@@ -9,6 +9,13 @@ at a fixed 1 CSS pixel tolerance. Both screenshots' dimensions are verified;
 pixel equality and physical input are not claimed. This covers the selected
 fixture workbench rather than replacing the separate framework/file-tool tests.
 
+The additional real-bundle suite has known reference failures: its 12
+Vue/React/Floating UI cases complete their per-engine behavior checks, but the
+full states match in 10 cases and strict geometry matches in none. Default
+normal-line metrics, intrinsic controls and root scrollbar space differ.
+`--suite frameworks` reports these differences and exits unsuccessfully; it is
+not a passed browser-conformance gate. See the fixture README for reproduction.
+
 | Area | Verified in this repository | Not covered yet |
 | --- | --- | --- |
 | HTML and CSS | Blitz parses pages and computes layout/styles; Parley complex-script line breaking is enabled and tested with narrow Chinese text; local CSS, image, and font resources load under the app-root boundary | Browser navigation, complete HTML form behavior, full CSS compatibility |
