@@ -22,6 +22,20 @@ This resolves styles/layout at 1x scale and paints the current state using the C
 
 Initial Windows measurements showed a large renderer-dependent difference: a five-second counter sample using the GPU path had 608,256,000 private bytes (580.08 MiB), while an early CPU-path build had 9,256,960 private bytes (8.83 MiB) and 31,227,904 working-set bytes (29.78 MiB). These are short, single-machine process samples, not peak/steady-state benchmarks. The difference points to renderer/driver overhead but does not identify individual allocations. GPU memory, first-interactive timing, frame-time percentiles and long-running detached-DOM memory remain unmeasured.
 
-The current CPU-default Windows release, including PNG export, native reload, animation, geometry, computed styles, size observations and local forms, is 30,258,176 bytes (28.86 MiB); its five-second counter sample used 10,641,408 private bytes (10.15 MiB) and 33,472,512 working-set bytes (31.92 MiB). Linux offscreen painting passed after supplying Noto CJK fonts to Fontconfig; the initial font-minimal WSL image showed missing glyphs. Pixel and font verification is separate from physical input verification.
+The S1-baseline CPU-default Windows release, including PNG export, native reload, animation, geometry, computed styles, size observations and local forms, was 30,258,176 bytes (28.86 MiB); its five-second counter sample used 10,641,408 private bytes (10.15 MiB) and 33,472,512 working-set bytes (31.92 MiB). Linux offscreen painting passed after supplying Noto CJK fonts to Fontconfig; the initial font-minimal WSL image showed missing glyphs. Pixel and font verification is separate from physical input verification.
 
 A separate short Windows release workload on an earlier build replaced 5,000 listener-bearing subtrees per pass, three passes in one window (about 75,000 created nodes). Private memory was 8,794,112 bytes before the workload and 12,406,784 / 14,094,336 / 12,181,504 bytes three seconds after each pass (11.83 / 13.44 / 11.62 MiB). Threads remained at 13; post-pass handles remained at 257; diagnostics were empty. The following 10-second idle interval had no measurable process CPU-time increment at the OS counter's resolution. These samples exclude in-pass peaks and are not long-run leak proof, frame timings or an idle-CPU guarantee. The non-monotonic post-pass readings complement the native-node collection regression tests. The current counter sample has 21 threads and 263 handles, including eight fixed TCP connection workers; the HTTP reactor starts only when used.
+
+The 2026-10-23 Windows development build, including MCP, has a release executable
+of 33,505,792 bytes (31.95 MiB). This counts only the executable, not a verified
+standalone distribution with all required fonts, libraries and notices.
+
+A historical Windows CPU run of the [network example](../examples/network-demo/README.md)
+completed eight active hours and ten idle minutes with tracing disabled and MCP
+enabled: 2,878 cycles, 575 expected injected errors and zero unexpected errors.
+Steady Private Bytes rose from 16.43 to 19.86 MiB, peaking at 20.62 MiB; connected
+epoch baselines flattened in the later hours. Idle samples added 32 ms of process
+CPU time. This is evidence for that workload, not a general leak-free or current
+release guarantee: the historical records lack an executable digest/source
+revision and predate the latest form-fill changes. AI-disabled, trace-enabled,
+GPU and clean-machine comparisons remain separate acceptance work.

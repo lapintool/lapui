@@ -2069,20 +2069,12 @@ impl LapuiDocument {
                     "__lapui_set_value",
                     Func::from({
                         let dom = dom.clone();
-                        move |reference: String, value: String| -> i32 {
+                        move |reference: String, value: String| -> bool {
                             let mut doc = dom.borrow_mut();
                             let Some(id) = resolve_node_ref(&doc, &reference) else {
-                                return -1;
+                                return false;
                             };
-                            let before = crate::forms::value(&doc, id);
-                            if !crate::forms::set_value(&mut doc, id, &value) {
-                                return -1;
-                            }
-                            if crate::forms::value(&doc, id) != before {
-                                1
-                            } else {
-                                0
-                            }
+                            crate::forms::set_value(&mut doc, id, &value)
                         }
                     }),
                 )?;
@@ -4128,6 +4120,110 @@ mod tests {
                     .is_some());
             }
         }
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn semantic_fill_normalizes_native_values_and_journals_public_value_changes() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body><input id='text' value='initial'><input id='email' type='email'><input id='url' type='url'><textarea id='area'></textarea><input id='number' type='number'><input id='password' type='password'></body></html>",
+            "",
+        )
+        .unwrap();
+        let controls = control_request(&mut doc, json!({"method":"controls"})).unwrap();
+        let epoch = controls["documentEpoch"].clone();
+        let reference = |id: &str| {
+            controls["controls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|control| control["id"] == id)
+                .unwrap()["ref"]
+                .clone()
+        };
+        for (id, supplied, expected) in [
+            ("text", "a\r\nb\rc", "abc"),
+            ("email", "\t dev@example.test \r\n", "dev@example.test"),
+            (
+                "url",
+                " https://example.test/ \r\n",
+                "https://example.test/",
+            ),
+            ("area", "first\r\nsecond\rthird", "first\nsecond\nthird"),
+        ] {
+            control_request(
+                &mut doc,
+                json!({"method":"fill","documentEpoch":epoch,"ref":reference(id),"value":supplied}),
+            )
+            .unwrap();
+            let raw: String = doc
+                .js_context
+                .with(|ctx| {
+                    ctx.eval(format!(
+                        "__lapui_get_value(document.getElementById('{id}').__ref)"
+                    ))
+                })
+                .unwrap();
+            assert_eq!(raw, expected, "native editor for {id}");
+        }
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(
+            "(()=>{const text=document.getElementById('text');text.defaultValue='new default';return text.value==='abc';})()"
+        )).unwrap());
+
+        let baseline = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"limit":64}),
+        )
+        .unwrap();
+        control_request(
+            &mut doc,
+            json!({"method":"fill","documentEpoch":epoch,"ref":reference("text"),"value":"a\r\nb\rc"}),
+        )
+        .unwrap();
+        control_request(
+            &mut doc,
+            json!({"method":"fill","documentEpoch":epoch,"ref":reference("number"),"value":"not-a-number"}),
+        ).unwrap();
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(
+            "(()=>{const number=document.getElementById('number');return number.value===''&&number.validity.badInput;})()"
+        )).unwrap());
+        let changes = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"cursor":baseline["cursor"],"limit":64}),
+        ).unwrap();
+        assert!(changes["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| { record["type"] == "control" && record["controlEvent"] == "input" }));
+        assert!(
+            !changes["records"].as_array().unwrap().iter().any(|record| {
+                record["type"] == "property" && record["propertyName"] == "value"
+            }),
+            "empty public numeric value did not change: {changes}"
+        );
+
+        let filled = control_request(
+            &mut doc,
+            json!({"method":"fill","documentEpoch":epoch,"ref":reference("password"),"value":"private-fill-sentinel"}),
+        ).unwrap();
+        let secret_changes = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"cursor":changes["cursor"],"limit":64}),
+        ).unwrap();
+        assert!(secret_changes["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| {
+                record["type"] == "property"
+                    && record["propertyName"] == "value"
+                    && record["target"] == reference("password")
+            }));
+        assert!(!filled.to_string().contains("private-fill-sentinel"));
+        assert!(!secret_changes.to_string().contains("private-fill-sentinel"));
         assert!(doc.script_diagnostics.borrow().is_empty());
     }
 

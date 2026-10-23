@@ -55,6 +55,14 @@ The stable `form.elements` view updates from native tree order and ownership, in
 
 ## Validation and AI observations
 
+Structured `fill` normalizes text, email/URL, and textarea values in the native
+editor before dispatching `input` and `change`. It marks the field as user-edited
+without calling a framework's own value setter, so React controlled inputs can
+detect the edit. An invalid numeric edit retains its raw editor text for
+`validity.badInput` while the public `.value` stays empty. The page-change journal
+records `value` only when that public value changes; control events still occur
+for repeated or invalid fills.
+
 Supported checks include required text/single-select/checkbox/form-scoped radio groups, email (including multiple), absolute URL, whole-value Unicode `v`-flag patterns, user/AI-edited minlength/maxlength, numeric min/max/step and interactive bad input, and `setCustomValidity`. Programmatic writes do not trigger user length checks. `validity` is live; disabled/readonly controls are excluded. Multi-select and unimplemented input types report `NotSupportedError` rather than silently validating.
 
 `checkValidity()` dispatches cancelable, non-bubbling invalid events. `reportValidity()` also focuses the first invalid control whose event was not canceled; it does not display a native validation popup. Messages are basic English strings. Full validity-state, number precision and localized reporting conformance are not claimed.
