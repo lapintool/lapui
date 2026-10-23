@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "rootFiles": ["README.md", "README.zh-CN.md", "LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY.md"],
+  "examples": ["vue-demo", "react-demo", "floating-demo", "forms-demo", "form-submit-demo", "modules-demo", "animation-demo", "scroll-demo", "changes-demo", "network-demo", "ui-fixtures"],
+  "examplePatterns": ["*.html", "*.js", "*.css", "*.mjs", "*.json", "README.md", "LICENSE*", "dist/*.js", "lib/*.mjs", "server.py"],
+  "guides": "guide/*.md",
+  "templates": "packaging/windows",
+  "developmentSourceFiles": ["tools/package_preview.py", "tools/verify_preview.py", "tools/test_preview.py", "tools/preview-assets.json"]
+}

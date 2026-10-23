@@ -10,9 +10,9 @@ The default software path uses AnyRender Vello CPU 0.17.0 and Softbuffer Window 
 
 The runtime depends directly on Blitz (`MIT OR Apache-2.0`), AnyRender Vello (`MIT OR Apache-2.0`), rquickjs (`MIT`), and keyboard-types (`MIT OR Apache-2.0`). Its transitive rendering stack includes Stylo (`MPL-2.0`). The exact package versions are recorded in `Cargo.lock`; the authoritative license terms are those supplied by each upstream package.
 
-Before distributing a binary, the release process needs a complete dependency-license inventory, notices, and source-availability information for MPL-covered components. This source repository does not yet publish binary releases.
+The [local preview packager](guide/packaging.md) collects the selected Windows normal/build dependency graph, supplied notice files and matching original Cargo archives, with source and file hashes. This conservatively includes build dependencies and does not prove every package contributed linked code. Before a public binary release, finish the dependency/embedded-data notice review and source-availability arrangements for MPL-covered components. This source repository does not yet publish binary releases.
 
-The checked-in `examples/vue-demo/dist/app.js` is a reproducible bundle of Vue 3 (`MIT`) and esbuild output (`MIT`), built from the exact versions in `examples/vue-demo/package-lock.json`. Its original packages and notices are available from npm; the surrounding demo source is Lapui-authored.
+The checked-in `examples/vue-demo/dist/app.js` is a reproducible bundle of Vue 3 (`MIT`) and esbuild output (`MIT`), built from the exact versions in `examples/vue-demo/package-lock.json`. The Vue family shares the retained `LICENSE.vue` text; `LICENSE.esbuild` and the bundle's upstream headers are also preserved. Its original packages are available from npm; the surrounding demo source is Lapui-authored.
 
 The checked-in `examples/react-demo/dist/app.js` contains React, React DOM and Scheduler (`MIT`) and esbuild-generated output, built from `examples/react-demo/package-lock.json`. React family and esbuild license files are retained in that example directory, along with the bundle's upstream license headers. The surrounding example is Lapui-authored.
 
