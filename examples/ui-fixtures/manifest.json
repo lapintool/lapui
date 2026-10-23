@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "scenarios": ["form", "list", "scroll", "cjk", "popover", "resize", "async"],
+  "viewports": [{"width": 960, "height": 640}, {"width": 640, "height": 480}],
+  "geometryToleranceCssPx": 1
+}

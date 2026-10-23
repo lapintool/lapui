@@ -45,6 +45,8 @@ The [Floating UI example](examples/floating-demo/README.md) runs the actual DOM 
 
 The [Vue 3 example](examples/vue-demo/README.md) and [React DOM example](examples/react-demo/README.md) exercise the live DOM bridge, reactive lists, and conditional content. React also tests controlled input, delegated capture/bubble events, effects and the asynchronous Rust action.
 
+The [UI comparison fixtures](examples/ui-fixtures/README.md) compare seven selected scenarios against a real headless browser at two CSS viewport sizes. They retain paired PNGs, behavior results and geometry differences; Python and Node.js are required only for the development comparison tools.
+
 Use `--watch` with a local page to reload edits and rebuilt bundles. `lapui client <address> reload` performs a manual replacement; `reload-status` reports the latest attempt. Application state survives while frontend drafts and document references reset. See [development](guide/development.md).
 
 For a richer in-memory tool with Chinese search, file details, shared rename actions, entity-version conflicts, scanning progress and cancellation, run:

@@ -44,6 +44,10 @@ jobs:
         run: cargo +1.91.1 build --locked --bins
       - name: Paint embedded tool without a window
         run: cargo +1.91.1 run --locked -- --demo files --snapshot target/ci-files.png
+      - name: Exercise representative UI fixtures without a window
+        run: |
+          cargo +1.91.1 run --locked --example fixture_runner -- --out target/ci-fixtures/960x640
+          cargo +1.91.1 run --locked --example fixture_runner -- --width 640 --height 480 --out target/ci-fixtures/640x480
   documentation:
     runs-on: ubuntu-24.04
     steps:

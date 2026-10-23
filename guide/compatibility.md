@@ -2,6 +2,13 @@
 
 Lapui targets local application interfaces. “Pass” means a capability has a focused Rust integration test or an included runnable example; it does not imply browser-wide conformance. Versions and scenarios are intentionally narrow while the runtime is evolving.
 
+The [representative UI fixtures](../examples/ui-fixtures/README.md) also compare
+seven selected cases at two CSS viewport sizes against a real Chromium browser.
+On Windows with Chrome 155.0.8059.86, all 14 behavior/geometry comparisons passed
+at a fixed 1 CSS pixel tolerance. Both screenshots' dimensions are verified;
+pixel equality and physical input are not claimed. This covers the selected
+fixture workbench rather than replacing the separate framework/file-tool tests.
+
 | Area | Verified in this repository | Not covered yet |
 | --- | --- | --- |
 | HTML and CSS | Blitz parses pages and computes layout/styles; Parley complex-script line breaking is enabled and tested with narrow Chinese text; local CSS, image, and font resources load under the app-root boundary | Browser navigation, complete HTML form behavior, full CSS compatibility |

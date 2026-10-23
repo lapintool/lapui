@@ -36,6 +36,8 @@ cargo run --release --locked
 
 [React DOM 示例](examples/react-demo/README.md)已验证受控输入、捕获/冒泡事件委托、effect、列表与条件内容，以及异步 Rust 动作。启动命令：`cargo run --release --locked -- --html examples/react-demo/index.html`。
 
+[界面对照 fixture](examples/ui-fixtures/README.md)在两种 CSS 视口下，将七类场景与真实无头浏览器比较，保留成对 PNG、行为结果和几何差异。Python 和 Node.js 仅用于开发对照工具，运行应用无需安装。
+
 本地页面加 `--watch` 可在编辑或重新构建 bundle 后完整重载。`lapui client <地址> reload` 手动重载，`reload-status` 查询最近一次尝试。Rust 应用状态保留，前端草稿与文档引用重置，见[开发及重载指南](guide/development.md)。
 
 [表单示例](guide/forms.md)包含复选框、独立单选组、标签激活、禁用 fieldset、只读输入和键盘交互。无需 Node 或构建步骤：`cargo run --release --locked -- --html examples/forms-demo/index.html --watch`。

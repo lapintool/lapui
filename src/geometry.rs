@@ -2,6 +2,49 @@
 use blitz::dom::{BaseDocument, ScrollBehavior};
 use blitz::traits::node_id::NodeId;
 
+#[derive(Clone, Copy)]
+pub(crate) struct ClientRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+pub(crate) fn bounding_rect(doc: &BaseDocument, id: NodeId) -> Option<ClientRect> {
+    if !has_boxes(doc, id) {
+        return None;
+    }
+    let rect = doc.get_client_bounding_rect(id)?;
+    // Blitz 0.3.0-beta.2 absolute_position subtracts the target's own scroll.
+    // Restore only that offset: scrolling moves its contents, not its border box.
+    let scroll = doc.get_node(id)?.scroll_offset();
+    Some(ClientRect {
+        x: rect.x + scroll.x,
+        y: rect.y + scroll.y,
+        width: rect.width,
+        height: rect.height,
+    })
+}
+
+pub(crate) fn client_rects(doc: &BaseDocument, id: NodeId) -> Vec<ClientRect> {
+    if !has_boxes(doc, id) {
+        return Vec::new();
+    }
+    let scroll = doc
+        .get_node(id)
+        .expect("checked layout node")
+        .scroll_offset();
+    doc.node_client_rects(id)
+        .into_iter()
+        .map(|rect| ClientRect {
+            x: rect.x + scroll.x,
+            y: rect.y + scroll.y,
+            width: rect.width,
+            height: rect.height,
+        })
+        .collect()
+}
+
 // [scrollLeft, scrollTop, clientWidth, clientHeight, clientLeft, clientTop,
 //  scrollWidth, scrollHeight]. These are CSS extents, not Taffy max offsets.
 pub(crate) fn has_boxes(doc: &BaseDocument, id: NodeId) -> bool {
@@ -143,7 +186,7 @@ pub(crate) fn offset_metrics(doc: &BaseDocument, id: NodeId) -> Vec<f64> {
     }
     let node = doc.get_node(id).expect("checked layout node");
     let position = node.offset_top_left();
-    let rect = doc.get_client_bounding_rect(id);
+    let rect = bounding_rect(doc, id);
     vec![
         f64::from(position.x.round()),
         f64::from(position.y.round()),
@@ -216,7 +259,7 @@ pub(crate) fn intersection_sample(doc: &BaseDocument, id: NodeId) -> Vec<f64> {
     if !has_boxes(doc, id) {
         return vec![0.0; 5];
     }
-    let Some(rect) = doc.get_client_bounding_rect(id) else {
+    let Some(rect) = bounding_rect(doc, id) else {
         return vec![0.0; 5];
     };
     vec![

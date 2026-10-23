@@ -1751,7 +1751,7 @@ impl LapuiDocument {
                     let doc = rects_dom.borrow();
                     let Some(id) = resolve_node_ref(&doc,&reference) else { return Vec::new(); };
                     if !crate::geometry::has_boxes(&doc,id) { return Vec::new(); }
-                    doc.node_client_rects(id).into_iter()
+                    crate::geometry::client_rects(&doc,id).into_iter()
                         .map(|rect| vec![rect.x,rect.y,rect.width,rect.height]).collect()
                 }))?;
                 let document_root = canonical_node_ref(doc_id, dom.borrow().root_node().id);
@@ -1767,7 +1767,7 @@ impl LapuiDocument {
                     let doc = geometry_dom.borrow();
                     let Some(id) = resolve_node_ref(&doc, &reference) else { return vec![0.0;4]; };
                     if !crate::geometry::has_boxes(&doc,id) { return vec![0.0;4]; }
-                    doc.get_client_bounding_rect(id).map_or_else(|| vec![0.0;4], |rect| vec![rect.x,rect.y,rect.width,rect.height])
+                    crate::geometry::bounding_rect(&doc,id).map_or_else(|| vec![0.0;4], |rect| vec![rect.x,rect.y,rect.width,rect.height])
                 }))?;
                 let timer_arm = timers.handle.clone();
                 globals.set(
@@ -5309,6 +5309,8 @@ mod tests {
             if (scroller.scrollTop !== 60 || scroller.scrollLeft !== 20 || scrollY !== 0 || events.length !== 0) return false;
             const rect = content.getBoundingClientRect();
             if (rect.x !== 32 || rect.y !== 2) return false;
+            const border = scroller.getBoundingClientRect(), fragment = scroller.getClientRects()[0];
+            if (border.x !== 40 || border.y !== 50 || fragment.x !== 40 || fragment.y !== 50) return false;
             scroller.scrollBy({top:15});
             return scroller.scrollTop === 75 && scroller.scrollLeft === 20;
         })()"#)).unwrap_or_else(|error| panic!("{}",javascript_error(&doc.js_context,&error,&doc.script_budget))));
@@ -5325,6 +5327,16 @@ mod tests {
                 .unwrap(),
             0
         );
+        let page = control_request(&mut doc, json!({"method":"pageSnapshot","limit":64})).unwrap();
+        let scroller = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == "scroller")
+            .unwrap();
+        assert_eq!(scroller["bounds"]["x"], 40.0);
+        assert_eq!(scroller["bounds"]["y"], 50.0);
+        assert_eq!(scroller["onScreen"], true);
         assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"(() => {
             scroller.scrollTo(1e9,1e9);
             if (scroller.scrollLeft !== 280 || scroller.scrollTop !== 220 || scrollY !== 0) return false;

@@ -1,6 +1,10 @@
 # Layout measurements
 
-Elements expose `getBoundingClientRect()`, backed by Blitz's viewport-relative bounding calculation:
+Elements expose `getBoundingClientRect()`, backed by Blitz's viewport-relative
+layout with a correction for the pinned version's own-scroll offset: a scroll
+container's border box stays fixed when its contents scroll. Ancestor and
+viewport scrolling still move descendant rectangles. Script client rectangles,
+intersection samples and AI page bounds share that correction.
 
 ```js
 const element = document.getElementById('panel');
@@ -8,6 +12,11 @@ element.style.width = '50%';
 const rect = element.getBoundingClientRect();
 console.log(rect.x, rect.y, rect.width, rect.height);
 ```
+
+The [representative fixtures](../examples/ui-fixtures/README.md) compare selected
+geometry and behaviors against a headless browser at two CSS viewport sizes.
+They retain both engines' measurements and PNGs, and fail on differences over
+1 CSS pixel; they do not claim pixel equality or physical-input acceptance.
 
 The returned `DOMRect` is a mutable snapshot in CSS pixels, with x/y/width/height, top/right/bottom/left, and `toJSON()`. Mutating it does not change the element. Construct `DOMRect` or `DOMRectReadOnly`, or use their `fromRect()` factory; negative dimensions produce the corresponding min/max edges.
 
