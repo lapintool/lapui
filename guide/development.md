@@ -1,5 +1,7 @@
 # Development and full reload
 
+The root [pnpm desktop workflow](desktop-workflow.md) starts the frontend watcher and Rust backend together, opens the UI window, and rebuilds/restarts Rust changes automatically. The direct cargo commands below remain useful for running a specific local page.
+
 Run a local application with native file watching:
 
 ```powershell
@@ -33,7 +35,7 @@ Application [change-feed cursors](changes.md) also survive document replacement.
 
 Rust embeddings can attach [action scopes](action-discovery.md) to a document. Successful replacement retires those scoped registrations and publishes catalog changes; direct application registrations remain. Already admitted calls and accepted jobs can finish. Register replacement actions again for the new document when using an embedding's own setup flow; scope retirement is not automatic migration of handlers.
 
-Source read/UTF-8/setup failures retain the usable document and return `reload_failed`. HTML and an explicit bundle are each limited to 32 MiB. `reloadStatus` stores the latest attempted reload and any error, including watched failures. Script evaluation failures follow first-launch behavior: the replacement is installed and reports script diagnostics. Startup code can invoke application actions, so reload is not a rollback boundary for those effects. Rust source edits still require recompilation.
+Source read/UTF-8/setup failures retain the usable document and return `reload_failed`. HTML and an explicit bundle are each limited to 32 MiB. `reloadStatus` stores the latest attempted reload and any error, including watched failures. Script evaluation failures follow first-launch behavior: the replacement is installed and reports script diagnostics. Startup code can invoke application actions, so reload is not a rollback boundary for those effects. Direct cargo runs require manual recompilation after Rust edits; pnpm dev handles that rebuild and process restart.
 
 Regression coverage includes repeated document replacement, module-cache refresh, stale control channels, shared state/viewport retention, native notification coalescing, failure recovery and watcher shutdown. Physical IME/focus handover, macOS and long-run memory/pause-time measurements still require platform testing.
 

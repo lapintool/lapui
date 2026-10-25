@@ -4,6 +4,7 @@
 
 - [Getting started](getting-started.md)
 - [Development and full reload](development.md)
+- [Root pnpm desktop workflow](desktop-workflow.md)
 - [JavaScript modules](modules.md)
 - [Task scheduling](scheduling.md)
 - [Layout measurements](geometry.md)

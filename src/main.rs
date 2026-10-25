@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc::Sender, Mutex, OnceLock};
 use std::time::Duration;
@@ -583,6 +583,11 @@ fn save_screenshot_response(
     Ok(metadata)
 }
 
+fn bundled_html_path(executable: &Path) -> Option<PathBuf> {
+    let html = executable.parent()?.join("app").join("index.html");
+    html.is_file().then_some(html)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
@@ -721,6 +726,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(feature = "software-renderer"))]
     if software_renderer || snapshot_path.is_some() {
         return Err("CPU rendering requires rebuilding with --features software-renderer".into());
+    }
+    // A packaged desktop application loads the resources shipped beside its
+    // executable. Explicit sources/demos retain their existing CLI behavior.
+    if html_path.is_none() && js_path.is_none() && !demo_files && !demo_local_files {
+        html_path = bundled_html_path(&std::env::current_exe()?);
     }
     let actions = if demo_local_files {
         lapui::local_files::actions(directory_path.as_ref().unwrap())?

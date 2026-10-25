@@ -12,6 +12,16 @@ The commands and examples below are for developers evaluating the prototype. The
 
 ## Try the prototype
 
+For the complete Lapstyle UI desktop application, run these commands from the repository root:
+
+| Command | Action |
+| --- | --- |
+| pnpm dev | Build/watch the frontend and Rust backend, then open the UI window. |
+| pnpm release | Build the release executable and its frontend resources into dist/lapui-windows-x64. |
+| pnpm build | Build the release directory and a Windows setup EXE under dist. |
+
+The workflow uses Node.js 24+, pnpm 11.8.0 and the frontend configured in lapui.config.json (the sibling Web/lapstyle-ui checkout by default). See the [desktop workflow](guide/desktop-workflow.md) for setup, reload behavior, renderer selection and packaging details.
+
 On Windows with a Rust MSVC toolchain:
 
 ```powershell

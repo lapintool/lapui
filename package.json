@@ -1,0 +1,15 @@
+{
+  "name": "lapui-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.8.0",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "dev": "node scripts/desktop.mjs dev",
+    "release": "node scripts/desktop.mjs release",
+    "build": "node scripts/desktop.mjs build",
+    "setup:installer": "node scripts/desktop.mjs setup",
+    "doctor": "node scripts/desktop.mjs doctor"
+  }
+}

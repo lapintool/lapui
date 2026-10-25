@@ -12,6 +12,16 @@ Lapui 是一个使用 Rust 编写的桌面 UI 运行时实验。它用 Blitz 渲
 
 ## 运行原型
 
+在本项目根目录可以直接使用以下命令运行完整的 lapstyle-ui 桌面界面：
+
+| 命令 | 作用 |
+| --- | --- |
+| pnpm dev | 构建并监听前端和 Rust 后端，打开 UI 窗口。 |
+| pnpm release | 构建发布版 EXE 和前端资源，输出到 dist/lapui-windows-x64。 |
+| pnpm build | 构建发布目录，并在 dist 下生成 Windows 安装程序。 |
+
+此工作流使用 Node.js 24+、pnpm 11.8.0，以及 lapui.config.json 指定的前端（默认是相邻 Web 目录下的 lapstyle-ui）。配置方式、自动重载、CPU/GPU 选择和安装包说明见[桌面开发与打包工作流](guide/desktop-workflow.md)。
+
 在 Windows 上安装 Rust MSVC 工具链后执行：
 
 ```powershell
