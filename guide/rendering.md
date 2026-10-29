@@ -1,15 +1,56 @@
 # Rendering and document images
 
-Default builds use Vello CPU with Softbuffer to paint the Blitz document into an operating-system window surface. This avoids the compute-GPU initialization overhead seen in the original prototype. HTML/CSS parsing, layout, font shaping, DOM, QuickJS and application actions use the same runtime. The GPU renderer remains available:
+Direct executable/cargo launches default to Vello CPU with Softbuffer when the software-renderer feature is enabled. The root pnpm development workflow selects GPU in lapui.config.json for the large Lapstyle UI workload. At 4K, CPU rasterization runs on the UI thread and can delay input. Both paths share HTML/CSS parsing, layout, font shaping, DOM, QuickJS and application actions. Select either backend explicitly:
 
 ```powershell
 cargo run --release --locked -- --renderer gpu
 cargo run --release --locked -- --demo files --renderer cpu
 ```
 
-The CPU path uses [AnyRender Vello CPU](https://docs.rs/anyrender_vello_cpu/0.17.0/anyrender_vello_cpu/), with pinned versions in Cargo.lock. This is an upstream renderer, not a Lapui browser engine fork. Software rendering is opaque at the window surface; transparent windows and complete CSS filter/renderer equivalence are not verified. Frame performance, large complex scenes, and physical desktop input still need broader testing. System fonts affect output across platforms.
+The CPU path uses [AnyRender Vello CPU](https://docs.rs/anyrender_vello_cpu/0.18.0/anyrender_vello_cpu/), with pinned versions in Cargo.lock. Software rendering is opaque at the window surface; transparent windows and complete CSS filter/renderer equivalence are not verified. GPU initialization has no automatic CPU fallback; explicitly select cpu on unsupported machines. Frame performance, large complex scenes, and physical desktop input still need broader testing. System fonts affect output across platforms.
 
 The `software-renderer` Cargo feature includes the CPU window backend and offscreen PNG support, and is enabled by default. `--no-default-features` removes both the CPU feature and CJK dictionary line-break data; that build runs the original GPU backend. Smaller executable size alone does not imply lower process memory. To retain CPU drawing while omitting that dictionary data, use `--no-default-features --features software-renderer`.
+
+## Investigating interaction latency and missing content
+
+Synchronous geometry and computed-style reads reuse a resolved layout while
+the document and layout timestamp are unchanged. Mutable DOM access, native
+input, viewport updates and resource/poll checkpoints invalidate that result.
+Computed-style property enumeration also reuses its names within a resolved
+generation, while remaining live after style changes. This avoids repeatedly
+running layout when a positioning library reads several metrics together.
+The fractional-border paint compensation only saves/restores nodes whose
+rounded and unrounded border widths actually differ.
+
+To measure the running full Lapstyle UI application, use English navigation
+labels and the control address printed by pnpm dev:
+
+```powershell
+.\scripts\measure-lapstyle-ui.ps1 -Address 127.0.0.1:PORT -Exercise -IdleSeconds 2 -OutputPath target\interaction-report.json
+```
+
+The report includes viewport dimensions, scene/callback/renderer times,
+retained layout reads, and idle CPU/frame counts. Semantic request latency
+includes control snapshot and protocol work; renderer return does not confirm
+physical monitor presentation. Trace eviction is explicitly reported, and
+retained frame/layout counts are incomplete when it occurs. Compare the same
+viewport, zoom, backend, frontend build and operation order.
+
+The optional full-application integration check can save a built-in Table
+image and native geometry diagnostics:
+
+```powershell
+$env:LAPUI_LAPSTYLE_HTML = (Resolve-Path target/desktop/dev/app/index.html).Path
+$env:LAPUI_DIAGNOSTICS_DIR = (Join-Path (Get-Location) 'target/table-diagnostics')
+cargo +1.99.0 test --locked lapstyle_ui_full_application_mounts_and_navigates -- --ignored --nocapture
+```
+
+This check verifies all eight table examples exist and occupy space, and the
+API table columns fit their grid without overlapping following text. It uses
+the existing frontend build, rather than rebuilding that external project.
+The missing static tables came from Lapui's reused-template DOM handling;
+the responsive columns and intrinsic Grid height required separately tracked
+Taffy fixes. See the [patch ledger](upstream-compatibility-patches.md).
 
 Export the current document without creating a window or GPU context:
 
@@ -59,7 +100,7 @@ fn debug_image(document: &mut LapuiDocument) -> Result<(), String> {
 `Screenshot` owns its pixels, so encoding and saving remain valid after later
 document mutations or teardown. Capture polls pending work and paints one
 animation opportunity; it does not wait for all asynchronous work. Dimensions
-are limited to 8192 per axis and 4 megapixels. The `document_epoch` identifies
+are limited to 8192 per axis and 16 megapixels, allowing native 4K window captures. The `document_epoch` identifies
 the document instance, and is not a DOM revision. Capturing advances rendering
 callbacks, so it is not a passive copy of the last presented window frame.
 

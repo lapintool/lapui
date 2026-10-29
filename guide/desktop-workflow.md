@@ -20,14 +20,14 @@ The tracked lapui.config.json selects:
 
 - frontendDirectory: ../../Web/lapstyle-ui, relative to this repository.
 - rustToolchain: 1.99.0.
-- renderer: cpu for development.
+- renderer: gpu for development. The 4K Lapstyle UI workload is expensive to rasterize on the UI thread with the CPU backend; GPU drawing reduces that part of the frame cost.
 
 On the development machine, this resolves to C:\Dev\Projects\Web\lapstyle-ui. Other checkout locations can use a command-line override:
 
     pnpm dev --frontend C:\Other\lapstyle-ui
-    pnpm dev --renderer gpu
+    pnpm dev --renderer cpu
 
-The corresponding environment variables are LAPUI_FRONTEND_DIR, LAPUI_RUST_TOOLCHAIN, and LAPUI_RENDERER. Command-line arguments take precedence over environment variables, followed by the config file. Use pnpm --dir <frontend-directory> install if the frontend's dependencies are missing.
+The corresponding environment variables are LAPUI_FRONTEND_DIR, LAPUI_RUST_TOOLCHAIN, and LAPUI_RENDERER. Command-line arguments take precedence over environment variables, followed by the config file. Use pnpm --dir <frontend-directory> install if the frontend's dependencies are missing. If the GPU backend cannot initialize on a machine, explicitly select cpu; automatic GPU fallback is not implemented. Direct cargo/executable launches still default to CPU when the software-renderer feature is enabled; pass --renderer gpu for the same backend as pnpm dev.
 
 ## Development
 
@@ -35,7 +35,7 @@ The corresponding environment variables are LAPUI_FRONTEND_DIR, LAPUI_RUST_TOOLC
 
 Frontend development uses Vite's watched local build. Lapui loads the generated local files rather than Vite's browser development-server protocol. After a successful frontend build, the parent process requests a complete document reload through Lapui's local control endpoint. Reload is requested only after the bundle and plugin assets have finished writing. Frontend drafts and focus reset on reload.
 
-The initial launch runs frontend type checking once. Subsequent watched builds report bundling errors; release/build run the full type check again. Rust source files under src, Cargo.toml, Cargo.lock, and build.rs are watched. Saving Rust changes stops the current window, compiles again, and opens the rebuilt program; compile errors remain in the terminal until a later save retries the build.
+The initial launch runs frontend type checking once. Subsequent watched builds report bundling errors; release/build run the full type check again. Rust sources under src, the embedded JavaScript bridge under ui, vendored Taffy sources, Cargo.toml, Cargo.lock, and build.rs are watched. Saving these changes stops the current window, compiles again, and opens the rebuilt program; compile errors remain in the terminal until a later save retries the build.
 
 The terminal prints LAPUI_CONTROL=127.0.0.1:<port>. That address changes when the Rust process restarts. Existing diagnostics, controls, screenshot, and reload commands remain available. Close the UI window or press Ctrl+C in the development terminal to stop the backend and frontend watcher together.
 

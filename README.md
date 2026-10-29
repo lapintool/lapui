@@ -4,9 +4,9 @@
 
 Lapui is an experimental desktop UI runtime written in Rust. It combines Blitz for HTML/CSS rendering with QuickJS-ng for JavaScript, aiming to support local interfaces without bundling Chromium or requiring a system WebView.
 
-**Project status: paused (October 2026).** The prototype has major rendering mismatches on real frontend interfaces, including tables, and significant interaction gaps. Passing automated tests and mounting example/component pages do not mean that a usable or browser-compatible UI has been achieved. Do not use this build for production or user-facing applications.
+**Project status: experimental; compatibility and performance work resumed on October 30, 2026.** The prototype still has rendering mismatches and interaction gaps on real frontend interfaces. Passing automated tests and mounting example/component pages do not establish broad browser compatibility or production readiness.
 
-Development is paused while the underlying rendering and layout dependencies mature. The current branch pins an unreleased Blitz source snapshot and carries Lapui compatibility patches; this is an evaluation baseline, not a stable dependency release. Work may resume after upstream table/layout/rendering behavior has matured enough to reduce these patches, followed by a fresh compatibility review and real-application visual and interaction testing. See the [compatibility matrix](guide/compatibility.md), [upstream compatibility patch ledger](guide/upstream-compatibility-patches.md), and [known limitations](guide/limitations.md) for the verified subset and gaps.
+Current work targets real Lapstyle UI failures: omitted Vue static content, repeated synchronous layout work, and responsive Grid/table layout. The branch pins an unreleased Blitz source snapshot and carries bounded compatibility patches, including a documented upstream Taffy fix. This remains an evaluation baseline. See the [compatibility matrix](guide/compatibility.md), [upstream compatibility patch ledger](guide/upstream-compatibility-patches.md), and [known limitations](guide/limitations.md).
 
 The commands and examples below are for developers evaluating the prototype. They demonstrate selected runtime paths only; they do not imply production readiness or broad frontend compatibility.
 

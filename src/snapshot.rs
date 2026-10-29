@@ -73,7 +73,7 @@ impl Screenshot {
 /// or color scheme. Polls pending work and paints one animation opportunity;
 /// callers supply their own application-ready condition. Requires the default
 /// `software-renderer` feature. Captures are limited to 8192 per dimension and
-/// 4 megapixels, independently of the MCP transport's PNG byte budget.
+/// 16 megapixels, independently of the MCP transport's PNG byte budget.
 pub fn capture(document: &mut LapuiDocument) -> Result<Screenshot, String> {
     document.poll(None);
     capture_without_poll(document)
@@ -82,7 +82,7 @@ pub fn capture(document: &mut LapuiDocument) -> Result<Screenshot, String> {
 pub(crate) fn capture_without_poll(document: &mut LapuiDocument) -> Result<Screenshot, String> {
     let viewport = document.inner().viewport().clone();
     let (width, height) = viewport.window_size;
-    validate_dimensions(width, height, 4 * 1024 * 1024)?;
+    validate_dimensions(width, height, 16 * 1024 * 1024)?;
     let scale_factor = viewport.scale_f64();
     let rgba = render_current_layout(document, width, height, scale_factor)?;
     Ok(Screenshot {

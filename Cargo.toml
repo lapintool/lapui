@@ -61,6 +61,11 @@ blitz-shell = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f
 blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
 stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
 
+# Keep Blitz's Taffy API baseline, with bounded Grid track and block-size fixes.
+# See vendor/taffy/LAPUI-PATCHES.md before updating or removing this override.
+[patch."https://github.com/DioxusLabs/taffy"]
+taffy = { path = "vendor/taffy" }
+
 # Software rasterization and style/layout run on the UI thread. Unoptimized
 # dependency code can take seconds per frame, starving input even in dev builds.
 # Keep debug information and assertions while optimizing the execution path.

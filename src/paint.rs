@@ -85,25 +85,18 @@ fn collect_layout_nodes(
     let Some(node) = document.get_node(id) else {
         return;
     };
-    let children = node.children.clone();
     if node.try_stylo_element_data().is_some() {
-        output.push((
-            id,
-            [
-                node.final_layout().border.left,
-                node.final_layout().border.right,
-                node.final_layout().border.top,
-                node.final_layout().border.bottom,
-            ],
-            [
-                node.unrounded_layout().border.left,
-                node.unrounded_layout().border.right,
-                node.unrounded_layout().border.top,
-                node.unrounded_layout().border.bottom,
-            ],
-        ));
+        let rounded = node.final_layout().border;
+        let raw = node.unrounded_layout().border;
+        let rounded = [rounded.left, rounded.right, rounded.top, rounded.bottom];
+        let raw = [raw.left, raw.right, raw.top, raw.bottom];
+        // Most nodes have no border, or an already exact border width. Avoid
+        // saving and mutably revisiting those nodes twice on every frame.
+        if rounded != raw {
+            output.push((id, rounded, raw));
+        }
     }
-    for child in children {
+    for child in node.children.iter().copied() {
         collect_layout_nodes(document, child, output);
     }
 }

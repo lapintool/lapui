@@ -4,6 +4,7 @@ use crate::debug_trace::{DebugTrace, Span};
 use crate::fetch_work::{FetchRequest, FetchWork};
 use crate::frames::Frames;
 use crate::host_work::HostWork;
+use crate::layout_document::LayoutDocument;
 use crate::lifecycle::Cancellation;
 use crate::script_budget::{
     ScriptBudget, CALLBACK_LIMIT, CHECKPOINT_SLICE, INTERRUPTED_MESSAGE, LARGE_STARTUP_LIMIT,
@@ -350,7 +351,7 @@ struct MutationBatch {
     pending: Vec<DomMutation>,
 }
 
-fn apply_mutations(dom: &Rc<RefCell<BaseDocument>>, mutations: Vec<DomMutation>) {
+fn apply_mutations(dom: &Rc<LayoutDocument>, mutations: Vec<DomMutation>) {
     if mutations.is_empty() {
         return;
     }
@@ -599,7 +600,7 @@ pub struct LapuiDocument {
     debug_trace: DebugTrace,
     actions: ActionRegistry,
     action_scopes: Vec<ActionScope>,
-    dom: Rc<RefCell<BaseDocument>>,
+    dom: Rc<LayoutDocument>,
     js_runtime: Runtime,
     js_context: Context,
     script_budget: ScriptBudget,
@@ -1596,7 +1597,7 @@ impl LapuiDocument {
         config: DocumentConfig,
         app_root: Option<PathBuf>,
     ) -> Result<(Self, mpsc::Sender<Result<Value, String>>), String> {
-        let dom = Rc::new(RefCell::new(
+        let dom = Rc::new(LayoutDocument::new(
             HtmlDocument::from_html(html, config).into_inner(),
         ));
         let debug_trace = DebugTrace::new();
@@ -1836,6 +1837,13 @@ impl LapuiDocument {
                         .map_or_else(String::new,|id|canonical_node_ref(doc.id(),id))
                 }))?;
                 let computed_dom = dom.clone();
+                let generation_dom = dom.clone();
+                let generation_batch = mutation_batch.clone();
+                let generation_frames = frames.clone();
+                globals.set("__lapui_layout_generation", Func::from(move || -> u64 {
+                    flush_layout(&generation_dom, &generation_batch, &generation_frames);
+                    generation_dom.generation()
+                }))?;
                 let computed_frames = frames.clone();
                 let computed_batch = mutation_batch.clone();
                 globals.set("__lapui_computed_value",Func::from(move |reference: String,name: String| -> String {
@@ -3420,7 +3428,7 @@ fn stream_value<'js>(
 }
 
 fn flush_layout(
-    dom: &Rc<RefCell<BaseDocument>>,
+    dom: &Rc<LayoutDocument>,
     batch: &Rc<RefCell<MutationBatch>>,
     frames: &Rc<RefCell<Frames>>,
 ) {
@@ -3429,11 +3437,15 @@ fn flush_layout(
     if !pending.is_empty() {
         apply_mutations(dom, pending);
     }
+    let time = frames.borrow().layout_time;
+    if dom.is_resolved(time) {
+        return;
+    }
     let span = frames
         .borrow()
         .debug_trace
         .span("layout_read", json!({}), None);
-    dom.borrow_mut().resolve(frames.borrow().layout_time);
+    dom.resolve(time);
     span.finish(json!({"outcome":"resolved"}), false);
 }
 
@@ -3706,6 +3718,8 @@ impl Document for LapuiDocument {
     }
 
     fn poll(&mut self, context: Option<TaskContext>) -> bool {
+        // Resource completions may have arrived since the preceding JS turn.
+        self.dom.invalidate();
         if let Some(context) = context {
             *self.waker.lock().unwrap() = Some(context.waker().clone());
         }
@@ -5235,6 +5249,61 @@ mod tests {
     }
 
     #[test]
+    fn cssom_reads_reuse_layout_and_stay_live_after_js_and_native_writes() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(), None,
+            "<html><head><style>html,body{margin:0}#box{width:50%;height:20px;--local:1}</style></head><body><div id='box'></div></body></html>",
+            "",
+        ).unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        doc.js_context.with(|ctx| ctx.eval::<(), _>(
+            "globalThis.box=document.getElementById('box');globalThis.computed=getComputedStyle(box);if(computed.width!=='400px')throw Error('initial width');"
+        )).unwrap();
+        let initial = doc.dom.generation();
+        doc.js_context.with(|ctx| ctx.eval::<(), _>(r#"
+            for(let i=0;i<300;i++) {
+                if(computed.width!=='400px' || box.clientWidth!==400 || box.getBoundingClientRect().width!==400) throw Error('stale geometry');
+            }
+            if(Object.keys(computed).length < 100 || !Array.from(computed).includes('--local')) throw Error('computed enumeration');
+        "#)).unwrap();
+        assert_eq!(
+            doc.dom.generation(),
+            initial,
+            "read-only CSSOM calls must not repeat layout"
+        );
+        doc.js_context.with(|ctx| ctx.eval::<(), _>(r#"
+            box.style.width='25%';
+            if(computed.width!=='200px' || box.getBoundingClientRect().width!==200) throw Error('write did not invalidate');
+            document.body.style.setProperty('--added','12px');
+            if(!Array.from(computed).includes('--added') || computed.getPropertyValue('--added')!=='12px') throw Error('inherited custom property names are stale');
+            document.body.style.removeProperty('--added');
+            if(Array.from(computed).includes('--added')) throw Error('removed custom property name is stale');
+        "#)).unwrap_or_else(|error| panic!("{}", javascript_error(&doc.js_context, &error, &doc.script_budget)));
+        assert!(doc.dom.generation() > initial);
+        doc.inner_mut()
+            .set_viewport(Viewport::new(1000, 600, 1.0, ColorScheme::Light));
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("computed.width"))
+                .unwrap(),
+            "250px"
+        );
+        let resized = doc.dom.generation();
+        doc.poll(None);
+        assert_eq!(
+            doc.js_context
+                .with(|ctx| ctx.eval::<String, _>("computed.width"))
+                .unwrap(),
+            "250px"
+        );
+        assert!(
+            doc.dom.generation() > resized,
+            "resource/poll checkpoints invalidate layout"
+        );
+    }
+
+    #[test]
     fn computed_style_reads_the_live_cascade_variables_shorthands_and_used_css_sizes() {
         let html = "<html><head><style>html,body{margin:0}body{color:rgb(12,34,56);font-size:16px;--Tone:rgb(255,0,0);--gap:5%}#box{width:50%;height:40px;padding:var(--gap);border:3px solid currentColor;background-color:var(--Tone);overflow:hidden auto;margin:10px 11px}#box.compact{width:120px;box-sizing:border-box;background-color:rgb(0,0,255)}@media(min-width:600px){#box{width:75%}}</style></head><body><div id='box'>content</div><span id='inline'>inline</span></body></html>";
         let (mut doc, _) =
@@ -5635,6 +5704,61 @@ mod tests {
                 40.0, 100.0, 20.0, 100.0, 40.0, 200.0, 20.0, 300.0, 40.0, 300.0, 20.0,
             ]
         );
+    }
+
+    #[test]
+    fn auto_fit_grid_accepts_css_math_tracks_and_reflows_on_resize() {
+        let html = r#"<html><head><style>
+            html,body{margin:0}
+            #grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:12px;width:100%}
+            .item{height:40px}
+        </style></head><body><div id='grid'><div id='a' class='item'></div><div id='b' class='item'></div></div></body></html>"#;
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(1100, 600, 1.0, ColorScheme::Light));
+        let measure = "(() => {const r=id=>document.getElementById(id).getBoundingClientRect(); return [r('a').width,r('a').y,r('b').x,r('b').y,r('grid').height];})()";
+        let wide: Vec<f64> = doc.js_context.with(|ctx| ctx.eval(measure)).unwrap();
+        assert_eq!(wide, vec![544.0, 0.0, 556.0, 0.0, 40.0]);
+        doc.inner_mut()
+            .set_viewport(Viewport::new(240, 600, 1.0, ColorScheme::Light));
+        let narrow: Vec<f64> = doc.js_context.with(|ctx| ctx.eval(measure)).unwrap();
+        assert_eq!(narrow, vec![240.0, 0.0, 0.0, 52.0, 92.0]);
+    }
+
+    #[test]
+    fn grid_flex_items_preserve_intrinsic_block_height_unless_min_height_is_zero() {
+        for (rows, header, expected) in [("auto", "", 400.0), ("50px 1fr", "<div></div>", 450.0)] {
+            let html = format!(
+                r#"<html><head><style>
+                html,body{{margin:0}}
+                #main{{display:flex;flex-direction:column;width:600px;height:200px;overflow:auto}}
+                #grid{{display:grid;grid-template-rows:{rows}}}
+                #scroll{{overflow:auto}} #content{{height:400px}}
+            </style></head><body><div id='main'><div id='grid'>{header}<div id='scroll'><div id='content'></div></div></div></div></body></html>"#
+            );
+            let (mut doc, _) =
+                LapuiDocument::new_with_source(ActionRegistry::default(), None, &html, "").unwrap();
+            doc.inner_mut()
+                .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+            let height: f64 = doc
+                .js_context
+                .with(|ctx| {
+                    ctx.eval("document.getElementById('grid').getBoundingClientRect().height")
+                })
+                .unwrap();
+            assert_eq!(
+                height, expected,
+                "intrinsic Grid height for {rows} collapsed"
+            );
+            let opted_out: f64 = doc.js_context.with(|ctx| ctx.eval(
+                "document.getElementById('grid').style.minHeight='0';document.getElementById('grid').getBoundingClientRect().height"
+            )).unwrap();
+            assert_eq!(
+                opted_out, 200.0,
+                "explicit min-height:0 must still allow shrinking"
+            );
+        }
     }
 
     #[test]
@@ -7533,6 +7657,50 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(&result).unwrap(),
             json!({"svg":"svg","path":"path","mounted":"Ready","fragmentEmpty":true})
+        );
+    }
+
+    #[test]
+    fn reused_templates_mount_every_static_table_and_clone_their_content() {
+        let (doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body><main id='mount'></main></body></html>",
+            "",
+        )
+        .unwrap();
+        let result: String = doc.js_context.with(|ctx| ctx.eval(r#"
+            (() => {
+              const template = document.createElement('template');
+              const fragment = template.content;
+              const mount = document.getElementById('mount');
+              for (let i = 0; i < 8; i++) {
+                template.innerHTML = `<div class="ls-table"><table><tbody><tr><td>${i}</td></tr></tbody></table></div>`;
+                if (template.content !== fragment || template.childNodes.length !== 0)
+                  throw new Error('template content identity or isolation changed');
+                mount.insertBefore(template.content, null);
+              }
+              template.innerHTML = '<p>discarded</p>';
+              template.innerHTML = '<p>retained</p>';
+              const clone = template.cloneNode(true);
+              mount.appendChild(clone.content);
+              const sourceHTML = template.innerHTML;
+              template.innerHTML = '';
+              return JSON.stringify({
+                cells: Array.from(mount.querySelectorAll('td')).map(el => el.textContent),
+                sourceHTML, cloneEmpty: clone.content.childNodes.length === 0,
+                sourceEmpty: template.content.childNodes.length === 0,
+                clonedText: mount.lastChild.textContent
+              });
+            })()
+        "#)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&result).unwrap(),
+            json!({
+                "cells":["0","1","2","3","4","5","6","7"],
+                "sourceHTML":"<p>retained</p>", "cloneEmpty":true,
+                "sourceEmpty":true, "clonedText":"retained"
+            })
         );
     }
 
@@ -10031,6 +10199,33 @@ mod tests {
                     eprintln!("Lapstyle {section}: CPU frame {:.2} ms; navigation through render {:.2} ms",
                         paint_started.elapsed().as_secs_f64() * 1000.0,
                         navigation_started.elapsed().as_secs_f64() * 1000.0);
+                    if section == "table" {
+                        assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(
+                            "document.querySelectorAll('.demo-panel--table .ls-table').length === 8 && Array.from(document.querySelectorAll('.demo-panel--table .ls-table')).every(el => el.querySelector('td') && el.getBoundingClientRect().height > 40)"
+                        )).unwrap(), "all eight table examples must mount and occupy space");
+                        assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(r#"
+                            (() => {
+                              const grid = document.querySelector('.demo-api__grid');
+                              const bounds = grid.getBoundingClientRect();
+                              const columns = Array.from(grid.children).map(el => el.getBoundingClientRect());
+                              return columns.length === 2 && columns[1].x > columns[0].right &&
+                                columns.every(rect => rect.bottom <= bounds.bottom + 1) &&
+                                document.querySelector('.demo-api__css').getBoundingClientRect().y >= bounds.bottom - 1;
+                            })()
+                        "#)).unwrap(), "API tables must fit their grid and not overlap following text");
+                        if let Some(directory) = std::env::var_os("LAPUI_DIAGNOSTICS_DIR") {
+                            let directory = PathBuf::from(directory);
+                            std::fs::create_dir_all(&directory).unwrap();
+                            shot.save_png(directory.join("lapstyle-table.png")).unwrap();
+                            let geometry = doc.js_context.with(|ctx| ctx.eval::<String, _>(r#"
+                                JSON.stringify(Array.from(document.querySelectorAll('.ls-table')).slice(0,8).map(el=>{
+                                  const rect=el=>{const r=el.getBoundingClientRect();const s=getComputedStyle(el);return {tag:el.tagName,cls:el.className,x:r.x,y:r.y,width:r.width,height:r.height,cssWidth:s.width,cssHeight:s.height,display:s.display,overflow:s.overflow};};
+                                  return {parents:[rect(el),rect(el.parentElement),rect(el.parentElement.parentElement)],table:rect(el.querySelector('table')),cells:Array.from(el.querySelectorAll('th,td')).slice(0,9).map(rect)};
+                                }))
+                            "#)).unwrap();
+                            std::fs::write(directory.join("lapstyle-table-geometry.json"), geometry).unwrap();
+                        }
+                    }
                 }
                 let state = doc.js_context.with(|ctx| ctx.eval::<String, _>(
                     "JSON.stringify({heading:document.querySelector('.demo-section-title')?.textContent,errors:lapui.diagnostics()})"

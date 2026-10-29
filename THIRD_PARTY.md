@@ -2,6 +2,8 @@
 
 Lapui's `MIT OR Apache-2.0` choice applies to Lapui's original files. It does not replace the licenses of dependencies.
 
+`vendor/taffy` contains MIT-licensed Taffy 0.14.0 runtime sources pinned to upstream commit `ceb7443d386fc5cc67a1f72b51f7bf505439dff8`, with bounded backports of upstream Grid fixes #1320 and #1284. Its original license, provenance, manifest adjustments and patch removal conditions are retained in that directory. The portable package includes its license as `licenses/taffy-LICENSE`. The exact active rendering dependency group is recorded in [the compatibility ledger](guide/upstream-compatibility-patches.md).
+
 The frame-aware shell uses the already shared AnyRender 0.13.0 (`MIT OR Apache-2.0`) and winit 0.31.0-beta.2 (`Apache-2.0`) APIs directly. It wraps Blitz window handling without vendoring or modifying its source.
 
 Native development file notifications use notify 8.2.0 (`CC0-1.0`); its platform adapters and other dependencies retain their own upstream terms.

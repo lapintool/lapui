@@ -198,7 +198,9 @@ async function dev() {
   try {
     await Promise.all([typecheck(), firstBuild, run(...cargo('build', '--locked'))]);
     if (closing) return;
-    watchers.push(watchFiles(join(root, 'src'), { recursive: true }, changed));
+    for (const directory of ['src', 'ui', 'vendor/taffy/src']) {
+      watchers.push(watchFiles(join(root, directory), { recursive: true }, changed));
+    }
     for (const filename of ['Cargo.toml', 'Cargo.lock', 'build.rs']) {
       watchers.push(watchFiles(join(root, filename), changed));
     }
@@ -248,6 +250,7 @@ async function release() {
     await cp(join(root, name), join(packageDirectory, name), { recursive: true });
   }
   await cp(join(root, 'licenses'), join(packageDirectory, 'licenses'), { recursive: true });
+  await cp(join(root, 'vendor/taffy/LICENSE'), join(packageDirectory, 'licenses', 'taffy-LICENSE'));
   if (await exists(join(frontend, 'LICENSE'))) {
     await cp(join(frontend, 'LICENSE'), join(packageDirectory, 'licenses', 'frontend-LICENSE'));
   }

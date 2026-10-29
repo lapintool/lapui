@@ -12,6 +12,7 @@ mod forms;
 mod frames;
 mod geometry;
 mod host_work;
+mod layout_document;
 mod lifecycle;
 pub mod local_files;
 pub mod mcp;

@@ -195,6 +195,18 @@
       this.__ref = reference;
       const localName = tagName || __lapui_tag(reference);
       this.tagName = __lapui_namespace(reference) === 'http://www.w3.org/1999/xhtml' ? localName.toUpperCase() : localName;
+      if (this.tagName === 'TEMPLATE') {
+        let content = null;
+        Object.defineProperty(this, 'content', {
+          get() {
+            if (!content) {
+              content = document.createDocumentFragment();
+              for (const child of this.childNodes.slice()) content.appendChild(child);
+            }
+            return content;
+          }
+        });
+      }
       const cssName = name => name.startsWith('--') ? name : name.replace(/[A-Z]/g, char => `-${char.toLowerCase()}`);
       const cssValue = name => __lapui_get_style(reference, String(name)).replace(/\s*!important\s*$/i, '').trim();
       const style = {
@@ -450,10 +462,14 @@
       if (ownershipBatchDepth) pendingOwnership.add(this);
       else syncChildren(this);
     }
-    get innerHTML() { return __lapui_get_inner_html(this.__ref); }
+    get innerHTML() { return __lapui_get_inner_html(this.tagName === 'TEMPLATE' ? this.content.__ref : this.__ref); }
     set innerHTML(value) {
+      // Vue reuses one template for every static block. Keep its content
+      // fragment's identity while replacing its nodes on every assignment.
+      const content = this.tagName === 'TEMPLATE' ? this.content : null;
       if (!__lapui_set_inner_html(this.__ref, String(value))) throw new Error('innerHTML update failed');
       syncChildren(this);
+      if (content) content.replaceChildren(...this.childNodes);
       globalThis.__lapui_form_tree?.(this);
     }
     get value() { return __lapui_get_value(this.__ref); }
@@ -472,10 +488,15 @@
       }
     }
     cloneNode(deep = false) {
+      const content = this.tagName === 'TEMPLATE' ? this.content : null;
       const reference = __lapui_clone(this.__ref, Boolean(deep));
       if (!reference) throw new Error('cloneNode failed');
       if (this.nodeType === 11) documentFragments.add(reference);
-      return getElement(reference);
+      const clone = getElement(reference);
+      if (content && deep) {
+        for (const child of content.childNodes) clone.content.appendChild(child.cloneNode(true));
+      }
+      return clone;
     }
     appendChild(child) {
       if (child?.nodeType === 11) {
@@ -998,7 +1019,18 @@
   globalThis.getComputedStyle = (element, pseudo = null) => {
     if (!(element instanceof Element) || element.nodeType !== 1) throw new TypeError('getComputedStyle requires an Element');
     if (pseudo !== null && String(pseudo) !== '') throw new DOMException('Pseudo-element style queries are not supported','NotSupportedError');
-    const names = () => __lapui_computed_names(element.__ref);
+    // Enumeration invokes ownKeys and then a descriptor lookup for every
+    // property. Reuse the names within a resolved layout generation, while
+    // preserving live custom-property additions/removals after mutations.
+    let namesGeneration = -1, cachedNames;
+    const names = () => {
+      const generation = __lapui_layout_generation();
+      if (generation !== namesGeneration) {
+        cachedNames = __lapui_computed_names(element.__ref);
+        namesGeneration = generation;
+      }
+      return cachedNames;
+    };
     const value = name => __lapui_computed_value(element.__ref,String(name));
     const readonly = () => { throw new DOMException('Computed styles are read-only','NoModificationAllowedError'); };
     const style = {
@@ -1106,21 +1138,7 @@
       const tag = String(tagName).toLowerCase();
       const reference = __lapui_create_element(tag);
       if (!reference) throw new Error(`unsupported element name: ${tag}`);
-      const element = getElement(reference);
-      if (tag === 'template') {
-        let content = null;
-        Object.defineProperty(element, 'content', {
-          configurable: true,
-          get() {
-            if (!content) {
-              content = document.createDocumentFragment();
-              for (const child of element.childNodes.slice()) content.appendChild(child);
-            }
-            return content;
-          }
-        });
-      }
-      return element;
+      return getElement(reference);
     },
     createElementNS(namespace, qualifiedName) {
       if (namespace !== null && !['http://www.w3.org/1999/xhtml', 'http://www.w3.org/2000/svg', 'http://www.w3.org/1998/Math/MathML'].includes(String(namespace))) {

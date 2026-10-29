@@ -10,6 +10,7 @@ This ledger records where Lapui follows a pinned upstream implementation and whe
 | Stylo | `0.22.0` | Required by the selected Blitz snapshot. |
 | AnyRender | `0.14.0`, Vello `0.15.0`, CPU Vello `0.18.0` | Keeps the renderer trait graph aligned with the selected upstream snapshot. |
 | Winit | `0.31.0-beta.3` | Required by the selected Blitz shell snapshot. |
+| Taffy | `0.14.0` at `ceb7443d386fc5cc67a1f72b51f7bf505439dff8`, runtime sources in `vendor/taffy` | Keeps the existing Blitz API baseline and backports upstream Grid fixes #1320 and #1284. See P-GRID-CALC-001 and P-GRID-BLOCK-001. |
 
 The dependency graph is locked in `Cargo.lock`. The source upgrade passed the all-target Rust suite, the full `lapstyle-ui` mount/navigation check, and a GPU-only `cargo check --no-default-features --all-targets`. Those checks validate build and selected semantics; visual table and GPU presentation still require manual acceptance.
 
@@ -37,6 +38,34 @@ The dependency graph is locked in `Cargo.lock`. The source upgrade passed the al
 | Exit condition | Drop the local search when the upstream API follows CSSOM View's DOM-ancestor rule and the same regression passes against that implementation. |
 | Status | Active compatibility shim. |
 
+## P-GRID-CALC-001 — accept CSS math in auto-repeat Grid tracks
+
+| Field | Record |
+| --- | --- |
+| Symptom | Lapstyle UI's API tables use `repeat(auto-fit,minmax(min(280px,100%),1fr))`. Taffy rejected calc-backed track lengths as non-fixed, so wide windows produced implicit rows instead of responsive columns. |
+| Reproduction | `runtime::tests::auto_fit_grid_accepts_css_math_tracks_and_reflows_on_resize`, plus the Table page in the full Lapstyle UI integration test. |
+| Baseline and location | Taffy `ceb7443d386fc5cc67a1f72b51f7bf505439dff8`; `vendor/taffy/src/style/grid.rs`, `TrackSizingFunction::has_fixed_component`. Root Cargo patches only Taffy's Git source. |
+| Scope | Track validation for auto-fit/auto-fill Grid templates. No Lapstyle-specific selectors or CSS substitutions. |
+| Upstream | Backport of [Taffy #1320, commit 63779e5](https://github.com/DioxusLabs/taffy/commit/63779e56f482140d794b980734cbd2db45857f7a), adapted to the older CompactLength API. |
+| Exit condition | Adopt a compatible Blitz/Taffy group containing #1320; remove the Cargo source override and vendor directory after the same resize/geometry and real-app CPU/GPU checks pass. |
+| Status | Active bounded backport. Provenance, manifest-only packaging adjustments and original license are in `vendor/taffy/LAPUI-PATCHES.md`. |
+
+## Lapui DOM compatibility regression: reused template content
+
+Vue reuses a template element for static HTML insertion. Lapui formerly moved its children into `template.content` only once. Subsequent assignments left that fragment empty, silently omitting seven of Lapstyle's eight table examples. `ui/bridge.js` now replaces the stable content fragment on every innerHTML assignment, serializes that fragment, and preserves it when cloning a template. This is a Lapui DOM bridge fix, separate from upstream layout patches. The repeated-template regression and the full application's eight-table assertion must remain when changing the DOM implementation.
+
+## P-GRID-BLOCK-001 — preserve a Grid flex item's intrinsic block height
+
+| Field | Record |
+| --- | --- |
+| Symptom | API tables extend below a grid whose height collapses under column-flex pressure, overlapping the following text and examples. The reduced fixture also differs from headless Chrome's measured layout. |
+| Reproduction | `grid_flex_items_preserve_intrinsic_block_height_unless_min_height_is_zero` checks auto and fractional rows plus explicit shrinking. The full application check asserts API table columns fit inside their grid and do not overlap following text. |
+| Baseline and location | Taffy `ceb7443d386fc5cc67a1f72b51f7bf505439dff8`; `vendor/taffy/src/compute/grid/track_sizing.rs`, finite-growth-limit maximization and final expansion-space mapping. |
+| Scope | Intrinsic block-axis Grid sizing; inline-axis min-content constraints remain unchanged. |
+| Upstream | Backport of [Taffy #1284, commit e2fbe56](https://github.com/DioxusLabs/taffy/commit/e2fbe56495ea4c033329f2ed2e61c4cf0dee8154), plus a local extension of the same intrinsic block-size rule to finite-growth-limit auto-row maximization. The auto-row case still failed with the upstream change alone. |
+| Exit condition | Adopt a compatible dependency group containing #1284 and pass the same regressions and real-app CPU/GPU checks without the local override. |
+| Status | Active bounded backport; original sources and license are retained with P-GRID-CALC-001. |
+
 ## Upgrade review rules
 
 1. Evaluate a new upstream candidate with local behavior patches disabled where practical; verify fixes with the retained regression cases.
@@ -46,4 +75,4 @@ The dependency graph is locked in `Cargo.lock`. The source upgrade passed the al
 
 ## Current table coverage boundary
 
-The selected upstream snapshot passes fixed-layout `<colgroup>` geometry tests with long cell content, aligned header/body tracks, and a case combining `colspan` with `rowspan`. Lapui has not yet established broad automatic-layout, span-edge-case, or collapsed-border conflict conformance. The full application integration test confirms all Lapstyle UI sections, including its table page, mount and navigate without script diagnostics; it does not replace visual UI-01 inspection.
+The selected upstream snapshot passes fixed-layout `<colgroup>` geometry tests with long cell content, aligned header/body tracks, and a case combining `colspan` with `rowspan`. Lapui has not yet established broad automatic-layout, span-edge-case, or collapsed-border conflict conformance. The full application integration test checks all eight Lapstyle table examples actually exist and have positive dimensions, in addition to checking all sections mount without script diagnostics. Built-in screenshots and geometry diagnostics are available by setting `LAPUI_DIAGNOSTICS_DIR` for that test; this does not replace physical visual UI-01 inspection.

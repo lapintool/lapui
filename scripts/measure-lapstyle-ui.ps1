@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory)][string]$Address,
     [ValidateRange(1, 30)][int]$IdleSeconds = 5,
     [switch]$Exercise,
+    [string[]]$NavigationControls = @('Button', 'Dropdown', 'Slider', 'Menu', 'Table', 'Input'),
     [string]$OutputPath
 )
 
@@ -87,7 +88,7 @@ try {
     if ($Exercise) {
         $controls = Invoke-Control @{method='controls'}
         # Navigate through real Vue components using the app's semantic controls.
-        foreach ($name in @('Input', 'Card', 'Checkbox', 'Button', 'Input')) {
+        foreach ($name in $NavigationControls) {
             $target = $controls.controls | Where-Object { $_.name -eq $name -and $_.tag -eq 'a' } | Select-Object -First 1
             if (-not $target) { throw "Missing Lapstyle navigation control: $name (use English language)." }
             $cursor = (Invoke-Control @{method='debugTrace.read'; documentEpoch=$documentEpoch; limit=1}).latestSequence
@@ -104,6 +105,10 @@ try {
                 traceComplete=$script:traceComplete
                 frameMillis=@($frames | ForEach-Object { [math]::Round($_.data.durationMillis, 2) })
                 rendererMillis=@($frames | ForEach-Object { [math]::Round($_.data.rendererCallMillis, 2) })
+                sceneMillis=@($frames | ForEach-Object { [math]::Round($_.data.sceneBuildMillis, 2) })
+                callbackMillis=@($frames | ForEach-Object { [math]::Round($_.data.callbackPhaseMillis, 2) })
+                viewport=@($frames | ForEach-Object { [ordered]@{width=$_.data.width; height=$_.data.height} })
+                retainedLayoutReads=@($records | Where-Object { $_.kind -eq 'layout_read' -and $_.phase -eq 'end' }).Count
             })
             $controls = $operation
         }
