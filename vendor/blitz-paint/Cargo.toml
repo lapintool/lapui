@@ -1,0 +1,39 @@
+# Standalone manifest expanded from the pinned Blitz workspace. See LAPUI-PATCHES.md.
+[package]
+name = "blitz-paint"
+description = "Paint a Blitz Document using anyrender"
+documentation = "https://docs.rs/blitz-paint"
+version = "0.3.0-beta.2"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/dioxuslabs/blitz"
+repository = "https://github.com/dioxuslabs/blitz"
+categories = ["gui"]
+edition = "2024"
+rust-version = "1.91.0"
+
+[features]
+default = ["svg"]
+tracing = ["dep:tracing"]
+svg = ["dep:anyrender_svg", "dep:usvg", "blitz-dom/svg"]
+custom-widget = ["blitz-dom/custom-widget"]
+font-embolden = []
+apple-font-embolden = []
+scrollbars = ["blitz-dom/scrollbars"]
+
+[dependencies]
+anyrender = { "version" = "0.14.0" }
+anyrender_svg = { "version" = "0.15.0", "optional" = true }
+blitz-traits = { "version" = "=0.3.0-beta.2", "default-features" = false, "git" = "https://github.com/DioxusLabs/blitz", "rev" = "8b54d6d2930f654d75446e423b42033d323205f0" }
+blitz-dom = { "version" = "=0.3.0-beta.2", "default-features" = false, "git" = "https://github.com/DioxusLabs/blitz", "rev" = "8b54d6d2930f654d75446e423b42033d323205f0" }
+style = { "version" = "0.22.0", "package" = "stylo" }
+euclid = { "version" = "0.22" }
+taffy = { "git" = "https://github.com/DioxusLabs/taffy", "rev" = "ceb7443d386fc5cc67a1f72b51f7bf505439dff8", "default-features" = false, "features" = ["std", "flexbox", "flexbox_balance", "grid", "block_layout", "content_size", "calc", "detailed_layout_info"] }
+parley = { "git" = "https://github.com/linebender/parley", "rev" = "718dcb721941fd8e72128833122d31f5a4e80504", "default-features" = false, "features" = ["bytemuck", "std"] }
+skrifa = { "version" = "0.44", "default-features" = false, "features" = ["std"] }
+color = { "version" = "0.3" }
+peniko = { "version" = "0.6.0" }
+kurbo = { "version" = "0.13.1" }
+usvg = { "version" = "0.48.1", "optional" = true }
+bytemuck = { "version" = "1" }
+smallvec = { "version" = "1" }
+tracing = { "version" = "0.1.40", "optional" = true }

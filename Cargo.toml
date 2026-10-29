@@ -20,7 +20,7 @@ anyrender_vello_cpu = { version = "=0.18.0", optional = true, default-features =
 anyrender = "=0.14.0"
 base64 = "=0.23.1"
 data-url = "=0.3.2"
-blitz-paint = { version = "=0.3.0-beta.2", default-features = false, features = ["svg"] }
+blitz-paint = { version = "=0.3.0-beta.2", default-features = false, features = ["svg", "scrollbars"] }
 image = { version = "=0.25.10", optional = true, default-features = false, features = ["png"] }
 blitz = { version = "=0.3.0-beta.2", default-features = false, features = ["net"] }
 blitz-dom = { version = "=0.3.0-beta.2", default-features = false, features = ["system-fonts", "svg", "woff"] }
@@ -49,14 +49,15 @@ blitz-shell = { version = "=0.3.0-beta.2", default-features = false, features = 
 
 # Candidate upstream snapshot for U1 table/layout compatibility. Registry beta.2
 # lacks table-layout:fixed and column-group sizing already present on upstream
-# main at this pinned commit. Keep all in-repository Blitz crates on one source
-# revision; remove this override when an adequate registry release is adopted.
+# main at this pinned commit. Keep the Blitz family on this baseline; the local
+# DOM and paint packages retain that exact source plus documented bounded fixes.
+# See vendor/blitz-dom/LAPUI-PATCHES.md before upgrading this group.
 [patch.crates-io]
 blitz = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
-blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
+blitz-dom = { path = "vendor/blitz-dom" }
 blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
 blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
-blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
+blitz-paint = { path = "vendor/blitz-paint" }
 blitz-shell = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
 blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
 stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
@@ -65,6 +66,10 @@ stylo_taffy = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f
 # See vendor/taffy/LAPUI-PATCHES.md before updating or removing this override.
 [patch."https://github.com/DioxusLabs/taffy"]
 taffy = { path = "vendor/taffy" }
+
+[patch."https://github.com/DioxusLabs/blitz"]
+blitz-dom = { path = "vendor/blitz-dom" }
+blitz-paint = { path = "vendor/blitz-paint" }
 
 # Software rasterization and style/layout run on the UI thread. Unoptimized
 # dependency code can take seconds per frame, starving input even in dev builds.

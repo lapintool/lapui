@@ -198,7 +198,7 @@ async function dev() {
   try {
     await Promise.all([typecheck(), firstBuild, run(...cargo('build', '--locked'))]);
     if (closing) return;
-    for (const directory of ['src', 'ui', 'vendor/taffy/src']) {
+    for (const directory of ['src', 'ui', 'vendor/taffy/src', 'vendor/blitz-dom/src', 'vendor/blitz-dom/assets', 'vendor/blitz-paint/src']) {
       watchers.push(watchFiles(join(root, directory), { recursive: true }, changed));
     }
     for (const filename of ['Cargo.toml', 'Cargo.lock', 'build.rs']) {
@@ -251,6 +251,9 @@ async function release() {
   }
   await cp(join(root, 'licenses'), join(packageDirectory, 'licenses'), { recursive: true });
   await cp(join(root, 'vendor/taffy/LICENSE'), join(packageDirectory, 'licenses', 'taffy-LICENSE'));
+  for (const name of ['LICENSE-MIT', 'LICENSE-APACHE']) {
+    await cp(join(root, 'vendor/blitz-dom', name), join(packageDirectory, 'licenses', 'blitz-' + name));
+  }
   if (await exists(join(frontend, 'LICENSE'))) {
     await cp(join(frontend, 'LICENSE'), join(packageDirectory, 'licenses', 'frontend-LICENSE'));
   }

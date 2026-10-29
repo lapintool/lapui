@@ -99,4 +99,9 @@ fn collect_layout_nodes(
     for child in node.children.iter().copied() {
         collect_layout_nodes(document, child, output);
     }
+    // Generated boxes are not DOM children. Buttons, radio rings and custom
+    // checkboxes frequently draw their border on these pseudo elements.
+    for pseudo in [node.before(), node.after()].into_iter().flatten() {
+        collect_layout_nodes(document, pseudo, output);
+    }
 }

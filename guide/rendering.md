@@ -36,8 +36,8 @@ physical monitor presentation. Trace eviction is explicitly reported, and
 retained frame/layout counts are incomplete when it occurs. Compare the same
 viewport, zoom, backend, frontend build and operation order.
 
-The optional full-application integration check can save a built-in Table
-image and native geometry diagnostics:
+The optional full-application integration check can save built-in images of
+each section and its scrolled component examples, plus Table/Dialog geometry:
 
 ```powershell
 $env:LAPUI_LAPSTYLE_HTML = (Resolve-Path target/desktop/dev/app/index.html).Path
@@ -45,8 +45,11 @@ $env:LAPUI_DIAGNOSTICS_DIR = (Join-Path (Get-Location) 'target/table-diagnostics
 cargo +1.99.0 test --locked lapstyle_ui_full_application_mounts_and_navigates -- --ignored --nocapture
 ```
 
-This check verifies all eight table examples exist and occupy space, and the
-API table columns fit their grid without overlapping following text. It uses
+This check verifies all eight table examples exist and occupy space, the
+API table columns fit their grid without overlapping following text, dense
+inputs retain a line box, menus toggle twice, and a dialog opens and closes.
+Screenshots are CPU document captures; native GPU presentation and physical
+input remain separate manual acceptance cases. It uses
 the existing frontend build, rather than rebuilding that external project.
 The missing static tables came from Lapui's reused-template DOM handling;
 the responsive columns and intrinsic Grid height required separately tracked

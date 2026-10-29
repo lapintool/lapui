@@ -348,11 +348,28 @@
       const reference = __lapui_sibling(this.__ref, -1);
       return reference ? getElement(reference) : null;
     }
+    get nextElementSibling() {
+      let node = this.nextSibling;
+      while (node && node.nodeType !== 1) node = node.nextSibling;
+      return node;
+    }
+    get previousElementSibling() {
+      let node = this.previousSibling;
+      while (node && node.nodeType !== 1) node = node.previousSibling;
+      return node;
+    }
     get childNodes() { return JSON.parse(__lapui_children(this.__ref)).map(getElement); }
     get firstChild() { return this.childNodes[0] ?? null; }
     get lastChild() { return this.childNodes.slice(-1)[0] ?? null; }
     get children() { return this.childNodes.filter(child => child.nodeType === 1); }
+    get firstElementChild() { return this.children[0] ?? null; }
+    get lastElementChild() { return this.children.slice(-1)[0] ?? null; }
     get childElementCount() { return this.children.length; }
+    get hidden() { return this.hasAttribute('hidden'); }
+    set hidden(value) {
+      if (value) this.setAttribute('hidden', '');
+      else this.removeAttribute('hidden');
+    }
     contains(other) {
       for (let node = other; node; node = node.parentNode) if (node === this) return true;
       return false;

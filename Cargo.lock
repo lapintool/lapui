@@ -253,7 +253,6 @@ dependencies = [
 [[package]]
 name = "blitz-dom"
 version = "0.3.0-beta.2"
-source = "git+https://github.com/DioxusLabs/blitz?rev=8b54d6d2930f654d75446e423b42033d323205f0#8b54d6d2930f654d75446e423b42033d323205f0"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -319,7 +318,6 @@ dependencies = [
 [[package]]
 name = "blitz-paint"
 version = "0.3.0-beta.2"
-source = "git+https://github.com/DioxusLabs/blitz?rev=8b54d6d2930f654d75446e423b42033d323205f0#8b54d6d2930f654d75446e423b42033d323205f0"
 dependencies = [
  "anyrender",
  "anyrender_svg",

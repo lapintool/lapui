@@ -5249,6 +5249,79 @@ mod tests {
     }
 
     #[test]
+    fn component_element_traversal_and_hidden_reflect_the_native_tree() {
+        let (doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None,
+            "<html><body><main id='menu'>text<button id='item'></button><!--anchor-->gap<div id='sub' hidden>Child</div>tail</main></body></html>", "").unwrap();
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(r#"
+            (() => {
+              const menu=document.getElementById('menu'), item=document.getElementById('item'), sub=document.getElementById('sub');
+              if(menu.firstElementChild!==item || menu.lastElementChild!==sub || item.nextElementSibling!==sub || sub.previousElementSibling!==item || !sub.hidden) return false;
+              sub.hidden=false;
+              if(sub.hasAttribute('hidden')) return false;
+              sub.setAttribute('hidden','');
+              return sub.hidden && sub.nextElementSibling===null && item.previousElementSibling===null;
+            })()
+        "#)).unwrap());
+    }
+
+    #[test]
+    fn component_radio_has_checked_and_hover_rules_restyle_ancestors() {
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None,
+            r#"<html><head><style>html,body{margin:0}label{display:inline-block;width:80px;height:40px;--selected:no}label:has(:checked){--selected:yes}@media(any-hover:hover){label:hover{--hovered:yes}}</style></head><body><label id='one'><input id='a' type='radio' name='g'></label><label id='two'><input id='b' type='radio' name='g'></label></body></html>"#, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(400, 200, 1.0, ColorScheme::Light));
+        let states: String = doc.js_context.with(|ctx| ctx.eval(r#"
+            (()=>{
+              const a=document.getElementById('a'), b=document.getElementById('b');
+              const one=getComputedStyle(document.getElementById('one')),two=getComputedStyle(document.getElementById('two'));
+              const sample=()=>[a.checked,b.checked,one.getPropertyValue('--selected'),two.getPropertyValue('--selected'),document.getElementById('one').matches(':has(:checked)'),document.getElementById('two').matches(':has(:checked)')];
+              a.click(); const first=sample();
+              b.click(); return JSON.stringify([first,sample()]);
+            })()
+        "#)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&states).unwrap(),
+            json!([
+                [true, false, "yes", "no", true, false],
+                [false, true, "no", "yes", false, true]
+            ]),
+            "radio state must change ancestor :has() styling as well as native state"
+        );
+        doc.inner_mut().set_hover_to(50.0, 20.0);
+        assert!(doc
+            .js_context
+            .with(|ctx| {
+                ctx.eval::<bool,_>(
+            "getComputedStyle(document.getElementById('one')).getPropertyValue('--hovered')==='yes'"
+        )
+            })
+            .unwrap());
+    }
+
+    #[test]
+    fn component_empty_auto_height_text_inputs_keep_a_line_box() {
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None,
+            "<html><style>input{display:block;box-sizing:border-box;width:180px;height:auto;min-height:0;padding:0;border:1px solid;font:20px/1.2 sans-serif}</style><body><input id='empty'><input id='filled' value='Text'></body></html>", "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(400, 200, 1.0, ColorScheme::Light));
+        let heights: Vec<f64> = doc
+            .js_context
+            .with(|ctx| {
+                ctx.eval(
+            "['empty','filled'].map(id=>document.getElementById(id).getBoundingClientRect().height)"
+        )
+            })
+            .unwrap();
+        assert!(
+            heights
+                .iter()
+                .all(|height| *height >= 24.0 && *height <= 32.0),
+            "input intrinsic line collapsed: {heights:?}"
+        );
+        assert_eq!(heights[0], heights[1]);
+    }
+
+    #[test]
     fn cssom_reads_reuse_layout_and_stay_live_after_js_and_native_writes() {
         let (mut doc, _) = LapuiDocument::new_with_source(
             ActionRegistry::default(), None,
@@ -10196,6 +10269,10 @@ mod tests {
                     let paint_started = Instant::now();
                     let shot = crate::snapshot::capture_without_poll(&mut doc).unwrap();
                     assert_eq!((shot.width(), shot.height()), (1440, 1000));
+                    if let Some(directory)=std::env::var_os("LAPUI_DIAGNOSTICS_DIR") {
+                        let directory=PathBuf::from(directory);std::fs::create_dir_all(&directory).unwrap();
+                        shot.save_png(directory.join(format!("lapstyle-{section}.png"))).unwrap();
+                    }
                     eprintln!("Lapstyle {section}: CPU frame {:.2} ms; navigation through render {:.2} ms",
                         paint_started.elapsed().as_secs_f64() * 1000.0,
                         navigation_started.elapsed().as_secs_f64() * 1000.0);
@@ -10241,6 +10318,77 @@ mod tests {
                     assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(
                         "Array.from(document.querySelectorAll('input[name^=\"demo-input-name\"]')).every(el=>el.value==='中文 Lapui 验证')"
                     )).unwrap());
+                    assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(
+                        "Array.from(document.querySelectorAll('.demo-panel input.ls-input.dense')).every(el=>el.getBoundingClientRect().height>=parseFloat(getComputedStyle(el).fontSize))"
+                    )).unwrap(), "dense inputs must retain their font's line box");
+                }
+                if section == "menu" {
+                    doc.js_context.with(|ctx|ctx.eval::<(),_>(r#"
+                        globalThis.menuProbeItem=Array.from(document.querySelectorAll('.demo-panel .ls-menu .item')).find(el=>el.querySelector(':scope > .caret'));
+                        globalThis.menuProbeSub=menuProbeItem.nextElementSibling;
+                        globalThis.menuProbeBefore=menuProbeSub.hidden;
+                        menuProbeItem.click();
+                    "#)).unwrap();
+                    for _ in 0..5 {doc.poll(None);doc.animation_frame();doc.rendering_update();}
+                    doc.js_context.with(|ctx|ctx.eval::<(),_>(
+                        "globalThis.menuProbeAfter=menuProbeSub.hidden;menuProbeItem.click()"
+                    )).unwrap();
+                    for _ in 0..5 {doc.poll(None);doc.animation_frame();doc.rendering_update();}
+                    let menu: String = doc.js_context.with(|ctx|ctx.eval(r#"
+                        JSON.stringify({before:menuProbeBefore,after:menuProbeAfter,restored:menuProbeSub.hidden,aria:menuProbeItem.getAttribute('aria-expanded')})
+                    "#)).unwrap();
+                    let menu: Value=serde_json::from_str(&menu).unwrap();
+                    assert_ne!(menu["before"],menu["after"],"submenu click did not toggle: {menu}");
+                    assert_eq!(menu["before"],menu["restored"],"submenu second click did not restore: {menu}");
+                }
+                if section == "dialog" {
+                    doc.js_context.with(|ctx|ctx.eval::<(),_>(
+                        "document.querySelector('[data-ls-open=\"#demo-dialog-confirm\"]').click()"
+                    )).unwrap();
+                    for _ in 0..5 {doc.poll(None);doc.animation_frame();doc.rendering_update();}
+                    // The real component animates both overlay and panel
+                    // opacity when hidden is removed. A box with
+                    // positive dimensions can still be completely transparent.
+                    let deadline=Instant::now()+Duration::from_secs(2);
+                    loop {
+                        doc.poll(None);doc.animation_frame();doc.rendering_update();
+                        if doc.js_context.with(|ctx|ctx.eval::<bool,_>(
+                            "['#demo-dialog-confirm','#demo-dialog-confirm .panel'].every(selector=>parseFloat(getComputedStyle(document.querySelector(selector)).opacity) >= .95)"
+                        )).unwrap() {break;}
+                        assert!(Instant::now()<deadline,"dialog opening animation stayed transparent");
+                        std::thread::sleep(Duration::from_millis(16));
+                    }
+                    let dialog: String=doc.js_context.with(|ctx|ctx.eval(r#"
+                        (()=>{const el=document.getElementById('demo-dialog-confirm'),r=el.getBoundingClientRect(),p=el.querySelector('.panel').getBoundingClientRect();return JSON.stringify({hidden:el.hidden,display:getComputedStyle(el).display,x:r.x,y:r.y,width:r.width,height:r.height,panelWidth:p.width,panelHeight:p.height,errors:lapui.diagnostics()});})()
+                    "#)).unwrap();
+                    eprintln!("Dialog interaction: {dialog}");
+                    if let Some(directory)=std::env::var_os("LAPUI_DIAGNOSTICS_DIR") {
+                        let directory=PathBuf::from(directory);std::fs::create_dir_all(&directory).unwrap();
+                        std::fs::write(directory.join("dialog-state.json"),&dialog).unwrap();
+                        #[cfg(feature="software-renderer")]
+                        crate::snapshot::capture_without_poll(&mut doc).unwrap().save_png(directory.join("dialog-open.png")).unwrap();
+                    }
+                    let dialog: Value=serde_json::from_str(&dialog).unwrap();
+                    assert_eq!(dialog["hidden"],false,"dialog opener did not remove hidden: {dialog}");
+                    assert!(dialog["panelWidth"].as_f64().unwrap_or(0.0)>100.0 && dialog["panelHeight"].as_f64().unwrap_or(0.0)>40.0,"dialog panel is not laid out: {dialog}");
+                    doc.js_context.with(|ctx|ctx.eval::<(),_>(
+                        "document.querySelector('#demo-dialog-confirm .actions button').click()"
+                    )).unwrap();
+                    for _ in 0..5 {doc.poll(None);}
+                    assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(
+                        "document.getElementById('demo-dialog-confirm').hidden"
+                    )).unwrap(),"dialog action did not close the panel");
+                }
+                #[cfg(feature = "software-renderer")]
+                if let Some(directory) = std::env::var_os("LAPUI_DIAGNOSTICS_DIR") {
+                    doc.js_context.with(|ctx|ctx.eval::<(),_>(r#"
+                        (()=>{const main=document.querySelector('.demo-main'),panel=document.querySelector('.demo-panel');
+                        if(panel) main.scrollTop+=panel.getBoundingClientRect().top-main.getBoundingClientRect().top;})();
+                    "#)).unwrap();
+                    for _ in 0..3 {doc.poll(None);doc.animation_frame();doc.rendering_update();}
+                    crate::snapshot::capture_without_poll(&mut doc).unwrap()
+                        .save_png(PathBuf::from(directory).join(format!("lapstyle-{section}-examples.png"))).unwrap();
+                    doc.js_context.with(|ctx|ctx.eval::<(),_>("document.querySelector('.demo-main').scrollTop=0")).unwrap();
                 }
                 eprintln!("Lapstyle section verified: {section}");
             }

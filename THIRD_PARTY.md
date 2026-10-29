@@ -4,7 +4,9 @@ Lapui's `MIT OR Apache-2.0` choice applies to Lapui's original files. It does no
 
 `vendor/taffy` contains MIT-licensed Taffy 0.14.0 runtime sources pinned to upstream commit `ceb7443d386fc5cc67a1f72b51f7bf505439dff8`, with bounded backports of upstream Grid fixes #1320 and #1284. Its original license, provenance, manifest adjustments and patch removal conditions are retained in that directory. The portable package includes its license as `licenses/taffy-LICENSE`. The exact active rendering dependency group is recorded in [the compatibility ledger](guide/upstream-compatibility-patches.md).
 
-The frame-aware shell uses the already shared AnyRender 0.13.0 (`MIT OR Apache-2.0`) and winit 0.31.0-beta.2 (`Apache-2.0`) APIs directly. It wraps Blitz window handling without vendoring or modifying its source.
+`vendor/blitz-dom` and `vendor/blitz-paint` retain runtime sources from Blitz commit `8b54d6d2930f654d75446e423b42033d323205f0` (`MIT OR Apache-2.0`). Their original manifests, licenses, source provenance and bounded patch ledgers are retained in those directories. The DOM patches address relational-selector state invalidation, SVG paint styles, text-input intrinsic sizing and authored scrollbar visibility. Paint source is unchanged; Lapui enables its existing scrollbar feature. The portable package includes both upstream license texts as `licenses/blitz-LICENSE-MIT` and `licenses/blitz-LICENSE-APACHE`.
+
+The frame-aware shell uses the already shared AnyRender 0.14.0 (`MIT OR Apache-2.0`) and winit 0.31.0-beta.3 (`Apache-2.0`) APIs directly. It wraps Blitz window handling.
 
 Native development file notifications use notify 8.2.0 (`CC0-1.0`); its platform adapters and other dependencies retain their own upstream terms.
 
@@ -14,7 +16,7 @@ error-code 3.4.0 (`BSL-1.0`). Image clipboard support is disabled. This feature
 is enabled only for the Windows target and does not claim Linux/macOS clipboard
 validation.
 
-The default software path uses AnyRender Vello CPU 0.17.0 and Softbuffer Window Renderer 0.8.0 (`MIT OR Apache-2.0`), alongside their upstream drawing/window dependencies. Offscreen PNG output uses the already shared image 0.25.10 package (`MIT OR Apache-2.0`). GPU drawing remains available through AnyRender Vello; this does not make the renderer implementations Lapui-authored code.
+The software path uses AnyRender Vello CPU 0.18.0 and its Softbuffer Window Renderer (`MIT OR Apache-2.0`), alongside their upstream drawing/window dependencies. Offscreen PNG output uses the already shared image 0.25.10 package (`MIT OR Apache-2.0`). GPU drawing remains available through AnyRender Vello; this does not make the renderer implementations Lapui-authored code.
 
 The runtime depends directly on Blitz (`MIT OR Apache-2.0`), AnyRender Vello (`MIT OR Apache-2.0`), rquickjs (`MIT`), and keyboard-types (`MIT OR Apache-2.0`). Its transitive rendering stack includes Stylo (`MPL-2.0`). The exact package versions are recorded in `Cargo.lock`; the authoritative license terms are those supplied by each upstream package.
 

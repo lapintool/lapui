@@ -21,8 +21,8 @@ The dependency graph is locked in `Cargo.lock`. The source upgrade passed the al
 | Symptom | At fractional DPI, integer rounding in layout can round a non-zero border width to zero on a far edge; the input's vertical border can appear missing or narrowed. |
 | Reproduction | `snapshot::tests::rounded_input_keeps_both_vertical_borders_at_fractional_dpi_scales`; manual case UI-03 at multiple system DPI and page zoom levels. |
 | Baseline and location | Blitz `8b54d6d2930f654d75446e423b42033d323205f0`; `src/paint.rs` temporarily supplies unrounded border widths to paint and restores authoritative rounded layout afterward. |
-| Scope | Paint scene construction, including subdocuments. Shared by CPU and GPU scene generation. |
-| Evidence | The automated fractional-DPI pixel test passes on the selected snapshot. Human UI-03 remains pending. |
+| Scope | Paint scene construction, including subdocuments and generated `::before`/`::after` boxes used by outline buttons, radios and checkboxes. Shared by CPU and GPU scene generation. |
+| Evidence | Input and generated-box pixel tests retain all four borders at 1x, 1.25x, 1.5x and 1.75x. Human UI-03 remains pending. |
 | Exit condition | Remove the compensation only when the upstream renderer preserves these fractional edges and the pixel test plus UI-03 pass without it. |
 | Status | Active; not visually accepted by the user on this candidate. |
 
@@ -65,6 +65,19 @@ Vue reuses a template element for static HTML insertion. Lapui formerly moved it
 | Upstream | Backport of [Taffy #1284, commit e2fbe56](https://github.com/DioxusLabs/taffy/commit/e2fbe56495ea4c033329f2ed2e61c4cf0dee8154), plus a local extension of the same intrinsic block-size rule to finite-growth-limit auto-row maximization. The auto-row case still failed with the upstream change alone. |
 | Exit condition | Adopt a compatible dependency group containing #1284 and pass the same regressions and real-app CPU/GPU checks without the local override. |
 | Status | Active bounded backport; original sources and license are retained with P-GRID-CALC-001. |
+
+## Blitz component compatibility group
+
+`vendor/blitz-dom` and `vendor/blitz-paint` retain the exact Blitz baseline above, original manifests and licenses. Both registry and Blitz Git source overrides resolve to these same local packages. The paint source is unchanged; its standalone manifest keeps its DOM dependency on the patched package. No Cargo cache sources are edited. Their `LAPUI-PATCHES.md` files record the precise scope and removal conditions.
+
+| Patch | Cause and bounded fix | Regression / removal gate |
+| --- | --- | --- |
+| P-HAS-001 | Stylo's `:has()` parsing preference was disabled, and state changes did not run its relative-selector invalidator. Enable the preference and use Stylo's state dependency maps to invalidate related ancestors/siblings. | Radio group clicks must move the selected style between labels and preserve hover styling. Remove only when both parsing and state invalidation work upstream. Attribute/structural mutation conformance is not established by this test. |
+| P-SVG-PAINT-001 | Isolated inline SVG rendering discarded host CSS fill/stroke styles. Carry resolved paint values into the SVG snapshot and include the supported SVG presentation attributes in Stylo's lower-priority cascade. | CSS currentColor, dynamic color changes, hollow stroke icons, CSS overriding attributes and local gradient references. The bounded property list is recorded in the vendor ledger; external paint-server URLs and full SVG CSS are not covered. |
+| P-INPUT-LINE-001 | Auto-height text inputs were measured as empty blocks. Supply a one-line intrinsic height and size-based intrinsic width, respecting definite CSS dimensions and refreshing the editor width. | Empty/nonempty inputs retain a font-sized line box; preserve editor/form regressions and the real application's dense-input height check. |
+| P-SCROLLBAR-ALPHA-001 | The scrollbar paint feature was disabled. Native activity fading also hid CSS-authored hover scrollbars before any scrolling. Enable the existing feature and let explicit color alpha control visibility. | Pixel checks for never-scrolled hover visibility and `scrollbar-color` transition interpolation on enter/leave. Unstyled overlay scrollbars retain upstream activity fading. Registered custom-property interpolation by itself is not established. |
+
+Lapui's DOM bridge also implements element-only sibling/child traversal and reflects the boolean `hidden` property to its native attribute. Component code uses these interfaces to locate submenus and show/hide dialogs. Retain the traversal regression and full-application menu expand/collapse and dialog open/close assertions. These are DOM compatibility fixes, not component-specific CSS substitutions.
 
 ## Upgrade review rules
 

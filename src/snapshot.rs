@@ -304,6 +304,161 @@ mod tests {
     }
 
     #[test]
+    fn component_scrollbars_follow_authored_hover_alpha_before_any_scroll() {
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            "<html><style>html,body{margin:0;background:white}#scroll{width:100px;height:80px;overflow:auto;scrollbar-width:thin;scrollbar-color:rgb(255 0 0 / 0) transparent}#scroll:hover{scrollbar-color:red transparent}#content{height:240px}</style><body><div id='scroll'><div id='content'></div></div></body></html>", "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(200, 160, 1.0, ColorScheme::Light));
+        let before = capture_without_poll(&mut doc).unwrap();
+        let index = (15 * 200 + 95) * 4;
+        assert_eq!(&before.rgba[index..index + 4], &[255, 255, 255, 255]);
+        doc.inner_mut().set_hover_to(30.0, 30.0);
+        let shown = capture_without_poll(&mut doc).unwrap();
+        assert_eq!(
+            &shown.rgba[index..index + 4],
+            &[255, 0, 0, 255],
+            "hovered, never-scrolled container must paint its authored thumb"
+        );
+        doc.inner_mut().set_hover_to(150.0, 130.0);
+        let hidden = capture_without_poll(&mut doc).unwrap();
+        assert_eq!(&hidden.rgba[index..index + 4], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn component_scrollbar_color_transitions_on_hover_and_leave() {
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            r#"<html><style>@property --fade{syntax:'<number>';inherits:true;initial-value:0}html,body{margin:0}#scroll{width:100px;height:80px;overflow:auto;--fade:0;scrollbar-width:thin;scrollbar-color:rgb(255 0 0 / var(--fade)) transparent;transition:--fade .2s linear,scrollbar-color .2s linear}#scroll:hover{--fade:1}#content{height:240px}</style><body><div id='scroll'><div id='content'></div></div></body></html>"#, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(200, 160, 1.0, ColorScheme::Light));
+        let id = doc.inner().get_element_by_id("scroll").unwrap();
+        let alpha = |doc: &LapuiDocument| match doc.inner().get_node(id).unwrap().scrollbar_color()
+        {
+            blitz::dom::node::ScrollbarColor::Colors { thumb, .. } => thumb.alpha,
+            _ => panic!("authored scrollbar color missing"),
+        };
+        doc.inner_mut().resolve(0.0);
+        assert_eq!(alpha(&doc), 0.0);
+        doc.inner_mut().set_hover_to(30.0, 30.0);
+        doc.inner_mut().resolve(1.0);
+        doc.inner_mut().resolve(1.1);
+        let fading_in = alpha(&doc);
+        assert!(
+            (0.35..0.65).contains(&fading_in),
+            "scrollbar fade-in skipped interpolation: {fading_in}"
+        );
+        doc.inner_mut().resolve(1.25);
+        assert_eq!(alpha(&doc), 1.0);
+        doc.inner_mut().set_hover_to(150.0, 130.0);
+        doc.inner_mut().resolve(2.0);
+        doc.inner_mut().resolve(2.1);
+        let fading_out = alpha(&doc);
+        assert!(
+            (0.35..0.65).contains(&fading_out),
+            "scrollbar fade-out skipped interpolation: {fading_out}"
+        );
+        doc.inner_mut().resolve(2.25);
+        assert_eq!(alpha(&doc), 0.0);
+    }
+
+    #[test]
+    fn component_svg_presentation_attributes_keep_their_cascade_and_local_gradients() {
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            r##"<html><style>html,body{margin:0;background:white;color:red}svg{position:absolute;top:0;width:40px;height:40px}.override circle{fill:blue}</style><body>
+              <svg viewBox='0 0 40 40' fill='none' stroke='currentColor' stroke-width='2'><circle cx='20' cy='20' r='14'/></svg>
+              <svg class='override' style='left:50px' viewBox='0 0 40 40'><circle fill='#00ff00' cx='20' cy='20' r='14'/></svg>
+              <svg style='left:100px' viewBox='0 0 40 40'><defs><linearGradient id='g'><stop offset='0' stop-color='red'/><stop offset='1' stop-color='blue'/></linearGradient></defs><rect fill='url(#g)' width='40' height='40'/></svg>
+            </body></html>"##, "").unwrap();
+        let pixels = render_rgba(&mut doc, 160, 80).unwrap();
+        let at = |x: usize| {
+            let i = (20 * 160 + x) * 4;
+            &pixels[i..i + 4]
+        };
+        assert_eq!(
+            at(20),
+            &[255, 255, 255, 255],
+            "fill=none must not become the default black fill"
+        );
+        assert_eq!(
+            at(70),
+            &[0, 0, 255, 255],
+            "author CSS must override the presentation attribute"
+        );
+        let gradient = at(120);
+        assert!(
+            gradient[0] > 30 && gradient[2] > 30 && gradient[1] < 30,
+            "local SVG gradient reference was lost: {gradient:?}"
+        );
+    }
+
+    #[test]
+    fn component_svg_css_paint_inherits_current_color_and_rebuilds_after_changes() {
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            r#"<html><style>html,body{margin:0;background:white}#host{color:rgb(255,0,0)}svg{display:block;width:40px;height:40px;fill:currentColor;stroke:currentColor;stroke-width:2}</style><body><div id='host'><svg viewBox='0 0 40 40'><circle cx='20' cy='20' r='14'/></svg></div></body></html>"#, "").unwrap();
+        let pixels = render_rgba(&mut doc, 100, 80).unwrap();
+        let index = (20 * 100 + 20) * 4;
+        assert_eq!(
+            &pixels[index..index + 4],
+            &[255, 0, 0, 255],
+            "CSS SVG fill was lost at the usvg boundary"
+        );
+        let host = doc.inner().get_element_by_id("host").unwrap();
+        doc.inner_mut().mutate().set_attribute(
+            host,
+            blitz::dom::QualName::new(
+                None,
+                Default::default(),
+                blitz::dom::LocalName::from("style"),
+            ),
+            "color:rgb(0,0,255)",
+        );
+        let pixels = render_rgba(&mut doc, 100, 80).unwrap();
+        assert_eq!(&pixels[index..index + 4], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn component_pseudo_borders_keep_all_sides_at_fractional_scales() {
+        for scale in [1.0_f32, 1.25, 1.5, 1.75] {
+            let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(),None,
+                "<html><style>html,body{margin:0;background:white}#host{position:absolute;left:20px;top:20px;width:80px;height:32px}#host::before{content:'';position:absolute;inset:0;box-sizing:border-box;border:1px solid blue;border-radius:4px}</style><body><div id='host'></div></body></html>", "").unwrap();
+            let width = (160.0 * scale) as u32;
+            doc.inner_mut().set_viewport(Viewport::new(
+                width,
+                (100.0 * scale) as u32,
+                scale,
+                ColorScheme::Light,
+            ));
+            let shot = capture_without_poll(&mut doc).unwrap();
+            let host = doc.inner().get_element_by_id("host").unwrap();
+            let pseudo = doc.inner().get_node(host).unwrap().before().unwrap();
+            let layout = *doc.inner().get_node(pseudo).unwrap().final_layout();
+            let colored = |x: f32, y: f32| {
+                let (x, y) = ((x * scale).round() as i32, (y * scale).round() as i32);
+                (x - 2..=x + 2).any(|px| {
+                    (y - 2..=y + 2).any(|py| {
+                        if px < 0 || py < 0 || px >= width as i32 || py >= shot.height() as i32 {
+                            return false;
+                        }
+                        let i = (py as usize * width as usize + px as usize) * 4;
+                        shot.rgba[i + 2] > 150 && shot.rgba[i] < 150
+                    })
+                })
+            };
+            let (right, bottom) = (20.0 + layout.size.width, 20.0 + layout.size.height);
+            for (name, x, y) in [
+                ("left", 20.0, 36.0),
+                ("right", right, 36.0),
+                ("top", 60.0, 20.0),
+                ("bottom", 60.0, bottom),
+            ] {
+                assert!(
+                    colored(x, y),
+                    "pseudo {name} border missing at {scale}x ({right},{bottom})"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rounded_input_keeps_both_vertical_borders_at_fractional_dpi_scales() {
         for scale in [1.0_f32, 1.25, 1.5, 1.75] {
             let (mut doc, _) = LapuiDocument::new_with_source(
