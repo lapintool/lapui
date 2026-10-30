@@ -441,8 +441,66 @@ impl BaseDocument {
 
         // println!("\n\nRESOLVE LAYOUT\n===========\n");
 
+        let previous_scrolls: Vec<_> = self
+            .nodes
+            .iter()
+            .filter_map(|(id, node)| {
+                if node.try_stylo_element_data().is_none() {
+                    return None;
+                }
+                let offset = *node.scroll_offset();
+                (offset.x != 0.0 || offset.y != 0.0).then(|| {
+                    (
+                        id,
+                        node.final_layout().scroll_width() as f64,
+                        node.final_layout().scroll_height() as f64,
+                    )
+                })
+            })
+            .collect();
+        let (_, previous_viewport_max) =
+            self.scroll_state(crate::scrolling::ScrollTarget::Viewport, true);
         taffy::compute_root_layout(self, root_element_id, available_space);
         taffy::round_layout(self, root_element_id);
+
+        // Layout can shrink after route/content replacement or viewport resize.
+        // Old offsets must not keep painting an unreachable blank scroll area.
+        for (id, old_x, old_y) in previous_scrolls {
+            let Some(node) = self.nodes.get_mut(id) else {
+                continue;
+            };
+            if node
+                .primary_styles()
+                .is_none_or(|style| style.clone_display().is_none())
+                || (node.final_layout().size.width == 0.0 && node.final_layout().size.height == 0.0)
+            {
+                continue;
+            }
+            let max_x = node.final_layout().scroll_width() as f64;
+            let max_y = node.final_layout().scroll_height() as f64;
+            let offset = node.scroll_offset_mut();
+            if max_x < old_x {
+                offset.x = offset.x.clamp(0.0, max_x);
+            }
+            if max_y < old_y {
+                offset.y = offset.y.clamp(0.0, max_y);
+            }
+        }
+        let (offset, max) = self.scroll_state(crate::scrolling::ScrollTarget::Viewport, true);
+        if max.x < previous_viewport_max.x || max.y < previous_viewport_max.y {
+            self.nodes.set_viewport_scroll(crate::Point {
+                x: if max.x < previous_viewport_max.x {
+                    offset.x.clamp(0.0, max.x)
+                } else {
+                    offset.x
+                },
+                y: if max.y < previous_viewport_max.y {
+                    offset.y.clamp(0.0, max.y)
+                } else {
+                    offset.y
+                },
+            });
+        }
 
         // println!("\n\n");
         // taffy::print_tree(self, root_node_id)

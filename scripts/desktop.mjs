@@ -1,7 +1,7 @@
 import { spawn, fork, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import { watch as watchFiles } from 'node:fs';
-import { access, cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -198,7 +198,7 @@ async function dev() {
   try {
     await Promise.all([typecheck(), firstBuild, run(...cargo('build', '--locked'))]);
     if (closing) return;
-    for (const directory of ['src', 'ui', 'vendor/taffy/src', 'vendor/blitz-dom/src', 'vendor/blitz-dom/assets', 'vendor/blitz-paint/src']) {
+    for (const directory of ['src', 'ui', 'vendor/taffy/src', 'vendor/blitz-dom/src', 'vendor/blitz-dom/assets', 'vendor/blitz-paint/src', 'vendor/stylo']) {
       watchers.push(watchFiles(join(root, directory), { recursive: true }, changed));
     }
     for (const filename of ['Cargo.toml', 'Cargo.lock', 'build.rs']) {
@@ -209,6 +209,19 @@ async function dev() {
   } finally {
     clearTimeout(debounce);
     for (const watcher of watchers) watcher.close();
+  }
+  // A copied node_modules can silently point at an older Git package even
+  // though the frontend manifest asks for the sibling development checkout.
+  const frontendManifest = JSON.parse(await readFile(join(frontend, 'package.json'), 'utf8'));
+  for (const [name, spec] of Object.entries(frontendManifest.dependencies || {})) {
+    if (!String(spec).startsWith('link:') || (name === 'lapstyle' && process.env.LAPSTYLE_SPEC)) continue;
+    const expectedPath = resolve(frontend, spec.slice(5));
+    if (!await exists(expectedPath)) continue; // The frontend hook can select its remote fallback.
+    const expected = await realpath(expectedPath);
+    const installed = await realpath(join(frontend, 'node_modules', name));
+    if (expected.toLowerCase() !== installed.toLowerCase()) {
+      throw new Error(`Linked dependency ${name} resolves to ${installed}, expected ${expected}. Run pnpm --dir "${frontend}" link "${spec.slice(5)}".`);
+    }
   }
 }
 
@@ -254,6 +267,8 @@ async function release() {
   for (const name of ['LICENSE-MIT', 'LICENSE-APACHE']) {
     await cp(join(root, 'vendor/blitz-dom', name), join(packageDirectory, 'licenses', 'blitz-' + name));
   }
+  await cp(join(root, 'vendor/stylo/LICENSE-MPL-2.0'), join(packageDirectory, 'licenses', 'stylo-MPL-2.0.txt'));
+  await cp(join(root, 'vendor/stylo'), join(packageDirectory, 'sources', 'stylo'), { recursive: true });
   if (await exists(join(frontend, 'LICENSE'))) {
     await cp(join(frontend, 'LICENSE'), join(packageDirectory, 'licenses', 'frontend-LICENSE'));
   }

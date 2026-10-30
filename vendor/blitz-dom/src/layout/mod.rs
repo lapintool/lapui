@@ -464,12 +464,18 @@ impl BaseDocument {
                     // HACK: Cap scrollable overflow at node size to prevent scrolling
                     output.scrollable_overflow_rect.left = 0.0;
                     output.scrollable_overflow_rect.top = 0.0;
-                    output.scrollable_overflow_rect.right =
-                        output.scrollable_overflow_rect.right.min(output.size.width);
+                    let border = context
+                        .style
+                        .border
+                        .resolve_or_zero(inputs.parent_size.width, resolve_calc_value);
+                    output.scrollable_overflow_rect.right = output
+                        .scrollable_overflow_rect
+                        .right
+                        .min((output.size.width - border.horizontal_axis_sum()).max(0.0));
                     output.scrollable_overflow_rect.bottom = output
                         .scrollable_overflow_rect
                         .bottom
-                        .min(output.size.height);
+                        .min((output.size.height - border.vertical_axis_sum()).max(0.0));
 
                     return output;
                 }

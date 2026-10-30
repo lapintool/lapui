@@ -100,6 +100,7 @@ pub(crate) struct ScrollToState {
     pub(crate) start_time: f64,
     /// Total duration of the animation in milliseconds.
     pub(crate) duration: f64,
+    pub(crate) wheel: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -133,13 +134,17 @@ impl BaseDocument {
         request: ScrollRequest,
         dispatch_event: &mut dyn FnMut(DomEvent),
     ) -> bool {
-        if request.interrupt_animation
-            && matches!(self.scroll_animation, ScrollAnimationState::ScrollTo(_))
-        {
-            self.scroll_animation = ScrollAnimationState::None;
-        }
-
         let target = self.canonical_scroll_target(request.target);
+        let accumulated = match &self.scroll_animation {
+            ScrollAnimationState::ScrollTo(animation)
+                if request.behavior == ScrollBehavior::Smooth
+                    && animation.wheel
+                    && animation.target == target =>
+            {
+                Some(animation.end)
+            }
+            _ => None,
+        };
 
         // Text inputs and sub-documents scroll their own content rather than an overflow
         // scrollport, so they only take part in the chained (user-initiated) path.
@@ -158,8 +163,8 @@ impl BaseDocument {
         let unclamped = match request.amount {
             ScrollAmount::To(to) => to,
             ScrollAmount::By(by) => Point {
-                x: current.x + by.x,
-                y: current.y + by.y,
+                x: accumulated.unwrap_or(current).x + by.x,
+                y: accumulated.unwrap_or(current).y + by.y,
             },
         };
         let end = Point {
@@ -167,12 +172,26 @@ impl BaseDocument {
             y: unclamped.y.clamp(0.0, max.y),
         };
 
-        if self.should_scroll_smoothly(target, request.behavior) {
-            self.start_scroll_animation(target, end);
-            return end != current;
+        if request.interrupt_animation
+            && (end != current || request.overflow == ScrollOverflow::Clamp)
+            && matches!(self.scroll_animation, ScrollAnimationState::ScrollTo(_))
+        {
+            self.scroll_animation = ScrollAnimationState::None;
         }
 
-        let has_changed = self.write_scroll_offset(target, end, dispatch_event);
+        let smooth = self.should_scroll_smoothly(target, request.behavior);
+        let has_changed = if smooth && end != current {
+            self.start_scroll_animation(target, end);
+            if request.source == ScrollSource::User {
+                if let ScrollAnimationState::ScrollTo(animation) = &mut self.scroll_animation {
+                    animation.duration = 160.0;
+                    animation.wheel = true;
+                }
+            }
+            true
+        } else {
+            self.write_scroll_offset(target, end, dispatch_event)
+        };
 
         // Transfer the delta the target could not consume to the next scroller in the chain.
         if request.overflow == ScrollOverflow::Chain {
@@ -430,6 +449,27 @@ impl BaseDocument {
         )
     }
 
+    /// Animate discrete wheel ticks; precision/pixel input stays immediate.
+    pub(crate) fn scroll_wheel_by(
+        &mut self,
+        anchor: Option<NodeId>,
+        x: f64,
+        y: f64,
+        dispatch_event: &mut dyn FnMut(DomEvent),
+    ) -> bool {
+        self.scroll(
+            ScrollRequest {
+                target: anchor.map_or(ScrollTarget::Viewport, ScrollTarget::Node),
+                amount: ScrollAmount::By(Point { x: -x, y: -y }),
+                overflow: ScrollOverflow::Chain,
+                source: ScrollSource::User,
+                behavior: ScrollBehavior::Smooth,
+                interrupt_animation: true,
+            },
+            dispatch_event,
+        )
+    }
+
     /// Duration (in milliseconds) of an animated scroll.
     const SMOOTH_SCROLL_DURATION_MS: f64 = 300.0;
 
@@ -523,6 +563,7 @@ impl BaseDocument {
             end,
             start_time,
             duration: Self::SMOOTH_SCROLL_DURATION_MS,
+            wheel: false,
         });
 
         // Ensure the frame loop runs so the animation is driven to completion.
@@ -758,7 +799,11 @@ impl BaseDocument {
                 } else {
                     ((time_ms - scroll_to.start_time) / scroll_to.duration).clamp(0.0, 1.0)
                 };
-                let eased = ease_in_out_cubic(progress);
+                let eased = if scroll_to.wheel {
+                    1.0 - (1.0 - progress).powi(3)
+                } else {
+                    ease_in_out_cubic(progress)
+                };
 
                 // Interpolate the target offset and move to it.
                 let target = Point {
@@ -766,7 +811,15 @@ impl BaseDocument {
                     y: scroll_to.start.y + (scroll_to.end.y - scroll_to.start.y) * eased,
                 };
                 // TODO: dispatch `scroll` events for programmatic scrolls.
-                self.write_scroll_offset(scroll_to.target, target, &mut |_| {});
+                let (_, max) = self.scroll_state(scroll_to.target, true);
+                self.write_scroll_offset(
+                    scroll_to.target,
+                    Point {
+                        x: target.x.clamp(0.0, max.x),
+                        y: target.y.clamp(0.0, max.y),
+                    },
+                    &mut |_| {},
+                );
 
                 if progress >= 1.0 {
                     self.scroll_animation = ScrollAnimationState::None;

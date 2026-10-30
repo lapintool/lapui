@@ -81,6 +81,33 @@ Lapui's DOM bridge also implements element-only sibling/child traversal and refl
 
 ## Upgrade review rules
 
+The native interaction follow-up also tracks:
+
+- **P-OVERFLOW-001:** table overflow caps subtract borders; retained node and
+  viewport offsets are clamped after content shrinks. A bordered table without
+  actual overflow must not paint an immovable scrollbar.
+- **P-SVG-PAINT-001 extension:** mark SVG snapshot reconstruction before layout
+  invalidation/damage propagation. Percentage-sized icons must retain pixels
+  through every inherited-color hover and leave transition.
+- **P-TYPED-TRANSITION-001:** enable the existing @property parser and correct
+  Stylo 0.22.0's conservative discrete-property gate for custom values that are
+  actually interpolable. The one-file MPL-covered source change and removal
+  gate are recorded in `vendor/stylo/LAPUI-PATCHES.md`; sources ship with the
+  portable package. Unregistered/discrete values retain their interpolation gate.
+- **P-RADIAL-001:** radial brush radii and stop positions use the same CSS/device
+  scale. Expand non-repeating radial domains across the painted tile so a
+  100% hard stop preserves its outer color rather than filling a hover square.
+- **P-WHEEL-001:** line-wheel ticks animate with a 160ms ease-out and accumulate
+  through non-scrolling descendants. Pixel-wheel input and explicit instant
+  scrolling remain direct. Retain wheel accumulation/precision regressions.
+
+Lapui's native JavaScript event bridge appends Document/Window to the connected
+native propagation path, exposes pointer/wheel fields and cancelability, and
+supports pointer capture within the delivered native event stream. Physical
+capture outside the OS window is not established. Real-application tests must
+use native pointer down/up/move and hit testing for dialogs, outside-dismiss,
+menus and splitter dragging; programmatic `.click()` alone is insufficient.
+
 1. Evaluate a new upstream candidate with local behavior patches disabled where practical; verify fixes with the retained regression cases.
 2. Remove a patch when upstream passes the same regression and relevant manual case. Narrow it when only part of the behavior remains unsupported.
 3. If a patch still applies but upstream semantics changed, re-check the user-visible behavior and the `offset*`, hit-testing, scroll, CPU paint, and GPU scene paths it can affect.

@@ -44,3 +44,20 @@ Both crates.io and the Blitz Git source are patched to this one package.
 Update each entry with any further behavior change. Do not modify Cargo cache
 sources. Remove these copies only after a compatible upstream group passes the
 same focused regressions and real application checks without the patches.
+
+Follow-up fixes:
+
+- P-OVERFLOW-001: table wrapper overflow caps subtract both borders so a
+  non-overflowing bordered table does not acquire a 2px scroll range. After
+  layout, clamp retained element/viewport offsets to their new extents. Retain
+  table-no-overflow and long-to-short content regressions on removal.
+- P-SVG-PAINT-001 extension: in layout/damage.rs mark SVG reconstruction before
+  propagating damage and invalidating layout caches. Percentage-sized inline
+  icons must survive every frame of an inherited color hover/leave transition.
+- P-TYPED-TRANSITION-001 integration: enable the existing @property parser;
+  the narrowly scoped Stylo transition gate correction is tracked separately
+  in vendor/stylo/LAPUI-PATCHES.md.
+- P-WHEEL-001: discrete line-wheel input uses the existing smooth-scroll
+  animation with a 160ms ease-out, accumulating consecutive ticks at the same
+  scroll target. Precision pixel input, explicit instant scroll and scrollbar
+  dragging stay direct. Preserve nested chaining and accumulation regressions.

@@ -3504,7 +3504,7 @@ struct JsHandler {
 impl EventHandler for JsHandler {
     fn handle_event(
         &mut self,
-        chain: &[NodeId],
+        _chain: &[NodeId],
         event: &mut DomEvent,
         doc: &mut dyn Document,
         state: &mut EventState,
@@ -3553,6 +3553,18 @@ impl EventHandler for JsHandler {
             }
         }
         let target_id = canonical_node_ref(doc_id, event.target);
+        // Blitz's native chain ends at <html>. DOM delegation also needs
+        // Document and Window, including capture ancestors for non-bubbling events.
+        let mut chain = inner.node_chain(event.target);
+        let document_node = inner.root_node().id;
+        if chain
+            .last()
+            .and_then(|id| inner.get_node(*id))
+            .and_then(|node| node.parent)
+            == Some(document_node)
+        {
+            chain.push(document_node);
+        }
         let path = chain
             .iter()
             .filter(|node_id| inner.get_node(**node_id).is_some())
@@ -3561,7 +3573,50 @@ impl EventHandler for JsHandler {
             .join("\n");
         drop(inner);
 
-        let detail = match &event.data {
+        let mut detail = match &event.data {
+            blitz::traits::events::DomEventData::PointerMove(pointer)
+            | blitz::traits::events::DomEventData::PointerDown(pointer)
+            | blitz::traits::events::DomEventData::PointerUp(pointer)
+            | blitz::traits::events::DomEventData::PointerCancel(pointer)
+            | blitz::traits::events::DomEventData::PointerEnter(pointer)
+            | blitz::traits::events::DomEventData::PointerLeave(pointer)
+            | blitz::traits::events::DomEventData::PointerOver(pointer)
+            | blitz::traits::events::DomEventData::PointerOut(pointer)
+            | blitz::traits::events::DomEventData::MouseMove(pointer)
+            | blitz::traits::events::DomEventData::MouseDown(pointer)
+            | blitz::traits::events::DomEventData::MouseUp(pointer)
+            | blitz::traits::events::DomEventData::MouseEnter(pointer)
+            | blitz::traits::events::DomEventData::MouseLeave(pointer)
+            | blitz::traits::events::DomEventData::MouseOver(pointer)
+            | blitz::traits::events::DomEventData::MouseOut(pointer)
+            | blitz::traits::events::DomEventData::Click(pointer)
+            | blitz::traits::events::DomEventData::DoubleClick(pointer)
+            | blitz::traits::events::DomEventData::ContextMenu(pointer) => {
+                let (pointer_id, pointer_type) = match pointer.id {
+                    blitz::traits::events::BlitzPointerId::Mouse => (1, "mouse"),
+                    blitz::traits::events::BlitzPointerId::Pen => (2, "pen"),
+                    blitz::traits::events::BlitzPointerId::Finger(id) => {
+                        (id.saturating_add(3), "touch")
+                    }
+                };
+                json!({"pointerId":pointer_id,"pointerType":pointer_type,"isPrimary":pointer.is_primary,
+                    "button":pointer.button as u8,"buttons":pointer.buttons.bits(),
+                    "clientX":pointer.client_x(),"clientY":pointer.client_y(),
+                    "pageX":pointer.page_x(),"pageY":pointer.page_y(),
+                    "screenX":pointer.screen_x(),"screenY":pointer.screen_y(),
+                    "offsetX":pointer.element_x(),"offsetY":pointer.element_y(),
+                    "pressure":pointer.details.pressure,"ctrlKey":pointer.mods.ctrl(),
+                    "shiftKey":pointer.mods.shift(),"altKey":pointer.mods.alt(),"metaKey":pointer.mods.meta()})
+            }
+            blitz::traits::events::DomEventData::Wheel(wheel) => {
+                let (x, y, mode) = match wheel.delta {
+                    blitz::traits::events::BlitzWheelDelta::Lines(x, y) => (-x, -y, 1),
+                    blitz::traits::events::BlitzWheelDelta::Pixels(x, y) => (-x, -y, 0),
+                };
+                json!({"deltaX":x,"deltaY":y,"deltaZ":0,"deltaMode":mode,
+                    "clientX":wheel.client_x(),"clientY":wheel.client_y(),"pageX":wheel.page_x(),"pageY":wheel.page_y(),
+                    "buttons":wheel.buttons.bits(),"ctrlKey":wheel.mods.ctrl(),"shiftKey":wheel.mods.shift(),"altKey":wheel.mods.alt(),"metaKey":wheel.mods.meta()})
+            }
             blitz::traits::events::DomEventData::KeyDown(key)
             | blitz::traits::events::DomEventData::KeyUp(key) => json!({
                 "key": key.key.to_string(),
@@ -3576,8 +3631,11 @@ impl EventHandler for JsHandler {
                 "text": key.text.as_ref().map(ToString::to_string),
             }),
             _ => json!({}),
-        }
-        .to_string();
+        };
+        detail["__bubbles"] = json!(event.bubbles);
+        detail["__cancelable"] = json!(event.cancelable);
+        detail["isTrusted"] = json!(true);
+        let detail = detail.to_string();
         let result = self.budget.run_callback(|| {
             self.context.with(|ctx| {
                 let function: Function = ctx.globals().get("__lapui_dispatch")?;
@@ -5262,6 +5320,167 @@ mod tests {
               return sub.hidden && sub.nextElementSibling===null && item.previousElementSibling===null;
             })()
         "#)).unwrap());
+    }
+
+    #[test]
+    fn native_pointer_delegation_coordinates_and_capture_match_component_needs() {
+        use blitz::traits::events::{MouseEventButtons, UiEvent};
+        let (mut doc,_) = LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            "<html><style>html,body{margin:0}#handle{width:40px;height:40px}#outside{position:absolute;left:200px;top:0;width:80px;height:80px}</style><body><div id='handle'></div><div id='outside'></div></body></html>",r#"
+            globalThis.log=[];globalThis.moves=[];
+            const handle=document.getElementById('handle');
+            document.addEventListener('pointerdown',e=>log.push(['document',e.button,e.clientX,e.pointerId,e.cancelable]),true);
+            window.addEventListener('pointerdown',()=>log.push(['window']));
+            handle.addEventListener('pointerdown',e=>{e.preventDefault();handle.setPointerCapture(e.pointerId);});
+            handle.addEventListener('pointermove',e=>moves.push([e.target.id,e.clientX,e.buttons]));
+            document.addEventListener('click',()=>log.push(['click']));
+            "#).unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(400, 200, 1.0, ColorScheme::Light));
+        doc.rendering_update();
+        doc.inner_mut().resolve(0.0);
+        let id = doc.inner().get_element_by_id("handle").unwrap();
+        let mut pointer = doc
+            .inner()
+            .get_node(id)
+            .unwrap()
+            .synthetic_click_event_data(keyboard_types::Modifiers::empty());
+        pointer.coords.client_x = 10.0;
+        pointer.coords.page_x = 10.0;
+        pointer.coords.client_y = 10.0;
+        pointer.coords.page_y = 10.0;
+        pointer.buttons = MouseEventButtons::Primary;
+        doc.handle_ui_event(UiEvent::PointerDown(pointer.clone()));
+        pointer.coords.client_x = 210.0;
+        pointer.coords.page_x = 210.0;
+        doc.handle_ui_event(UiEvent::PointerMove(pointer.clone()));
+        pointer.buttons = MouseEventButtons::None;
+        doc.handle_ui_event(UiEvent::PointerUp(pointer));
+        assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(
+            "log.some(x=>x[0]==='document'&&x[1]===0&&x[2]===10&&x[3]===1&&x[4]===true)&&log.some(x=>x[0]==='window')&&moves.some(x=>x[0]==='handle'&&x[1]===210&&x[2]===1)&&!document.getElementById('handle').hasPointerCapture(1)"
+        )).unwrap());
+        let outside = doc.inner().get_element_by_id("outside").unwrap();
+        let pointer = doc
+            .inner()
+            .get_node(outside)
+            .unwrap()
+            .synthetic_click_event_data(keyboard_types::Modifiers::empty());
+        let handler = JsHandler {
+            runtime: doc.js_runtime.clone(),
+            context: doc.js_context.clone(),
+            budget: doc.script_budget.clone(),
+            diagnostics: doc.script_diagnostics.clone(),
+        };
+        EventDriver::new(&mut doc, handler).handle_dom_event(blitz::traits::events::DomEvent::new(
+            outside,
+            blitz::traits::events::DomEventData::Click(pointer),
+        ));
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>("log.some(x=>x[0]==='click')"))
+            .unwrap());
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
+    fn component_registered_length_transitions_interpolate_in_both_directions() {
+        let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            "<html><style>@property --amount{syntax:'<length>';inherits:false;initial-value:20px}#box{--amount:20px;width:var(--amount);height:40px;transition:--amount .2s linear}#box:hover{--amount:60px}</style><body><div id='box'></div></body></html>","").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(200, 160, 1.0, ColorScheme::Light));
+        let id = doc.inner().get_element_by_id("box").unwrap();
+        doc.inner_mut().resolve(0.0);
+        doc.inner_mut().set_hover_to(10.0, 10.0);
+        doc.inner_mut().resolve(1.0);
+        doc.inner_mut().resolve(1.1);
+        let width = doc.inner().get_node(id).unwrap().final_layout().size.width;
+        assert!(
+            (35.0..45.0).contains(&width),
+            "registered length did not interpolate: {width}"
+        );
+        doc.inner_mut().resolve(1.3);
+        doc.inner_mut().set_hover_to(180.0, 140.0);
+        doc.inner_mut().resolve(2.0);
+        doc.inner_mut().resolve(2.1);
+        let width = doc.inner().get_node(id).unwrap().final_layout().size.width;
+        assert!(
+            (35.0..45.0).contains(&width),
+            "registered length did not fade back: {width}"
+        );
+    }
+
+    #[test]
+    fn component_discrete_wheel_animates_accumulates_and_precision_wheel_stays_direct() {
+        use blitz::traits::events::{BlitzWheelDelta, BlitzWheelEvent, MouseEventButtons, UiEvent};
+        let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            "<html><style>html,body{margin:0}#scroll{width:180px;height:100px;overflow:auto}#content{height:800px}</style><body><div id='scroll'><div id='content'></div></div></body></html>","").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(400, 300, 1.0, ColorScheme::Light));
+        doc.inner_mut().resolve(0.0);
+        doc.inner_mut().set_hover_to(30.0, 30.0);
+        let id = doc.inner().get_element_by_id("scroll").unwrap();
+        let pointer = doc
+            .inner()
+            .get_node(id)
+            .unwrap()
+            .synthetic_click_event_data(keyboard_types::Modifiers::empty());
+        let mut wheel = BlitzWheelEvent {
+            delta: BlitzWheelDelta::Lines(0.0, -3.0),
+            coords: pointer.coords,
+            buttons: MouseEventButtons::None,
+            mods: keyboard_types::Modifiers::empty(),
+            element: pointer.element,
+        };
+        doc.handle_ui_event(UiEvent::Wheel(wheel.clone()));
+        assert_eq!(doc.inner().get_node(id).unwrap().scroll_offset().y, 0.0);
+        std::thread::sleep(Duration::from_millis(40));
+        doc.inner_mut().resolve(1.0);
+        let middle = doc.inner().get_node(id).unwrap().scroll_offset().y;
+        assert!(
+            middle > 0.0 && middle < 60.0,
+            "wheel did not animate: {middle}"
+        );
+        doc.handle_ui_event(UiEvent::Wheel(wheel.clone()));
+        std::thread::sleep(Duration::from_millis(200));
+        doc.inner_mut().resolve(2.0);
+        assert!(
+            (doc.inner().get_node(id).unwrap().scroll_offset().y - 120.0).abs() < 0.1,
+            "repeated ticks must accumulate to 120px"
+        );
+        wheel.delta = BlitzWheelDelta::Pixels(0.0, -7.0);
+        doc.handle_ui_event(UiEvent::Wheel(wheel));
+        assert!((doc.inner().get_node(id).unwrap().scroll_offset().y - 127.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn component_shrinking_content_clamps_offsets_and_border_only_tables_do_not_scroll() {
+        let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            "<html><style>html,body{margin:0}#scroller{width:200px;height:100px;overflow:auto}#content{height:700px}.table{width:150px;overflow:auto;border:1px solid black;border-radius:6px}table{width:100%;border-collapse:collapse}td{padding:4px}</style><body><div id='scroller'><div id='content'></div></div><div class='table' id='wrapper'><table><tr><td>A</td><td>B</td></tr></table></div></body></html>","").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(400, 300, 1.0, ColorScheme::Light));
+        doc.rendering_update();
+        doc.inner_mut().resolve(0.0);
+        doc.js_context.with(|ctx|ctx.eval::<(),_>("document.getElementById('scroller').scrollTop=600;document.getElementById('content').style.height='20px'")).unwrap();
+        doc.rendering_update();
+        doc.inner_mut().resolve(1.0);
+        let scroller = doc.inner().get_element_by_id("scroller").unwrap();
+        assert_eq!(
+            doc.inner().get_node(scroller).unwrap().scroll_offset().y,
+            0.0
+        );
+        let wrapper = doc.inner().get_element_by_id("wrapper").unwrap();
+        let dom = doc.inner();
+        let node = dom.get_node(wrapper).unwrap();
+        assert!(
+            node.final_layout().scroll_height() <= 0.5,
+            "border-only table acquired vertical overflow: {:?}",
+            node.final_layout()
+        );
+        assert!(
+            node.final_layout().scroll_width() <= 0.5,
+            "border-only table acquired horizontal overflow: {:?}",
+            node.final_layout()
+        );
     }
 
     #[test]
@@ -10246,6 +10465,49 @@ mod tests {
         assert!(doc.script_diagnostics.borrow().is_empty());
     }
 
+    fn native_component_pointer(doc: &mut LapuiDocument, x: f32, y: f32, down: Option<bool>) {
+        use blitz::traits::events::{MouseEventButtons, UiEvent};
+        let mut pointer = doc
+            .inner()
+            .root_element()
+            .synthetic_click_event_data(keyboard_types::Modifiers::empty());
+        pointer.coords.client_x = x;
+        pointer.coords.page_x = x;
+        pointer.coords.client_y = y;
+        pointer.coords.page_y = y;
+        pointer.buttons = if down == Some(false) {
+            MouseEventButtons::None
+        } else {
+            MouseEventButtons::Primary
+        };
+        doc.handle_ui_event(match down {
+            Some(true) => UiEvent::PointerDown(pointer),
+            Some(false) => UiEvent::PointerUp(pointer),
+            None => UiEvent::PointerMove(pointer),
+        });
+    }
+
+    fn native_component_click(doc: &mut LapuiDocument, expression: &str) {
+        let info=doc.js_context.with(|ctx|ctx.eval::<String,_>(format!(r#"
+            (()=>{{const el={expression},main=document.querySelector('.demo-main');
+            if(main?.contains(el))main.scrollTop+=el.getBoundingClientRect().top-main.getBoundingClientRect().top-60;
+            const r=el.getBoundingClientRect();return JSON.stringify([el.__ref,r.x+r.width/2,r.y+r.height/2]);}})()
+        "#))).unwrap();
+        let info: Value = serde_json::from_str(&info).unwrap();
+        let (x, y) = (
+            info[1].as_f64().unwrap() as f32,
+            info[2].as_f64().unwrap() as f32,
+        );
+        let target = resolve_node_ref(&doc.inner(), info[0].as_str().unwrap()).unwrap();
+        let hit = doc
+            .inner()
+            .hit(x, y)
+            .expect("native component click missed all rendered content");
+        assert!(doc.inner().node_chain(hit.node_id).contains(&target),"native hit does not reach requested component: {expression} ({x},{y}), hit {:?}, expected {target:?}",hit.node_id);
+        native_component_pointer(doc, x, y, Some(true));
+        native_component_pointer(doc, x, y, Some(false));
+    }
+
     #[test]
     #[ignore = "requires a built lapstyle-ui; set LAPUI_LAPSTYLE_HTML or use scripts/debug-lapstyle-ui.ps1 -CheckOnly"]
     fn lapstyle_ui_full_application_mounts_and_navigates() {
@@ -10327,12 +10589,13 @@ mod tests {
                         globalThis.menuProbeItem=Array.from(document.querySelectorAll('.demo-panel .ls-menu .item')).find(el=>el.querySelector(':scope > .caret'));
                         globalThis.menuProbeSub=menuProbeItem.nextElementSibling;
                         globalThis.menuProbeBefore=menuProbeSub.hidden;
-                        menuProbeItem.click();
                     "#)).unwrap();
+                    native_component_click(&mut doc,"menuProbeItem");
                     for _ in 0..5 {doc.poll(None);doc.animation_frame();doc.rendering_update();}
                     doc.js_context.with(|ctx|ctx.eval::<(),_>(
-                        "globalThis.menuProbeAfter=menuProbeSub.hidden;menuProbeItem.click()"
+                        "globalThis.menuProbeAfter=menuProbeSub.hidden"
                     )).unwrap();
+                    native_component_click(&mut doc,"menuProbeItem");
                     for _ in 0..5 {doc.poll(None);doc.animation_frame();doc.rendering_update();}
                     let menu: String = doc.js_context.with(|ctx|ctx.eval(r#"
                         JSON.stringify({before:menuProbeBefore,after:menuProbeAfter,restored:menuProbeSub.hidden,aria:menuProbeItem.getAttribute('aria-expanded')})
@@ -10342,9 +10605,7 @@ mod tests {
                     assert_eq!(menu["before"],menu["restored"],"submenu second click did not restore: {menu}");
                 }
                 if section == "dialog" {
-                    doc.js_context.with(|ctx|ctx.eval::<(),_>(
-                        "document.querySelector('[data-ls-open=\"#demo-dialog-confirm\"]').click()"
-                    )).unwrap();
+                    native_component_click(&mut doc,"document.querySelector('[data-ls-open=\"#demo-dialog-confirm\"]')");
                     for _ in 0..5 {doc.poll(None);doc.animation_frame();doc.rendering_update();}
                     // The real component animates both overlay and panel
                     // opacity when hidden is removed. A box with
@@ -10371,13 +10632,38 @@ mod tests {
                     let dialog: Value=serde_json::from_str(&dialog).unwrap();
                     assert_eq!(dialog["hidden"],false,"dialog opener did not remove hidden: {dialog}");
                     assert!(dialog["panelWidth"].as_f64().unwrap_or(0.0)>100.0 && dialog["panelHeight"].as_f64().unwrap_or(0.0)>40.0,"dialog panel is not laid out: {dialog}");
-                    doc.js_context.with(|ctx|ctx.eval::<(),_>(
-                        "document.querySelector('#demo-dialog-confirm .actions button').click()"
-                    )).unwrap();
+                    native_component_click(&mut doc,"document.querySelector('#demo-dialog-confirm .actions button')");
                     for _ in 0..5 {doc.poll(None);}
                     assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(
                         "document.getElementById('demo-dialog-confirm').hidden"
                     )).unwrap(),"dialog action did not close the panel");
+                }
+                if section == "dropdown" {
+                    native_component_click(&mut doc,"document.querySelector('.demo-panel .ls-dropdown .trigger')");
+                    for _ in 0..5 {doc.poll(None);doc.animation_frame();doc.rendering_update();}
+                    assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>("!document.querySelector('.demo-panel .ls-dropdown .ls-menu').hidden")).unwrap());
+                    native_component_click(&mut doc,"document.querySelector('.demo-section-title')");
+                    for _ in 0..5 {doc.poll(None);doc.animation_frame();doc.rendering_update();}
+                    assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>("document.querySelector('.demo-panel .ls-dropdown .ls-menu').hidden")).unwrap(),"native outside pointerdown failed to close dropdown");
+                }
+                if section == "theme" {
+                    native_component_click(&mut doc,"document.querySelector('input[name=\"demo-page-scale\"][value=\"xl\"]')");
+                    for _ in 0..5 {doc.poll(None);doc.animation_frame();doc.rendering_update();}
+                    assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>("document.documentElement.getAttribute('data-ls-scale')==='xl'&&parseFloat(getComputedStyle(document.documentElement).fontSize)===20")).unwrap(),"theme root font size did not change to 20px");
+                    native_component_click(&mut doc,"document.querySelector('input[name=\"demo-page-scale\"][value=\"md\"]')");
+                    for _ in 0..5 {doc.poll(None);doc.animation_frame();doc.rendering_update();}
+                }
+                if section == "splitter" {
+                    native_component_click(&mut doc,"document.querySelector('.demo-panel .ls-splitter .handle')");
+                    let info=doc.js_context.with(|ctx|ctx.eval::<String,_>(r#"
+                        (()=>{const h=document.querySelector('.demo-panel .ls-splitter .handle'),r=h.getBoundingClientRect();globalThis.splitPane=h.nextElementSibling;globalThis.splitBefore=splitPane.getBoundingClientRect().width;return JSON.stringify([r.x+r.width/2,r.y+r.height/2]);})()
+                    "#)).unwrap();
+                    let info:Value=serde_json::from_str(&info).unwrap();let x=info[0].as_f64().unwrap() as f32;let y=info[1].as_f64().unwrap() as f32;
+                    native_component_pointer(&mut doc,x,y,Some(true));
+                    native_component_pointer(&mut doc,x+45.0,y,None);
+                    native_component_pointer(&mut doc,x+45.0,y,Some(false));
+                    for _ in 0..5 {doc.poll(None);doc.animation_frame();doc.rendering_update();}
+                    assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>("Math.abs(splitPane.getBoundingClientRect().width-splitBefore)>20")).unwrap(),"native splitter drag did not resize its pane");
                 }
                 #[cfg(feature = "software-renderer")]
                 if let Some(directory) = std::env::var_os("LAPUI_DIAGNOSTICS_DIR") {

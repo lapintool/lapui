@@ -12,6 +12,13 @@ Run these commands from the Lapui repository root on Windows:
 
 These are development and packaging commands for the existing experimental runtime. They do not change its documented frontend compatibility.
 
+The development check verifies local `link:` dependencies resolve to their
+declared checkout, rather than a stale package in a copied node_modules. For
+the Lapstyle demo, repair a mismatch with `pnpm --dir <frontend-directory> link
+../lapstyle`. Its sibling library contains the current typography-scale rules;
+reusing an old Git package can make the theme size controls appear ineffective.
+An explicit LAPSTYLE_SPEC keeps the frontend's documented remote-package mode.
+
 ## Prerequisites and configuration
 
 Use Node.js 24 or newer, pnpm 11.8.0, Python 3, Rust 1.99.0, and the Windows MSVC build tools. The root package has no npm dependencies; run pnpm install to validate its lockfile. The external frontend checkout needs its own dependencies installed.

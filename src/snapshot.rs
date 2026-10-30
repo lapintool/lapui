@@ -304,6 +304,76 @@ mod tests {
     }
 
     #[test]
+    fn component_radial_backgrounds_keep_transparent_corners_at_device_scales() {
+        for scale in [1.0, 1.65, 2.0] {
+            let (mut doc,_) = LapuiDocument::new_with_source(ActionRegistry::default(),None,
+                "<html><style>html,body{margin:0;background:white}#disc{position:absolute;left:20px;top:20px;width:40px;height:40px;background:radial-gradient(circle closest-side,cyan 100%,transparent 100%)}#tab{position:absolute;left:80px;top:20px;width:8px;height:8px;background:radial-gradient(circle at 0 0,transparent 8px,blue 8.5px)}</style><body><div id='disc'></div><div id='tab'></div></body></html>","").unwrap();
+            doc.inner_mut().set_viewport(Viewport::new(
+                (120.0 * scale) as u32,
+                (100.0 * scale) as u32,
+                scale,
+                ColorScheme::Light,
+            ));
+            let shot = capture_without_poll(&mut doc).unwrap();
+            let at = |x: f32, y: f32| {
+                let i = (((y * scale) as usize) * shot.width as usize + (x * scale) as usize) * 4;
+                &shot.rgba[i..i + 4]
+            };
+            if at(22.0, 22.0) != [255, 255, 255, 255] {
+                let mut scene = anyrender::Scene::new();
+                crate::paint::paint_scene(
+                    &mut scene,
+                    &mut doc.inner_mut(),
+                    scale as f64,
+                    shot.width,
+                    shot.height,
+                    0,
+                    0,
+                );
+                eprintln!("radial commands: {:?}", scene.commands);
+            }
+            assert_eq!(
+                at(22.0, 22.0),
+                &[255, 255, 255, 255],
+                "radial disc corner became square at {scale}"
+            );
+            assert_eq!(at(40.0, 40.0), &[0, 255, 255, 255]);
+            assert_eq!(
+                at(81.0, 21.0),
+                &[255, 255, 255, 255],
+                "tab outside corner lost its transparent radius at {scale}"
+            );
+            assert!(at(87.0, 27.0)[2] > 200 && at(87.0, 27.0)[0] < 60);
+        }
+    }
+
+    #[test]
+    fn component_hovered_svg_remains_visible_through_color_transition_and_leave() {
+        let (mut doc,_) = LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            "<html><style>html,body{margin:0;background:white}button{width:60px;height:60px;border:0;background:white;color:cyan}button:hover{color:blue}.icon{display:inline-flex;width:40px;height:40px;align-items:center;justify-content:center;transition:color .1s linear}svg{display:block;width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:3}</style><body><button><span class='icon'><svg width='40' height='40' viewBox='0 0 40 40'><circle cx='20' cy='20' r='14'/></svg></span></button></body></html>","").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(120, 100, 1.0, ColorScheme::Light));
+        for (x, y) in [(100.0, 80.0), (20.0, 20.0), (100.0, 80.0)] {
+            doc.inner_mut().set_hover_to(x, y);
+            for _ in 0..8 {
+                let shot = capture_without_poll(&mut doc).unwrap();
+                let colored = shot
+                    .rgba
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|p| p[2] > 180 && p[0] < 100)
+                    .count();
+                assert!(
+                    colored > 40,
+                    "SVG disappeared during hover/leave: {colored} pixels"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+
+    #[test]
     fn component_scrollbars_follow_authored_hover_alpha_before_any_scroll() {
         let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(),None,
             "<html><style>html,body{margin:0;background:white}#scroll{width:100px;height:80px;overflow:auto;scrollbar-width:thin;scrollbar-color:rgb(255 0 0 / 0) transparent}#scroll:hover{scrollbar-color:red transparent}#content{height:240px}</style><body><div id='scroll'><div id='content'></div></div></body></html>", "").unwrap();

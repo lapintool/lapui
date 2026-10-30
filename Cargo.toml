@@ -53,6 +53,7 @@ blitz-shell = { version = "=0.3.0-beta.2", default-features = false, features = 
 # DOM and paint packages retain that exact source plus documented bounded fixes.
 # See vendor/blitz-dom/LAPUI-PATCHES.md before upgrading this group.
 [patch.crates-io]
+stylo = { path = "vendor/stylo" }
 blitz = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }
 blitz-dom = { path = "vendor/blitz-dom" }
 blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "8b54d6d2930f654d75446e423b42033d323205f0" }

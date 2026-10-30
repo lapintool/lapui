@@ -74,7 +74,12 @@ pub(crate) fn to_peniko_gradient(
             flags,
             // compat_mode,
             ..
-        } => radial_gradient((shape, position, items, *flags), origin_rect, current_color),
+        } => radial_gradient(
+            (shape, position, items, *flags),
+            origin_rect,
+            scale,
+            current_color,
+        ),
         GenericGradient::Conic {
             angle,
             position,
@@ -161,6 +166,7 @@ fn linear_gradient(
 fn radial_gradient(
     gradient: RadialGradient,
     rect: Rect,
+    scale: f64,
     current_color: &AbsoluteColor,
 ) -> (peniko::Gradient, Option<Affine>) {
     let (shape, position, items, flags) = gradient;
@@ -199,7 +205,7 @@ fn radial_gradient(
                     }
                     _ => 0.0,
                 },
-                GenericCircle::Radius(radius) => radius.0.px() as f64,
+                GenericCircle::Radius(radius) => radius.0.px() as f64 * scale,
             };
             Some(Vec2::new(scale, scale))
         }
@@ -228,8 +234,8 @@ fn radial_gradient(
                 _ => None,
             },
             GenericEllipse::Radii(x, y) => Some(Vec2::new(
-                resolve_gradient_length(&x.0, rect.width()),
-                resolve_gradient_length(&y.0, rect.height()),
+                resolve_gradient_length(&x.0, rect.width() / scale) * scale,
+                resolve_gradient_length(&y.0, rect.height() / scale) * scale,
             )),
         },
     };
@@ -240,14 +246,38 @@ fn radial_gradient(
             let (first_offset, last_offset) = resolve_length_color_stops(
                 current_color,
                 items,
-                CSSPixelLength::new(gradient_scale.x as f32),
+                CSSPixelLength::new((gradient_scale.x / scale) as f32),
                 &mut gradient,
                 repeating,
             );
             let scale = if repeating && gradient.stops.len() >= 2 {
                 (last_offset - first_offset) as f64
             } else {
-                1.0
+                // A hard stop at the radial endpoint must still leave the
+                // last color visible outside the circle. Renderer ramps sample
+                // [0,1), so equal stops at 1 otherwise pad with the inner color.
+                // Extend the gradient domain to cover the painted tile, keeping
+                // the same CSS radii by rescaling both stops and brush geometry.
+                let dx = width_px.max(rect.width() - width_px) / gradient_scale.x;
+                let dy = height_px.max(rect.height() - height_px) / gradient_scale.y;
+                let last = gradient.stops.last().map_or(1.0, |stop| stop.offset as f64);
+                let coverage = dx.hypot(dy).max(last).max(1.0);
+                if coverage.is_finite() && coverage > 1.0 {
+                    for stop in gradient.stops.iter_mut() {
+                        stop.offset /= coverage as f32;
+                    }
+                    if let Some(last) = gradient.stops.last().copied() {
+                        if last.offset < 1.0 {
+                            gradient.stops.push(peniko::ColorStop {
+                                offset: 1.0,
+                                ..last
+                            });
+                        }
+                    }
+                    coverage
+                } else {
+                    1.0
+                }
             };
             Some(
                 Affine::scale_non_uniform(gradient_scale.x * scale, gradient_scale.y * scale)

@@ -365,6 +365,13 @@
     get firstElementChild() { return this.children[0] ?? null; }
     get lastElementChild() { return this.children.slice(-1)[0] ?? null; }
     get childElementCount() { return this.children.length; }
+    setPointerCapture(pointerId) {
+      if (activePointerIds.has(Number(pointerId)) && this.isConnected) {
+        pointerCaptures.set(Number(pointerId), new WeakRef(this));
+      }
+    }
+    releasePointerCapture(pointerId) { if (this.hasPointerCapture(pointerId)) pointerCaptures.delete(Number(pointerId)); }
+    hasPointerCapture(pointerId) { return pointerCaptures.get(Number(pointerId))?.deref() === this; }
     get hidden() { return this.hasAttribute('hidden'); }
     set hidden(value) {
       if (value) this.setAttribute('hidden', '');
@@ -1416,9 +1423,19 @@
     ));
   };
 
+  const pointerCaptures = new Map();
+  const activePointerIds = new Set();
   let armedSpace = null;
   const dispatch = (type, targetId, path = '', detail = '{}', fields = {}, suppliedEvent = null) => {
     if (type === 'keydown' && keydownDispatchDepth === 0) focusTransitionDuringKeydown = null;
+    const init = JSON.parse(detail);
+    const pointerId = Number(init.pointerId);
+    if (type === 'pointerdown') activePointerIds.add(pointerId);
+    if (['pointermove', 'pointerup', 'pointercancel'].includes(type)) {
+      const capture = pointerCaptures.get(pointerId)?.deref();
+      if (capture?.isConnected) { targetId = capture.__ref; path = __lapui_event_path(targetId); }
+      else pointerCaptures.delete(pointerId);
+    }
     const target = getElement(targetId);
     if ((type === 'blur' || type === 'focusout') && armedSpace?.deref() === target) armedSpace = null;
     const ids = path ? path.split('\n') : [targetId];
@@ -1445,10 +1462,10 @@
     const targetBefore = checkable && target.checked;
     if (checkable) target.checked = target.type.toLowerCase() === 'radio' ? true : !targetBefore;
     let dispatched = false;
-    const bubbles = type === 'scroll' ? target === document : !['focus', 'blur', 'mouseenter', 'mouseleave', 'pointerenter', 'pointerleave', 'resize', 'invalid'].includes(type);
-    const cancelable = ['keydown', 'keyup', 'keypress', 'click', 'dblclick', 'submit', 'reset', 'invalid'].includes(type);
+    const bubbles = init.__bubbles ?? (type === 'scroll' ? target === document : !['focus', 'blur', 'mouseenter', 'mouseleave', 'pointerenter', 'pointerleave', 'resize', 'invalid'].includes(type));
+    const cancelable = init.__cancelable ?? ['keydown', 'keyup', 'keypress', 'click', 'dblclick', 'submit', 'reset', 'invalid'].includes(type);
     const event = suppliedEvent ?? {
-      ...JSON.parse(detail),
+      ...init,
       ...fields,
       type,
       target,
@@ -1587,6 +1604,9 @@
       if (armed === target && !event.defaultPrevented && !event.ctrlKey && !event.altKey && !event.metaKey && document.activeElement === target && __lapui_is_enabled(targetId)) {
         keyboardDefault = true; lapui.activate(targetId);
       }
+    }
+    if (type === 'pointerup' || type === 'pointercancel') {
+      activePointerIds.delete(pointerId); pointerCaptures.delete(pointerId);
     }
     return JSON.stringify({ dispatched, defaultPrevented: event.defaultPrevented, nativeDefaultHandled: Boolean(checkable || label || keyboardDefault || formDefault) });
   };
