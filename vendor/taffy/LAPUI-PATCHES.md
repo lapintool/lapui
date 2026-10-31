@@ -53,3 +53,17 @@ the dependency API or enabled feature defaults.
 Do not modify the Cargo cache or update these sources in place without updating
 this record. Additional patches require a separate ID, failing reproduction,
 upstream reference where available, and removal condition.
+
+## P-OVERFLOW-ROUND-001
+
+- Location: `src/compute/mod.rs`, `round_layout` overflow-rectangle origin.
+- Overflow extents are padding-box-relative; rounding them against the border
+  box origin disagreed with independently rounded borders. A fitting box could
+  gain a 1 CSS px scroll range depending on its fractional position and size.
+- Round overflow coordinates from the unrounded padding-box start instead.
+  This retains real overflow; it does not impose a blanket small-range cutoff.
+- Regressions: fractional bordered fitting/overflowing boxes, and the actual
+  Lapstyle Button page at 30 viewport/DPI combinations. Verify both metrics
+  and painting, and retain actual short/long scroll-container coverage.
+- Removal: remove after a compatible upstream rounding implementation passes
+  the same cases without this change. No upstream fix is claimed here.

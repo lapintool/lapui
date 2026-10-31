@@ -141,7 +141,7 @@ impl ElementCx<'_, '_> {
         // The background color is clipped by the clip of the last layer in the list
         let background_clip: BoxModelBox =
             (*get_cyclic(&bg_styles.background_clip.0, layer_count - 1)).into();
-        let background_clip_path = self.box_path(background_clip);
+        let background_clip_path = self.background_box_path(background_clip);
 
         // Draw background color (if any)
         self.draw_solid_bg(scene, &background_clip_path);
@@ -151,7 +151,7 @@ impl ElementCx<'_, '_> {
             if layer_paints_nothing(&layer) {
                 continue;
             }
-            let background_clip_path = self.box_path(layer.clip);
+            let background_clip_path = self.background_box_path(layer.clip);
 
             self.context.layer_manager.maybe_with_layer(
                 scene,
@@ -166,6 +166,98 @@ impl ElementCx<'_, '_> {
                 },
             );
         }
+    }
+
+    /// Collapsed cells occupy tracks while borders occupy the intervening
+    /// gutters. Their backgrounds must reach shared border midpoints rather
+    /// than stop at track edges. Keep content layout and hit testing unchanged.
+    fn background_box_path(&self, css_box: BoxModelBox) -> BezPath {
+        if matches!(css_box, BoxModelBox::BorderBox)
+            && let Some(rect) = self.collapsed_cell_background_rect()
+        {
+            return rect.to_path(0.1);
+        }
+        self.box_path(css_box)
+    }
+
+    fn collapsed_cell_background_rect(&self) -> Option<Rect> {
+        if self.style.clone_display().inside()
+            != style::values::specified::box_::DisplayInside::TableCell
+        {
+            return None;
+        }
+        let parent = self.context.dom.get_node(self.node.layout_parent.get()?)?;
+        let SpecialElementData::TableRoot(table) = &parent.element_data()?.special_data else {
+            return None;
+        };
+        if table.border_collapse != BorderCollapse::Collapse {
+            return None;
+        }
+        let raw = self.node.unrounded_layout();
+        let outer = parent.unrounded_layout();
+        let gap = table.style.gap.map(|value| value.into_raw().value());
+        // Table layout reserves synthetic outside gutters as well. A zero
+        // authored outside border must not leave a strip of table background.
+        let left = if raw.location.x <= gap.width + outer.padding.left + 0.01 {
+            outer.border.left + outer.padding.left
+        } else {
+            raw.location.x - gap.width / 2.0
+        };
+        let top = if raw.location.y <= gap.height + outer.padding.top + 0.01 {
+            outer.border.top + outer.padding.top
+        } else {
+            raw.location.y - gap.height / 2.0
+        };
+        let right = if raw.location.x + raw.size.width
+            >= outer.size.width - gap.width - outer.padding.right - 0.01
+        {
+            outer.size.width - outer.border.right - outer.padding.right
+        } else {
+            raw.location.x + raw.size.width + gap.width / 2.0
+        };
+        let bottom = if raw.location.y + raw.size.height
+            >= outer.size.height - gap.height - outer.padding.bottom - 0.01
+        {
+            outer.size.height - outer.border.bottom - outer.padding.bottom
+        } else {
+            raw.location.y + raw.size.height + gap.height / 2.0
+        };
+
+        // Use the same cumulative rounding as Taffy, including ancestors but
+        // excluding scroll/transform translations. Adjacent cells share exactly
+        // one boundary even at fractional DPI and non-integral grid positions.
+        let mut origin = kurbo::Vec2::ZERO;
+        let mut ancestor = Some(parent);
+        while let Some(node) = ancestor {
+            origin.x += node.unrounded_layout().location.x as f64;
+            origin.y += node.unrounded_layout().location.y as f64;
+            ancestor = node
+                .layout_parent
+                .get()
+                .and_then(|id| self.context.dom.get_node(id));
+        }
+        let position = self.node.final_layout().location;
+        let x = |value: f32| {
+            ((origin.x + value as f64).round() - origin.x.round() - position.x as f64) * self.scale
+        };
+        let y = |value: f32| {
+            ((origin.y + value as f64).round() - origin.y.round() - position.y as f64) * self.scale
+        };
+        let rect = Rect::new(x(left), y(top), x(right), y(bottom));
+        // Two separately antialiased fills sharing a fractional device edge
+        // still leak the layer underneath. Snap common edges in device space
+        // for translation-only painting, including fractional scroll offsets.
+        let [a, b, c, d, tx, ty] = self.transform.as_coeffs();
+        Some(if a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0 {
+            Rect::new(
+                (rect.x0 + tx).round() - tx,
+                (rect.y0 + ty).round() - ty,
+                (rect.x1 + tx).round() - tx,
+                (rect.y1 + ty).round() - ty,
+            )
+        } else {
+            rect
+        })
     }
 
     /// The path of the given CSS box model box for this element

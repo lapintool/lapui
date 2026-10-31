@@ -639,7 +639,12 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // todo: maybe cache this so we don't need to constantly be figuring it out
         // It is quite a bit of math to calculate during render/traverse
         // Also! we can cache the bezpaths themselves, saving us a bunch of work
-        let frame = create_css_rect(&style, &layout, scale);
+        // Only the paint box needs fractional border widths. Mutating the
+        // document's rounded borders here would also change scroll ranges and
+        // overlay scrollbar visibility during painting.
+        let mut paint_layout = layout;
+        paint_layout.border = node.unrounded_layout().border;
+        let frame = create_css_rect(&style, &paint_layout, scale);
 
         let element = node.element_data().unwrap();
 

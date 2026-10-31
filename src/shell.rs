@@ -11,7 +11,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, DeviceId, StartCause, WindowEvent};
+use winit::cursor::CursorIcon;
+use winit::event::{
+    ButtonSource, DeviceEvent, DeviceId, MouseButton, PointerSource, StartCause, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::PhysicalKey;
 use winit::window::{ResizeDirection, WindowId};
@@ -33,17 +36,6 @@ pub(crate) const WINDOW_CHROME_SCRIPT: &str = r#"(() => {
     .lapui-window-button { width: 46px !important; height: 33px !important; display: inline-flex !important; align-items: center !important; justify-content: center !important; border: 0 !important; border-radius: 0 !important; padding: 0 !important; margin: 0 !important; background: transparent !important; color: inherit !important; font: 16px/1 "Segoe UI Symbol", sans-serif !important; cursor: default !important; }
     .lapui-window-button:hover { background: #3a3b3d !important; }
     .lapui-window-button[data-action="close"]:hover { background: #c42b1c !important; color: white !important; }
-    #lapui-window-resize-handles { position: fixed !important; z-index: 2147483646 !important; inset: 0 !important; pointer-events: none !important; }
-    .lapui-resize-handle { position: absolute !important; pointer-events: auto !important; }
-    .lapui-resize-n, .lapui-resize-s { left: 8px !important; right: 8px !important; height: 4px !important; cursor: ns-resize !important; }
-    .lapui-resize-n { top: 0 !important; } .lapui-resize-s { bottom: 0 !important; }
-    .lapui-resize-e, .lapui-resize-w { top: 8px !important; bottom: 8px !important; width: 4px !important; cursor: ew-resize !important; }
-    .lapui-resize-e { right: 0 !important; } .lapui-resize-w { left: 0 !important; }
-    .lapui-resize-ne, .lapui-resize-nw, .lapui-resize-se, .lapui-resize-sw { width: 8px !important; height: 8px !important; }
-    .lapui-resize-ne { top: 0 !important; right: 0 !important; cursor: nesw-resize !important; }
-    .lapui-resize-nw { top: 0 !important; left: 0 !important; cursor: nwse-resize !important; }
-    .lapui-resize-se { right: 0 !important; bottom: 0 !important; cursor: nwse-resize !important; }
-    .lapui-resize-sw { left: 0 !important; bottom: 0 !important; cursor: nesw-resize !important; }
   `;
   document.body.appendChild(style);
   const bar = document.createElement('div');
@@ -83,17 +75,6 @@ pub(crate) const WINDOW_CHROME_SCRIPT: &str = r#"(() => {
   document.body.insertBefore(bar, document.body.firstChild);
   document.body.style.setProperty('box-sizing', 'border-box', 'important');
   document.body.style.setProperty('padding-top', '34px', 'important');
-  const handles = document.createElement('div');
-  handles.id = 'lapui-window-resize-handles';
-  for (const direction of ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw']) {
-    const handle = document.createElement('div');
-    handle.className = `lapui-resize-handle lapui-resize-${direction}`;
-    handle.addEventListener('pointerdown', event => {
-      if (event.button === 0) window.__lapui_window_command(`resize-${direction}`);
-    });
-    handles.appendChild(handle);
-  }
-  document.body.appendChild(handles);
 })();"#;
 
 /// Keeps Blitz's layout, painting and OS handling, adding a JS frame checkpoint
@@ -103,6 +84,8 @@ pub struct LapuiApplication<R: WindowRenderer> {
     pub inner: BlitzApplication<R>,
     proxy: BlitzShellProxy,
     frames: HashMap<WindowId, Instant>,
+    refresh_intervals: HashMap<WindowId, Duration>,
+    native_resize_releases: HashSet<WindowId>,
     restored_zoom: HashSet<WindowId>,
     window_state: WindowStateStore,
     save_deadline: Option<Instant>,
@@ -133,6 +116,8 @@ impl<R: WindowRenderer> LapuiApplication<R> {
             proxy: proxy.clone(),
             inner: BlitzApplication::new(proxy, events),
             frames: HashMap::new(),
+            refresh_intervals: HashMap::new(),
+            native_resize_releases: HashSet::new(),
             restored_zoom: HashSet::new(),
             window_state,
             save_deadline: None,
@@ -173,6 +158,8 @@ impl<R: WindowRenderer> ApplicationHandler for LapuiApplication<R> {
     }
     fn destroy_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.frames.clear();
+        self.refresh_intervals.clear();
+        self.native_resize_releases.clear();
         self.inner.destroy_surfaces(event_loop);
     }
     fn resumed(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -202,6 +189,10 @@ impl<R: WindowRenderer> ApplicationHandler for LapuiApplication<R> {
         self.inner.about_to_wait(event_loop);
         self.frames
             .retain(|id, _| self.inner.windows.contains_key(id));
+        self.refresh_intervals
+            .retain(|id, _| self.inner.windows.contains_key(id));
+        self.native_resize_releases
+            .retain(|id| self.inner.windows.contains_key(id));
         self.restored_zoom
             .retain(|id| self.inner.windows.contains_key(id));
         let now = Instant::now();
@@ -218,15 +209,16 @@ impl<R: WindowRenderer> ApplicationHandler for LapuiApplication<R> {
             {
                 continue;
             }
-            let due = self
-                .frames
-                .get(id)
-                .map_or(now, |last| *last + FRAME_INTERVAL);
+            let interval = *self
+                .refresh_intervals
+                .entry(*id)
+                .or_insert_with(|| frame_interval(view));
+            let due = self.frames.get(id).map_or(now, |last| *last + interval);
             let wake = if due <= now {
                 view.request_redraw();
                 // A slow/inactive platform must not turn an overdue frame into
                 // a WaitUntil deadline in the past and spin the event loop.
-                now + FRAME_INTERVAL
+                now + interval
             } else {
                 due
             };
@@ -236,21 +228,33 @@ impl<R: WindowRenderer> ApplicationHandler for LapuiApplication<R> {
     }
 
     fn window_event(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // The native resize loop may consume the release or deliver it later.
+        // Never forward an unmatched release to Blitz (it toggles button bits).
+        if let WindowEvent::PointerButton {
+            button: ButtonSource::Mouse(MouseButton::Left),
+            state,
+            ..
+        } = &event
+        {
+            if self.native_resize_releases.remove(&id) && !state.is_pressed() {
+                return;
+            }
+        }
         if matches!(event, WindowEvent::RedrawRequested) {
             let now = Instant::now();
-            let due = self
-                .frames
-                .get(&id)
-                .is_none_or(|last| now >= *last + FRAME_INTERVAL);
             if let Some(view) = self.inner.windows.get_mut(&id) {
                 if view.is_visible
                     && view.renderer.is_active()
                     && frame_document(view.doc.as_mut()).is_some()
                 {
-                    if !due {
+                    let interval = *self
+                        .refresh_intervals
+                        .entry(id)
+                        .or_insert_with(|| frame_interval(view));
+                    if !frame_is_due(self.frames.get(&id).copied(), now, interval) {
                         // Coalesce redraws as well as callbacks. Repainting here
                         // can otherwise spin native CSS animations faster than
-                        // 60 Hz and delay queued input. about_to_wait schedules
+                        // the display refresh rate and delay queued input. about_to_wait schedules
                         // this deferred opportunity at the next frame deadline.
                         frame_document(view.doc.as_mut())
                             .unwrap()
@@ -268,6 +272,8 @@ impl<R: WindowRenderer> ApplicationHandler for LapuiApplication<R> {
         if matches!(event, WindowEvent::CloseRequested) {
             self.save_window_state_for(id);
             self.frames.remove(&id);
+            self.refresh_intervals.remove(&id);
+            self.native_resize_releases.remove(&id);
             self.restored_zoom.remove(&id);
             self.inner.window_event(event_loop, id, event);
             return;
@@ -280,6 +286,65 @@ impl<R: WindowRenderer> ApplicationHandler for LapuiApplication<R> {
             self.schedule_state_save();
             return;
         }
+        // Native surface hit testing takes precedence over all DOM stacking and
+        // application handlers. OS logical pixels keep this independent of zoom.
+        if let Some(view) = self.inner.windows.get_mut(&id) {
+            let window = &view.window;
+            let enabled = window.is_resizable()
+                && !window.is_decorated()
+                && !window.is_maximized()
+                && window.fullscreen().is_none();
+            let size = window.surface_size();
+            let direction_at = |position: winit::dpi::PhysicalPosition<f64>| {
+                enabled
+                    .then(|| {
+                        resize_direction(
+                            position.x,
+                            position.y,
+                            size.width as f64,
+                            size.height as f64,
+                            window.scale_factor(),
+                        )
+                    })
+                    .flatten()
+            };
+            match &event {
+                WindowEvent::PointerMoved {
+                    position,
+                    source: PointerSource::Mouse,
+                    ..
+                } if view.buttons == blitz::traits::events::MouseEventButtons::None => {
+                    if let Some(direction) = direction_at(*position) {
+                        view.pointer_pos = *position;
+                        window.set_cursor(resize_cursor(direction).into());
+                        return;
+                    }
+                }
+                WindowEvent::PointerButton {
+                    position,
+                    button: ButtonSource::Mouse(MouseButton::Left),
+                    state,
+                    ..
+                } if state.is_pressed()
+                    && view.buttons == blitz::traits::events::MouseEventButtons::None =>
+                {
+                    if let Some(direction) = direction_at(*position) {
+                        if window.drag_resize_window(direction).is_ok() {
+                            self.native_resize_releases.insert(id);
+                            return;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let restore_cursor = matches!(
+            event,
+            WindowEvent::PointerMoved {
+                source: PointerSource::Mouse,
+                ..
+            }
+        );
         let state_changed = matches!(
             event,
             WindowEvent::Moved(_)
@@ -287,7 +352,14 @@ impl<R: WindowRenderer> ApplicationHandler for LapuiApplication<R> {
                 | WindowEvent::ScaleFactorChanged { .. }
         );
         self.inner.window_event(event_loop, id, event);
+        if restore_cursor {
+            if let Some(view) = self.inner.windows.get(&id) {
+                view.window
+                    .set_cursor(view.doc.inner().get_cursor().unwrap_or_default().into());
+            }
+        }
         if state_changed {
+            self.refresh_intervals.remove(&id);
             self.schedule_state_save();
         }
     }
@@ -378,6 +450,60 @@ impl<R: WindowRenderer> LapuiApplication<R> {
     }
 }
 
+fn resize_direction(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    scale: f64,
+) -> Option<ResizeDirection> {
+    if !scale.is_finite()
+        || scale <= 0.0
+        || !x.is_finite()
+        || !y.is_finite()
+        || x < 0.0
+        || y < 0.0
+        || x >= width
+        || y >= height
+    {
+        return None;
+    }
+    let edge = 5.0 * scale;
+    let corner = 10.0 * scale;
+    let left = x < edge;
+    let right = x >= width - edge;
+    let top = y < edge;
+    let bottom = y >= height - edge;
+    if (left && y < corner) || (top && x < corner) {
+        Some(ResizeDirection::NorthWest)
+    } else if (right && y < corner) || (top && x >= width - corner) {
+        Some(ResizeDirection::NorthEast)
+    } else if (left && y >= height - corner) || (bottom && x < corner) {
+        Some(ResizeDirection::SouthWest)
+    } else if (right && y >= height - corner) || (bottom && x >= width - corner) {
+        Some(ResizeDirection::SouthEast)
+    } else if left {
+        Some(ResizeDirection::West)
+    } else if right {
+        Some(ResizeDirection::East)
+    } else if top {
+        Some(ResizeDirection::North)
+    } else if bottom {
+        Some(ResizeDirection::South)
+    } else {
+        None
+    }
+}
+
+fn resize_cursor(direction: ResizeDirection) -> CursorIcon {
+    match direction {
+        ResizeDirection::North | ResizeDirection::South => CursorIcon::NsResize,
+        ResizeDirection::East | ResizeDirection::West => CursorIcon::EwResize,
+        ResizeDirection::NorthEast | ResizeDirection::SouthWest => CursorIcon::NeswResize,
+        ResizeDirection::NorthWest | ResizeDirection::SouthEast => CursorIcon::NwseResize,
+    }
+}
+
 fn zoom_shortcut<R: WindowRenderer>(
     application: &BlitzApplication<R>,
     id: WindowId,
@@ -417,6 +543,51 @@ fn zoom_from_key(code: winit::keyboard::KeyCode, current: f32) -> Option<f32> {
 mod window_chrome_tests {
     use super::*;
     use winit::keyboard::KeyCode;
+
+    #[test]
+    fn native_resize_targets_cover_all_edges_corners_and_fractional_dpi() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            for (x, y, direction) in [
+                (1.0, 1.0, ResizeDirection::NorthWest),
+                (400.0, 1.0, ResizeDirection::North),
+                (799.0, 1.0, ResizeDirection::NorthEast),
+                (799.0, 300.0, ResizeDirection::East),
+                (799.0, 599.0, ResizeDirection::SouthEast),
+                (400.0, 599.0, ResizeDirection::South),
+                (1.0, 599.0, ResizeDirection::SouthWest),
+                (1.0, 300.0, ResizeDirection::West),
+            ] {
+                assert_eq!(
+                    resize_direction(x * scale, y * scale, 800.0 * scale, 600.0 * scale, scale),
+                    Some(direction)
+                );
+            }
+            assert_eq!(
+                resize_direction(
+                    400.0 * scale,
+                    300.0 * scale,
+                    800.0 * scale,
+                    600.0 * scale,
+                    scale
+                ),
+                None
+            );
+            assert_eq!(resize_direction(-1.0, 10.0, 800.0, 600.0, scale), None);
+        }
+    }
+
+    #[test]
+    fn redraw_pacing_accepts_vsync_jitter_without_skipping_a_refresh() {
+        let now = Instant::now();
+        for interval in [FRAME_INTERVAL, Duration::from_nanos(6_944_444)] {
+            assert!(frame_is_due(
+                Some(now),
+                now + interval - Duration::from_micros(400),
+                interval
+            ));
+            assert!(!frame_is_due(Some(now), now + interval / 2, interval));
+        }
+    }
 
     #[test]
     fn browser_zoom_keys_cover_main_and_keypad_keys_with_bounds_and_reset() {
@@ -485,9 +656,28 @@ fn redraw_document<R: WindowRenderer>(view: &mut View<R>) {
     }
 }
 
-// A soft 60 Hz maximum for redraw opportunities and their JS callback batches;
-// not monitor VSync or a presentation guarantee. No missed-frame replay/worker.
+// Pace against the current display. A small scheduling tolerance prevents a
+// VSync event arriving microseconds early from being deferred a whole refresh.
+// This remains a soft opportunity limit, not a presentation acknowledgement.
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
+
+fn frame_interval<R: WindowRenderer>(view: &View<R>) -> Duration {
+    let rate = view
+        .window
+        .current_monitor()
+        .and_then(|monitor| monitor.current_video_mode())
+        .and_then(|mode| mode.refresh_rate_millihertz())
+        .map(|rate| rate.get());
+    rate.filter(|rate| (30_000..=240_000).contains(rate))
+        .map_or(FRAME_INTERVAL, |rate| {
+            Duration::from_secs_f64(1000.0 / rate as f64)
+        })
+}
+
+fn frame_is_due(last: Option<Instant>, now: Instant, interval: Duration) -> bool {
+    let tolerance = Duration::from_millis(1).min(interval / 8);
+    last.is_none_or(|last| now.saturating_duration_since(last) + tolerance >= interval)
+}
 
 #[derive(Default)]
 struct AnimationWait {

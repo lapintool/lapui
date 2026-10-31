@@ -13,6 +13,24 @@ to cover the painted tile. This preserves the outer color of a hard stop at
 100%, which renderer ramps sampling [0,1) otherwise lose. Radio hover discs
 became squares; tab outside-corner lengths also used the wrong DPI basis.
 Retain the transparent-corner pixel tests at 1x, 1.65x and 2x on removal.
-Fractional-border compensation stays in Lapui `src/paint.rs`, and now also
-visits generated before/after boxes. Remove this directory and its Cargo source
-override when a compatible upstream group passes those retained tests.
+
+## P-PAINT-BORDER-001
+
+`src/render.rs` uses unrounded border widths only in its local paint box. The
+Lapui wrapper no longer temporarily mutates authoritative layout borders across
+the whole tree. Such mutation also changed scroll ranges while scrollbars were
+being painted. Generated boxes and subdocuments use the same painter naturally.
+Retain fractional pseudo-border pixels and fitting/real-overflow regressions.
+
+## P-TABLE-BACKGROUND-001
+
+`src/render/background.rs` extends collapsed cell backgrounds to shared border
+midpoints, including outside synthetic table gutters where the authored outside
+border is zero. Shared edges use the same cumulative rounding as layout, before
+scroll and CSS transform translations. This fixes header background strips
+without changing column sizes or content/hit geometry. Separated border spacing
+is unchanged. This is not full collapsed-border conflict resolution; background
+image positioning and broader table conformance remain separate work.
+Retain cyan-header pixel scans at five scales, real-page captures, and existing
+fixed/auto/span geometry regressions. Remove these patches when a compatible
+upstream group passes these checks without them.

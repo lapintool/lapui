@@ -57,15 +57,12 @@ Follow-up fixes:
 - P-TYPED-TRANSITION-001 integration: enable the existing @property parser;
   the narrowly scoped Stylo transition gate correction is tracked separately
   in vendor/stylo/LAPUI-PATCHES.md.
-- P-WHEEL-001: discrete line-wheel input follows Chromium's model: a notch
-  *extends a target* (`WheelChaseState.remaining`) and the frame loop chases it
-  with a frame-rate independent exponential decay, `1 - exp(-18 * dt)`. The
-  first frame already covers ~26% of the step (instant response), the tail eases
-  out over ~200ms, and a notch arriving mid-flight simply extends the target, so
-  there is no acceleration discontinuity when spinning the wheel. One 3-line
-  notch maps to ~100 CSS px (`PX_PER_LINE = 100/3`), matching Windows/Chromium
-  instead of the previous 20 px/line. Frames with `dt = 0` must not be read as
-  hitting an edge (that swallowed the first notch); only a frame that had motion
-  to deliver and consumed none ends the chase. Precision pixel input, explicit
-  instant scroll and scrollbar dragging stay direct. Regressions:
-  `component_discrete_wheel_accumulates_into_a_fling_and_precision_wheel_stays_direct`.
+- P-WHEEL-001: discrete line-wheel input extends an accumulating distance and
+  applies frame-rate-independent exponential decay. This is a local smoothing
+  policy, not Chromium's complete input/compositor pipeline. Integrate elapsed
+  time before appending new input, anchor to the scroll container rather than
+  the hovered text/icon, cancel the old backlog on direction reversal, and
+  deliver the final fractional distance. Pixel input stays immediate. Retain
+  both discrete/precision and continuous-input/descendant-change regressions.
+- Overlay scrollbar thumbs have no extra cross-axis inset from the padding-box
+  edge. Geometry remains shared between painting and pointer hit testing.

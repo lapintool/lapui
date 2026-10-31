@@ -97,9 +97,26 @@ The native interaction follow-up also tracks:
 - **P-RADIAL-001:** radial brush radii and stop positions use the same CSS/device
   scale. Expand non-repeating radial domains across the painted tile so a
   100% hard stop preserves its outer color rather than filling a hover square.
-- **P-WHEEL-001:** line-wheel ticks animate with a 160ms ease-out and accumulate
-  through non-scrolling descendants. Pixel-wheel input and explicit instant
-  scrolling remain direct. Retain wheel accumulation/precision regressions.
+- **P-WHEEL-001:** discrete wheel ticks accumulate distance with exponential
+  decay. Integrate elapsed time before appending input and anchor to the actual
+  scroll container, so continuous events and changing hovered descendants do not
+  stall or discard motion. Reversal clears the opposite backlog. Precision
+  pixel-wheel input stays immediate; this does not reproduce Chromium's entire
+  input/compositor pipeline.
+- **P-OVERFLOW-ROUND-001:** round padding-box-relative overflow coordinates from
+  the padding-box origin, preserving zero overflow under fractional borders.
+  See `vendor/taffy/LAPUI-PATCHES.md` for retained viewport/DPI cases.
+- **P-PAINT-BORDER-001:** use fractional border widths locally in paint geometry;
+  never temporarily alter authoritative borders or scroll ranges during paint.
+- **P-TABLE-BACKGROUND-001:** collapsed cell backgrounds reach shared border
+  midpoints and outside gutters, using cumulative layout rounding. Preserve
+  header pixels and table sizing/span regressions on removal.
+
+Window-edge resize hit testing runs in the native shell before page event
+handling, independent of DOM stacking and browser zoom. Maximized/fullscreen
+and non-resizable/decorated windows bypass it. Redraw pacing follows the current
+monitor's reported refresh rate (30–240 Hz, otherwise 60 Hz) with a small timing
+tolerance; this is a scheduling policy, not a physical presentation guarantee.
 
 Lapui's native JavaScript event bridge appends Document/Window to the connected
 native propagation path, exposes pointer/wheel fields and cancelability, and

@@ -407,8 +407,8 @@ pub fn round_layout(tree: &mut impl RoundTree, node_id: NodeId) {
         round_scrollable_overflow_rect(
             &mut layout,
             unrounded_layout.scrollable_overflow_rect,
-            cumulative_x,
-            cumulative_y,
+            cumulative_x + unrounded_layout.border.left,
+            cumulative_y + unrounded_layout.border.top,
         );
 
         tree.set_final_layout(node_id, &layout);
@@ -435,6 +435,8 @@ pub fn round_layout(tree: &mut impl RoundTree, node_id: NodeId) {
 
     #[cfg(feature = "content_size")]
     #[inline(always)]
+    /// Overflow is padding-box-relative. Use that origin when rounding so
+    /// independently rounded borders cannot turn fitting content into overflow.
     /// Round the scrollable overflow rect.
     /// This is split into a separate function to make it easier to feature flag.
     fn round_scrollable_overflow_rect(

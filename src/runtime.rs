@@ -5566,8 +5566,57 @@ mod tests {
         let before = doc.inner().get_node(id).unwrap().scroll_offset().y;
         wheel.delta = BlitzWheelDelta::Pixels(0.0, -7.0);
         doc.handle_ui_event(UiEvent::Wheel(wheel));
+        assert!((doc.inner().get_node(id).unwrap().scroll_offset().y - (before + 7.0)).abs() < 0.1);
+        std::thread::sleep(Duration::from_millis(20));
+        doc.inner_mut().resolve(3.0);
         assert!(
-            (doc.inner().get_node(id).unwrap().scroll_offset().y - (before + 7.0)).abs() < 0.1
+            (doc.inner().get_node(id).unwrap().scroll_offset().y - (before + 7.0)).abs() < 0.1,
+            "precision wheel left an old discrete animation running"
+        );
+    }
+
+    #[test]
+    fn component_continuous_wheel_keeps_time_and_distance_across_hovered_descendants() {
+        use blitz::traits::events::{BlitzWheelDelta, BlitzWheelEvent, MouseEventButtons, UiEvent};
+        let html="<html><style>html,body{margin:0}#scroll{width:180px;height:150px;overflow:auto}.row{height:40px}</style><body><div id='scroll'></div></body></html>";
+        let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,html,
+            "for(let i=0;i<100;i++){const row=document.createElement('div');row.className='row';row.textContent=String(i);document.getElementById('scroll').appendChild(row)}").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(400, 300, 1.0, ColorScheme::Light));
+        doc.inner_mut().resolve(0.0);
+        let id = doc.inner().get_element_by_id("scroll").unwrap();
+        let pointer = doc
+            .inner()
+            .get_node(id)
+            .unwrap()
+            .synthetic_click_event_data(keyboard_types::Modifiers::empty());
+        let wheel = BlitzWheelEvent {
+            delta: BlitzWheelDelta::Lines(0.0, -3.0),
+            coords: pointer.coords,
+            buttons: MouseEventButtons::None,
+            mods: keyboard_types::Modifiers::empty(),
+            element: pointer.element,
+        };
+        for frame in 0..12 {
+            std::thread::sleep(Duration::from_millis(8));
+            doc.inner_mut()
+                .set_hover_to(30.0, if frame % 2 == 0 { 20.0 } else { 110.0 });
+            doc.handle_ui_event(UiEvent::Wheel(wheel.clone()));
+            doc.inner_mut().resolve(frame as f64 / 60.0);
+        }
+        let during = doc.inner().get_node(id).unwrap().scroll_offset().y;
+        assert!(
+            during > 200.0,
+            "continuous input stalled or lost accumulated distance: {during}"
+        );
+        for frame in 12..55 {
+            std::thread::sleep(Duration::from_millis(16));
+            doc.inner_mut().resolve(frame as f64 / 60.0);
+        }
+        let settled = doc.inner().get_node(id).unwrap().scroll_offset().y;
+        assert!(
+            (settled - 1200.0).abs() < 0.1,
+            "hover changes lost wheel distance: {settled}"
         );
     }
 
@@ -5604,6 +5653,41 @@ mod tests {
             result, "[0,0,true,true]",
             "a bordered auto-overflow box whose child fits must not scroll, while real overflow must"
         );
+    }
+
+    #[test]
+    fn component_fractional_borders_do_not_create_overflow_when_rounding_or_painting() {
+        let html = "<html><style>body{margin:0}.box{box-sizing:border-box;overflow:auto;border:.666667px solid black;width:100%;height:91.3333px}.child{height:100%;width:100%}#real{height:100.3333px}</style><body><div style='margin:13.3px;width:70.3%'><div class='box' id='fit'><div class='child'></div></div><div class='box' id='over'><div id='real'></div></div></div></body></html>";
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        for scale in [1.0, 1.25, 1.5, 1.65, 2.0] {
+            for width in 601..613 {
+                doc.inner_mut()
+                    .set_viewport(Viewport::new(width, 600, scale, ColorScheme::Light));
+                let mut dom = doc.inner_mut();
+                dom.resolve(0.0);
+                let fit = dom.get_element_by_id("fit").unwrap();
+                let over = dom.get_element_by_id("over").unwrap();
+                let fitting = dom.get_node(fit).unwrap().final_layout();
+                assert_eq!(
+                    (fitting.scroll_width(), fitting.scroll_height()),
+                    (0.0, 0.0),
+                    "phantom {scale}/{width}: {fitting:?}"
+                );
+                assert!(dom.get_node(over).unwrap().final_layout().scroll_height() > 5.0);
+                let before = *dom.get_node(fit).unwrap().final_layout();
+                let mut scene = anyrender::Scene::new();
+                crate::paint::paint_scene(&mut scene, &mut dom, scale as f64, width, 600, 0, 0);
+                assert_eq!(
+                    before.border,
+                    dom.get_node(fit).unwrap().final_layout().border
+                );
+                assert_eq!(
+                    before.scroll_height(),
+                    dom.get_node(fit).unwrap().final_layout().scroll_height()
+                );
+            }
+        }
     }
 
     #[test]
@@ -10718,6 +10802,55 @@ mod tests {
         assert!(doc.inner().node_chain(hit.node_id).contains(&target),"native hit does not reach requested component: {expression} ({x},{y}), hit {:?}, expected {target:?}",hit.node_id);
         native_component_pointer(doc, x, y, Some(true));
         native_component_pointer(doc, x, y, Some(false));
+    }
+
+    #[test]
+    #[ignore = "requires built lapstyle-ui; set LAPUI_LAPSTYLE_HTML"]
+    fn lapstyle_button_scroll_geometry_and_frame_cost() {
+        std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let path = PathBuf::from(std::env::var("LAPUI_LAPSTYLE_HTML").unwrap());
+            let html = std::fs::read_to_string(&path).unwrap();
+            let (mut doc, _) = LapuiDocument::new_with_local_source(ActionRegistry::default(), None,
+                &html, "", path.parent().unwrap()).unwrap();
+            doc.inner_mut().set_viewport(Viewport::new(1600, 1000, 1.5, ColorScheme::Dark));
+            for _ in 0..10 { doc.poll(None); doc.animation_frame(); doc.rendering_update(); }
+            doc.js_context.with(|ctx| ctx.eval::<(),_>("document.querySelector('a[href$=button]').click()")).unwrap();
+            for _ in 0..5 { doc.poll(None); doc.animation_frame(); doc.rendering_update(); }
+            let mut failures = Vec::new();
+            for scale in [1.0, 1.25, 1.5, 1.65, 2.0] {
+                for width in [1280, 1441, 1600, 1923, 2303, 2560] {
+                    doc.inner_mut().set_viewport(Viewport::new(width, 1200, scale, ColorScheme::Dark));
+                    doc.rendering_update();
+                    let mut inner = doc.inner_mut();
+                    inner.resolve(1.0);
+                    for id in inner.query_selector_all(".ls-table").unwrap() {
+                        let node=inner.get_node(id).unwrap();
+                        let raw=node.unrounded_layout(); let rounded=node.final_layout();
+                        eprintln!("table {scale}/{width} {id:?} size={:?} rawrange=({}, {}) range=({}, {}) rawborder={:?} border={:?}",rounded.size,raw.scroll_width(),raw.scroll_height(),rounded.scroll_width(),rounded.scroll_height(),raw.border,rounded.border);
+                        if raw.scroll_height()<0.01 && rounded.scroll_height()>0.5 {failures.push(format!("{scale}/{width}/{id:?}"));}
+                    }
+                }
+            }
+            doc.inner_mut().set_viewport(Viewport::new(1920, 1200, 1.5, ColorScheme::Dark));
+            doc.rendering_update();
+            let main=doc.inner().query_selector(".demo-main").unwrap().unwrap();
+            let mut costs=Vec::new();
+            for frame in 0..40 {
+                doc.inner_mut().scroll_by(main, 0.0, 7.0, blitz::dom::ScrollBehavior::Instant);
+                let start=Instant::now();
+                doc.animation_frame();doc.rendering_update();
+                let callbacks=start.elapsed().as_secs_f64()*1000.0;
+                let start=Instant::now();
+                let mut inner=doc.inner_mut();inner.resolve(2.0+frame as f64/60.0);
+                let layout=start.elapsed().as_secs_f64()*1000.0;
+                let start=Instant::now();
+                let mut scene=anyrender::Scene::new();
+                crate::paint::paint_scene(&mut scene,&mut inner,1.5,1920,1200,0,0);
+                costs.push([callbacks,layout,start.elapsed().as_secs_f64()*1000.0]);
+            }
+            eprintln!("FRAME_COST callbacks/layout/scene ms: {}",serde_json::to_string(&costs).unwrap());
+            assert!(failures.is_empty(), "rounding generated vertical phantom ranges: {failures:?}");
+        }).unwrap().join().unwrap();
     }
 
     #[test]

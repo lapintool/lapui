@@ -1,18 +1,7 @@
-use blitz::dom::{BaseDocument, NodeId};
+use blitz::dom::BaseDocument;
 
-#[derive(Default)]
-struct LayoutBorderSnapshot {
-    nodes: Vec<(NodeId, [f32; 4])>,
-    subdocuments: Vec<(NodeId, LayoutBorderSnapshot)>,
-}
-
-/// Preserve fractional CSS border widths while building the paint scene.
-///
-/// Taffy rounds layout edges to integer coordinates without the paint scale.
-/// At fractional DPI, this can round a non-zero edge (for example 1 CSS px at
-/// 150% = 0.667 layout px) to zero on the far sides of a box. Paint from the
-/// unrounded edge widths, then restore the authoritative layout before
-/// returning to the event loop.
+/// Build a scene without changing authoritative layout or scroll geometry.
+/// Fractional border widths are handled locally by the painter's CSS box.
 pub(crate) fn paint_scene(
     scene: &mut impl anyrender::PaintScene,
     document: &mut BaseDocument,
@@ -22,86 +11,5 @@ pub(crate) fn paint_scene(
     x_offset: u32,
     y_offset: u32,
 ) {
-    let saved_borders = use_unrounded_borders(document);
     blitz_paint::paint_scene(scene, document, scale, width, height, x_offset, y_offset);
-    restore_borders(document, saved_borders);
-}
-
-fn use_unrounded_borders(document: &mut BaseDocument) -> LayoutBorderSnapshot {
-    let mut node_borders = Vec::new();
-    collect_layout_nodes(document, document.root_node().id, &mut node_borders);
-
-    for (id, _, unrounded_border) in &node_borders {
-        if let Some(node) = document.get_node_mut(*id) {
-            let border = &mut node.final_layout_mut().border;
-            border.left = unrounded_border[0];
-            border.right = unrounded_border[1];
-            border.top = unrounded_border[2];
-            border.bottom = unrounded_border[3];
-        }
-    }
-
-    let mut subdocuments = Vec::new();
-    for id in document.sub_document_node_ids() {
-        if let Some(subdocument) = document.subdoc_mut(id) {
-            let mut inner = subdocument.inner_mut();
-            subdocuments.push((id, use_unrounded_borders(&mut inner)));
-        }
-    }
-
-    LayoutBorderSnapshot {
-        nodes: node_borders
-            .into_iter()
-            .map(|(id, rounded_border, _)| (id, rounded_border))
-            .collect(),
-        subdocuments,
-    }
-}
-
-fn restore_borders(document: &mut BaseDocument, snapshot: LayoutBorderSnapshot) {
-    for (id, rounded_border) in snapshot.nodes {
-        if let Some(node) = document.get_node_mut(id) {
-            let border = &mut node.final_layout_mut().border;
-            border.left = rounded_border[0];
-            border.right = rounded_border[1];
-            border.top = rounded_border[2];
-            border.bottom = rounded_border[3];
-        }
-    }
-
-    for (id, snapshot) in snapshot.subdocuments {
-        if let Some(subdocument) = document.subdoc_mut(id) {
-            let mut inner = subdocument.inner_mut();
-            restore_borders(&mut inner, snapshot);
-        }
-    }
-}
-
-fn collect_layout_nodes(
-    document: &BaseDocument,
-    id: NodeId,
-    output: &mut Vec<(NodeId, [f32; 4], [f32; 4])>,
-) {
-    let Some(node) = document.get_node(id) else {
-        return;
-    };
-    if node.try_stylo_element_data().is_some() {
-        let rounded = node.final_layout().border;
-        let raw = node.unrounded_layout().border;
-        let rounded = [rounded.left, rounded.right, rounded.top, rounded.bottom];
-        let raw = [raw.left, raw.right, raw.top, raw.bottom];
-        // Most nodes have no border, or an already exact border width. Avoid
-        // saving and mutably revisiting those nodes twice on every frame.
-        if rounded != raw {
-            output.push((id, rounded, raw));
-        }
-    }
-    for child in node.children.iter().copied() {
-        collect_layout_nodes(document, child, output);
-    }
-    // Generated boxes are not DOM children. Buttons, radio rings and custom
-    // checkboxes frequently draw their border on these pseudo elements.
-    for pseudo in [node.before(), node.after()].into_iter().flatten() {
-        collect_layout_nodes(document, pseudo, output);
-    }
 }

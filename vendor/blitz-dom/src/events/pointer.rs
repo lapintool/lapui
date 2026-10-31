@@ -849,6 +849,9 @@ pub(crate) fn handle_wheel<F: FnMut(DomEvent)>(
             &mut dispatch_event,
         )
     } else {
+        // Precision input owns its timing and must not fight a previous
+        // discrete-wheel chase or touch fling on subsequent frames.
+        doc.scroll_animation = ScrollAnimationState::None;
         doc.scroll_chain_by(
             doc.get_hover_node_id(),
             scroll_x,

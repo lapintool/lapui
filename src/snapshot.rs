@@ -199,6 +199,35 @@ mod tests {
     use crate::action::ActionRegistry;
 
     #[test]
+    fn component_collapsed_table_header_backgrounds_tile_without_outer_or_internal_gaps() {
+        let html = "<html><style>html,body{margin:0;background:#111}#wrap{margin:11.3px;width:70.3%;border:1px solid #555;overflow:auto}table{width:100%;border-collapse:collapse}th{height:32px;border:1px solid transparent;background:#00ccff}th:first-child{border-left:0}th:last-child{border-right:0}thead tr:first-child th{border-top:0}thead tr:last-child th{border-bottom:0}</style><body><div id='wrap'><table><thead><tr><th></th><th></th><th></th></tr></thead></table></div></body></html>";
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        for scale in [1.0, 1.25, 1.5, 1.65, 2.0] {
+            for width in [601, 643, 702] {
+                doc.inner_mut()
+                    .set_viewport(Viewport::new(width, 180, scale, ColorScheme::Dark));
+                let shot = capture(&mut doc).unwrap();
+                let rect = doc
+                    .inner()
+                    .get_client_bounding_rect(doc.inner().query_selector("table").unwrap().unwrap())
+                    .unwrap();
+                let y = ((rect.y + rect.height / 2.0) * scale as f64) as u32;
+                let left = (rect.x * scale as f64).ceil() as u32 + 1;
+                let right = ((rect.x + rect.width) * scale as f64).floor() as u32 - 1;
+                for x in left..right {
+                    let i = ((y * shot.width() + x) * 4) as usize;
+                    assert!(
+                        shot.rgba()[i] < 3 && shot.rgba()[i + 1] > 200 && shot.rgba()[i + 2] > 250,
+                        "header gap at {scale}/{width} ({x},{y}): {:?}",
+                        &shot.rgba()[i..i + 4]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn capture_preserves_viewport_and_encodes_the_owned_frame_after_mutation() {
         let (mut doc, _) = LapuiDocument::new_with_source(
             ActionRegistry::default(), None,

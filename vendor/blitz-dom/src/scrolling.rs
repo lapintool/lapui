@@ -190,7 +190,8 @@ impl BaseDocument {
 
         if request.interrupt_animation
             && (end != current || request.overflow == ScrollOverflow::Clamp)
-            && matches!(self.scroll_animation, ScrollAnimationState::ScrollTo(_))
+            && (request.source == ScrollSource::Programmatic
+                || matches!(self.scroll_animation, ScrollAnimationState::ScrollTo(_)))
         {
             self.scroll_animation = ScrollAnimationState::None;
         }
@@ -471,38 +472,58 @@ impl BaseDocument {
         anchor: Option<NodeId>,
         x: f64,
         y: f64,
-        dispatch_event: &mut dyn FnMut(DomEvent),
+        _dispatch_event: &mut dyn FnMut(DomEvent),
     ) -> bool {
-        // Each notch *extends a target* instead of retargeting a fixed-duration tween or
-        // injecting a velocity. The frame loop then chases that target with a frame-rate
-        // independent exponential decay, which is what makes the first frame respond
-        // immediately, the tail ease out, and notches arriving mid-flight stack without an
-        // acceleration discontinuity.
-        let Some(anchor) = anchor else {
-            // Nothing hovered means there is no chain to walk; scroll the viewport directly.
-            return self.scroll(
-                ScrollRequest {
-                    target: ScrollTarget::Viewport,
-                    amount: ScrollAmount::By(Point { x: -x, y: -y }),
-                    overflow: ScrollOverflow::Chain,
-                    source: ScrollSource::User,
-                    behavior: ScrollBehavior::Instant,
-                    interrupt_animation: true,
-                },
-                dispatch_event,
-            );
+        // Keep the animation anchored to the scroll container, not a text/icon
+        // under the pointer: scrolling itself changes the hovered descendant.
+        let mut target = anchor.map_or(ScrollTarget::Viewport, ScrollTarget::Node);
+        loop {
+            target = self.canonical_scroll_target(target);
+            if let ScrollTarget::Node(id) = target {
+                let node = &self.nodes[id];
+                if node
+                    .element_data()
+                    .and_then(|element| element.text_input_data())
+                    .is_some()
+                    || node.subdoc().is_some()
+                {
+                    break;
+                }
+            }
+            let (_, max) = self.scroll_state(target, false);
+            if (x != 0.0 && max.x > 0.0) || (y != 0.0 && max.y > 0.0) {
+                break;
+            }
+            match self.next_scroller_in_chain(target) {
+                Some(next) => target = next,
+                None => break,
+            }
+        }
+        let anchor = match target {
+            ScrollTarget::Node(id) => id,
+            ScrollTarget::Viewport => self.root_element().id,
         };
 
+        // Integrate the old distance before adding the new notch. Resetting the
+        // integration clock on every input discards time between frames and
+        // stalls the animation while a fast wheel continues delivering events.
+        self.resolve_scroll_animation();
         let time_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_millis() as u64 as f64;
-
+            .as_secs_f64()
+            * 1000.0;
         match &mut self.scroll_animation {
             ScrollAnimationState::WheelChase(chase) if chase.target == anchor => {
-                chase.remaining.x += x;
-                chase.remaining.y += y;
-                chase.last_seen_time = time_ms;
+                // Reversing direction should brake immediately, not work off an
+                // invisible backlog in the previous direction.
+                for (remaining, delta) in [(&mut chase.remaining.x, x), (&mut chase.remaining.y, y)]
+                {
+                    if delta != 0.0 && remaining.signum() != delta.signum() {
+                        *remaining = 0.0;
+                    }
+                    *remaining += delta;
+                }
             }
             _ => {
                 self.scroll_animation = ScrollAnimationState::WheelChase(WheelChaseState {
@@ -816,25 +837,30 @@ impl BaseDocument {
                 let time_ms = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
-                    .as_millis() as u64 as f64;
+                    .as_secs_f64()
+                    * 1000.0;
                 let dt = ((time_ms - chase.last_seen_time) / 1000.0).max(0.0);
                 chase.last_seen_time = time_ms;
+                // A same-timestamp frame must not consume even the final
+                // fractional remainder before it can write the offset.
+                if dt <= 0.0 {
+                    return;
+                }
                 // Frame-rate independent: the fraction of the remaining distance covered in a
                 // frame depends on elapsed time, not on a fixed per-frame constant.
                 let factor = 1.0 - (-Self::WHEEL_CHASE_RATE * dt).exp();
-                let step = Point {
-                    x: chase.remaining.x * factor,
-                    y: chase.remaining.y * factor,
+                let settled = chase.remaining.x.abs() < 0.5 && chase.remaining.y.abs() < 0.5;
+                let step = if settled {
+                    chase.remaining
+                } else {
+                    Point {
+                        x: chase.remaining.x * factor,
+                        y: chase.remaining.y * factor,
+                    }
                 };
                 chase.remaining.x -= step.x;
                 chase.remaining.y -= step.y;
                 let target = chase.target;
-                let settled = chase.remaining.x.abs() < 0.5 && chase.remaining.y.abs() < 0.5;
-                // A frame that arrives with no elapsed time has nothing to deliver yet; keep
-                // chasing so the notch is not swallowed before it can move anything.
-                if dt <= 0.0 {
-                    return;
-                }
                 let moved = self.scroll_chain_by(Some(target), step.x, step.y, &mut |_| {});
                 let had_motion = step.x.abs() > 0.5 || step.y.abs() > 0.5;
                 if !moved && had_motion {
