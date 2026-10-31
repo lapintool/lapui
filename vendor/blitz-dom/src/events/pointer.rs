@@ -833,8 +833,11 @@ pub(crate) fn handle_wheel<F: FnMut(DomEvent)>(
     mut dispatch_event: F,
 ) {
     let discrete = matches!(event.delta, BlitzWheelDelta::Lines(..));
+    // Chromium's Windows mapping: one 3-line notch is ~100 CSS px, i.e. ~33.3 px per line.
+    // The previous 20 px/line (60 px per notch) undershot the platform feel noticeably.
+    const PX_PER_LINE: f64 = 100.0 / 3.0;
     let (scroll_x, scroll_y) = match event.delta {
-        BlitzWheelDelta::Lines(x, y) => (x * 20.0, y * 20.0),
+        BlitzWheelDelta::Lines(x, y) => (x * PX_PER_LINE, y * PX_PER_LINE),
         BlitzWheelDelta::Pixels(x, y) => (x, y),
     };
 

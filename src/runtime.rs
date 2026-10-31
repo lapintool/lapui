@@ -5541,7 +5541,7 @@ mod tests {
         doc.inner_mut().resolve(1.0);
         let after_first = doc.inner().get_node(id).unwrap().scroll_offset().y;
         assert!(
-            after_first > 0.0 && after_first < 60.0,
+            after_first > 0.0 && after_first < 100.0,
             "wheel did not animate: {after_first}"
         );
 
@@ -5603,6 +5603,42 @@ mod tests {
         assert_eq!(
             result, "[0,0,true,true]",
             "a bordered auto-overflow box whose child fits must not scroll, while real overflow must"
+        );
+    }
+
+    #[test]
+    fn component_table_filling_its_overflow_wrapper_does_not_scroll() {
+        // The documentation tables (`.ls-table` + `width:100%` table) must not acquire a
+        // horizontal range from column-width rounding: that is the scrollbar users can see
+        // but cannot drag.
+        let html = "<html><head><style>html,body{margin:0}.wrap{width:320px;overflow:auto;border:1px solid black;border-radius:6px;box-sizing:border-box}table{width:100%;border-collapse:collapse;table-layout:auto}th,td{border:1px solid black;padding:4px 6px;font-size:13px}</style></head><body><div class='wrap' id='wrap'><table><thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td>color</td><td>\"\" | \"blue\" | \"cyan\" | \"magenta\"</td><td>Omit for theme accent. Else: blue | cyan | magenta | green | red | yellow | dark | gray | white | black</td></tr></tbody></table></div></body></html>";
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        doc.inner_mut().resolve(0.0);
+        let (ok, detail): (bool, String) = doc
+            .js_context
+            .with(|ctx| {
+                let ok = ctx.eval::<bool, _>(
+                    r#"(() => {
+                        const wrap = document.getElementById('wrap');
+                        wrap.scrollLeft = 9;
+                        return wrap.scrollWidth === wrap.clientWidth && wrap.scrollLeft === 0;
+                    })()"#,
+                )?;
+                let detail = ctx.eval::<String, _>(
+                    r#"(() => {
+                        const wrap = document.getElementById('wrap');
+                        return 'client=' + wrap.clientWidth + ' scroll=' + wrap.scrollWidth;
+                    })()"#,
+                )?;
+                Ok::<_, rquickjs::Error>((ok, detail))
+            })
+            .unwrap();
+        assert!(
+            ok,
+            "table wrapper acquired a horizontal scroll range ({detail})"
         );
     }
 

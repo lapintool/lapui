@@ -86,6 +86,20 @@ pub(crate) struct FlingState {
     pub(crate) y_velocity: f64,
 }
 
+/// Chrome-style wheel scrolling: every notch pushes the *target* further away and the frame
+/// loop chases it with a frame-rate independent exponential decay. Because the chase factor is
+/// `1 - exp(-k * dt)`, the first frame already delivers a large fraction of the step (instant
+/// response), the tail eases out over ~200ms, and a notch arriving mid-flight simply extends
+/// the target, so there is no acceleration discontinuity when the user spins the wheel.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WheelChaseState {
+    pub(crate) target: NodeId,
+    /// Scroll distance still owed to the target, in CSS px (wheel sign: negative = forward).
+    pub(crate) remaining: Point<f64>,
+    /// Time (ms since the Unix epoch) of the last integrated frame.
+    pub(crate) last_seen_time: f64,
+}
+
 /// State driving a smooth (animated) scroll towards a target offset. Used for
 /// fragment navigation (`#anchor` links) and programmatic smooth scrolling.
 #[derive(Debug, Clone, PartialEq)]
@@ -107,6 +121,8 @@ pub(crate) struct ScrollToState {
 pub(crate) enum ScrollAnimationState {
     None,
     Fling(FlingState),
+    /// Wheel input chasing an accumulating target (see [`WheelChaseState`]).
+    WheelChase(WheelChaseState),
     /// A smooth scroll of the viewport towards a target offset.
     ScrollTo(ScrollToState),
 }
@@ -457,13 +473,11 @@ impl BaseDocument {
         y: f64,
         dispatch_event: &mut dyn FnMut(DomEvent),
     ) -> bool {
-        // Wheel notches are velocity impulses rather than scroll targets: accumulate them
-        // into a fling so repeated notches accelerate and the offset decelerates once input
-        // stops. Retargeting a fixed-duration eased tween per notch restarts the curve on
-        // every tick, which reads as rubber-banding and never coasts past the last notch.
-        const WHEEL_PIXELS_PER_IMPULSE: f64 = 180.0;
-        const MAX_VELOCITY: f64 = 5.0;
-
+        // Each notch *extends a target* instead of retargeting a fixed-duration tween or
+        // injecting a velocity. The frame loop then chases that target with a frame-rate
+        // independent exponential decay, which is what makes the first frame respond
+        // immediately, the tail ease out, and notches arriving mid-flight stack without an
+        // acceleration discontinuity.
         let Some(anchor) = anchor else {
             // Nothing hovered means there is no chain to walk; scroll the viewport directly.
             return self.scroll(
@@ -483,31 +497,28 @@ impl BaseDocument {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64 as f64;
-        // A notch is negative (scroll down) in wheel space, and the fling integrator feeds
-        // its velocity through `scroll_chain_by`, so the sign carries over unchanged.
-        let impulse_x = (x / WHEEL_PIXELS_PER_IMPULSE).clamp(-MAX_VELOCITY, MAX_VELOCITY);
-        let impulse_y = (y / WHEEL_PIXELS_PER_IMPULSE).clamp(-MAX_VELOCITY, MAX_VELOCITY);
 
         match &mut self.scroll_animation {
-            ScrollAnimationState::Fling(fling) if fling.target == anchor => {
-                fling.x_velocity =
-                    (fling.x_velocity + impulse_x).clamp(-MAX_VELOCITY, MAX_VELOCITY);
-                fling.y_velocity =
-                    (fling.y_velocity + impulse_y).clamp(-MAX_VELOCITY, MAX_VELOCITY);
-                fling.last_seen_time = time_ms;
+            ScrollAnimationState::WheelChase(chase) if chase.target == anchor => {
+                chase.remaining.x += x;
+                chase.remaining.y += y;
+                chase.last_seen_time = time_ms;
             }
             _ => {
-                self.scroll_animation = ScrollAnimationState::Fling(FlingState {
+                self.scroll_animation = ScrollAnimationState::WheelChase(WheelChaseState {
                     target: anchor,
+                    remaining: Point { x, y },
                     last_seen_time: time_ms,
-                    x_velocity: impulse_x,
-                    y_velocity: impulse_y,
                 });
             }
         }
         self.shell_provider.request_redraw();
         true
     }
+
+    /// Exponential chase rate for wheel scrolling, in 1/s. Chromium's impulse curves cover
+    /// their step in roughly 150-250ms; `1 - exp(-18 * dt)` reaches ~95% in ~165ms.
+    const WHEEL_CHASE_RATE: f64 = 18.0;
 
     /// Duration (in milliseconds) of an animated scroll.
     const SMOOTH_SCROLL_DURATION_MS: f64 = 300.0;
@@ -801,6 +812,40 @@ impl BaseDocument {
 
     pub fn resolve_scroll_animation(&mut self) {
         match &mut self.scroll_animation {
+            ScrollAnimationState::WheelChase(chase) => {
+                let time_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64 as f64;
+                let dt = ((time_ms - chase.last_seen_time) / 1000.0).max(0.0);
+                chase.last_seen_time = time_ms;
+                // Frame-rate independent: the fraction of the remaining distance covered in a
+                // frame depends on elapsed time, not on a fixed per-frame constant.
+                let factor = 1.0 - (-Self::WHEEL_CHASE_RATE * dt).exp();
+                let step = Point {
+                    x: chase.remaining.x * factor,
+                    y: chase.remaining.y * factor,
+                };
+                chase.remaining.x -= step.x;
+                chase.remaining.y -= step.y;
+                let target = chase.target;
+                let settled = chase.remaining.x.abs() < 0.5 && chase.remaining.y.abs() < 0.5;
+                // A frame that arrives with no elapsed time has nothing to deliver yet; keep
+                // chasing so the notch is not swallowed before it can move anything.
+                if dt <= 0.0 {
+                    return;
+                }
+                let moved = self.scroll_chain_by(Some(target), step.x, step.y, &mut |_| {});
+                let had_motion = step.x.abs() > 0.5 || step.y.abs() > 0.5;
+                if !moved && had_motion {
+                    // The scroller is at its edge and consumed nothing: the chase is spent.
+                    self.scroll_animation = ScrollAnimationState::None;
+                    return;
+                }
+                if settled {
+                    self.scroll_animation = ScrollAnimationState::None;
+                }
+            }
             ScrollAnimationState::Fling(fling_state) => {
                 let time_ms = SystemTime::now()
                     .duration_since(UNIX_EPOCH)

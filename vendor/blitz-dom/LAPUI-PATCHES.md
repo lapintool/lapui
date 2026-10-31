@@ -57,13 +57,15 @@ Follow-up fixes:
 - P-TYPED-TRANSITION-001 integration: enable the existing @property parser;
   the narrowly scoped Stylo transition gate correction is tracked separately
   in vendor/stylo/LAPUI-PATCHES.md.
-- P-WHEEL-001: discrete line-wheel input is a velocity impulse, not a scroll
-  target. `scroll_wheel_by` accumulates `delta / 180` px-per-ms into the existing
-  `Fling` state (capped at 5 px/ms) and the frame loop integrates it against the
-  0.95-per-16.7ms decay, so repeated notches accelerate, the offset coasts past
-  the last notch and stops on its own. A fling that the scroller cannot consume
-  (it hit an edge) is dropped rather than kept animating against the wall.
-  Precision pixel input, explicit instant scroll and scrollbar dragging stay
-  direct. Supersedes the earlier per-notch 160ms ease-out tween, which restarted
-  the curve on every tick and never coasted. Preserve nested chaining and
-  accumulation regressions (`component_discrete_wheel_accumulates_into_a_fling_and_precision_wheel_stays_direct`).
+- P-WHEEL-001: discrete line-wheel input follows Chromium's model: a notch
+  *extends a target* (`WheelChaseState.remaining`) and the frame loop chases it
+  with a frame-rate independent exponential decay, `1 - exp(-18 * dt)`. The
+  first frame already covers ~26% of the step (instant response), the tail eases
+  out over ~200ms, and a notch arriving mid-flight simply extends the target, so
+  there is no acceleration discontinuity when spinning the wheel. One 3-line
+  notch maps to ~100 CSS px (`PX_PER_LINE = 100/3`), matching Windows/Chromium
+  instead of the previous 20 px/line. Frames with `dt = 0` must not be read as
+  hitting an edge (that swallowed the first notch); only a frame that had motion
+  to deliver and consumed none ends the chase. Precision pixel input, explicit
+  instant scroll and scrollbar dragging stay direct. Regressions:
+  `component_discrete_wheel_accumulates_into_a_fling_and_precision_wheel_stays_direct`.
