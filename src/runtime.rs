@@ -5410,7 +5410,7 @@ mod tests {
     }
 
     #[test]
-    fn component_discrete_wheel_animates_accumulates_and_precision_wheel_stays_direct() {
+    fn component_discrete_wheel_accumulates_into_a_fling_and_precision_wheel_stays_direct() {
         use blitz::traits::events::{BlitzWheelDelta, BlitzWheelEvent, MouseEventButtons, UiEvent};
         let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,
             "<html><style>html,body{margin:0}#scroll{width:180px;height:100px;overflow:auto}#content{height:800px}</style><body><div id='scroll'><div id='content'></div></div></body></html>","").unwrap();
@@ -5431,25 +5431,41 @@ mod tests {
             mods: keyboard_types::Modifiers::empty(),
             element: pointer.element,
         };
+        // A notch is an impulse, so the offset only moves once the frame loop integrates it.
         doc.handle_ui_event(UiEvent::Wheel(wheel.clone()));
         assert_eq!(doc.inner().get_node(id).unwrap().scroll_offset().y, 0.0);
         std::thread::sleep(Duration::from_millis(40));
         doc.inner_mut().resolve(1.0);
-        let middle = doc.inner().get_node(id).unwrap().scroll_offset().y;
+        let after_first = doc.inner().get_node(id).unwrap().scroll_offset().y;
         assert!(
-            middle > 0.0 && middle < 60.0,
-            "wheel did not animate: {middle}"
+            after_first > 0.0 && after_first < 60.0,
+            "wheel did not animate: {after_first}"
         );
+
+        // Repeated notches must build velocity rather than retarget a fresh eased tween:
+        // the offset keeps gliding well past the sum of the notches. Frames are stepped at
+        // roughly 60 Hz so the decay curve matches the real frame loop.
         doc.handle_ui_event(UiEvent::Wheel(wheel.clone()));
-        std::thread::sleep(Duration::from_millis(200));
-        doc.inner_mut().resolve(2.0);
+        doc.handle_ui_event(UiEvent::Wheel(wheel.clone()));
+        let mut frame = 2.0;
+        for _ in 0..14 {
+            std::thread::sleep(Duration::from_millis(16));
+            doc.inner_mut().resolve(frame);
+            frame += 1.0;
+        }
+        let after_spin = doc.inner().get_node(id).unwrap().scroll_offset().y;
         assert!(
-            (doc.inner().get_node(id).unwrap().scroll_offset().y - 120.0).abs() < 0.1,
-            "repeated ticks must accumulate to 120px"
+            after_spin > 150.0,
+            "accumulated notches did not fling past a single tween: {after_spin}"
         );
+
+        // Precision (trackpad) deltas bypass the fling and apply immediately.
+        let before = doc.inner().get_node(id).unwrap().scroll_offset().y;
         wheel.delta = BlitzWheelDelta::Pixels(0.0, -7.0);
         doc.handle_ui_event(UiEvent::Wheel(wheel));
-        assert!((doc.inner().get_node(id).unwrap().scroll_offset().y - 127.0).abs() < 0.1);
+        assert!(
+            (doc.inner().get_node(id).unwrap().scroll_offset().y - (before + 7.0)).abs() < 0.1
+        );
     }
 
     #[test]

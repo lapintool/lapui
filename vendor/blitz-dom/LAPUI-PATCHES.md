@@ -57,7 +57,13 @@ Follow-up fixes:
 - P-TYPED-TRANSITION-001 integration: enable the existing @property parser;
   the narrowly scoped Stylo transition gate correction is tracked separately
   in vendor/stylo/LAPUI-PATCHES.md.
-- P-WHEEL-001: discrete line-wheel input uses the existing smooth-scroll
-  animation with a 160ms ease-out, accumulating consecutive ticks at the same
-  scroll target. Precision pixel input, explicit instant scroll and scrollbar
-  dragging stay direct. Preserve nested chaining and accumulation regressions.
+- P-WHEEL-001: discrete line-wheel input is a velocity impulse, not a scroll
+  target. `scroll_wheel_by` accumulates `delta / 180` px-per-ms into the existing
+  `Fling` state (capped at 5 px/ms) and the frame loop integrates it against the
+  0.95-per-16.7ms decay, so repeated notches accelerate, the offset coasts past
+  the last notch and stops on its own. A fling that the scroller cannot consume
+  (it hit an edge) is dropped rather than kept animating against the wall.
+  Precision pixel input, explicit instant scroll and scrollbar dragging stay
+  direct. Supersedes the earlier per-notch 160ms ease-out tween, which restarted
+  the curve on every tick and never coasted. Preserve nested chaining and
+  accumulation regressions (`component_discrete_wheel_accumulates_into_a_fling_and_precision_wheel_stays_direct`).

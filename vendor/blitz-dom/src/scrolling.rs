@@ -457,17 +457,56 @@ impl BaseDocument {
         y: f64,
         dispatch_event: &mut dyn FnMut(DomEvent),
     ) -> bool {
-        self.scroll(
-            ScrollRequest {
-                target: anchor.map_or(ScrollTarget::Viewport, ScrollTarget::Node),
-                amount: ScrollAmount::By(Point { x: -x, y: -y }),
-                overflow: ScrollOverflow::Chain,
-                source: ScrollSource::User,
-                behavior: ScrollBehavior::Smooth,
-                interrupt_animation: true,
-            },
-            dispatch_event,
-        )
+        // Wheel notches are velocity impulses rather than scroll targets: accumulate them
+        // into a fling so repeated notches accelerate and the offset decelerates once input
+        // stops. Retargeting a fixed-duration eased tween per notch restarts the curve on
+        // every tick, which reads as rubber-banding and never coasts past the last notch.
+        const WHEEL_PIXELS_PER_IMPULSE: f64 = 180.0;
+        const MAX_VELOCITY: f64 = 5.0;
+
+        let Some(anchor) = anchor else {
+            // Nothing hovered means there is no chain to walk; scroll the viewport directly.
+            return self.scroll(
+                ScrollRequest {
+                    target: ScrollTarget::Viewport,
+                    amount: ScrollAmount::By(Point { x: -x, y: -y }),
+                    overflow: ScrollOverflow::Chain,
+                    source: ScrollSource::User,
+                    behavior: ScrollBehavior::Instant,
+                    interrupt_animation: true,
+                },
+                dispatch_event,
+            );
+        };
+
+        let time_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64 as f64;
+        // A notch is negative (scroll down) in wheel space, and the fling integrator feeds
+        // its velocity through `scroll_chain_by`, so the sign carries over unchanged.
+        let impulse_x = (x / WHEEL_PIXELS_PER_IMPULSE).clamp(-MAX_VELOCITY, MAX_VELOCITY);
+        let impulse_y = (y / WHEEL_PIXELS_PER_IMPULSE).clamp(-MAX_VELOCITY, MAX_VELOCITY);
+
+        match &mut self.scroll_animation {
+            ScrollAnimationState::Fling(fling) if fling.target == anchor => {
+                fling.x_velocity =
+                    (fling.x_velocity + impulse_x).clamp(-MAX_VELOCITY, MAX_VELOCITY);
+                fling.y_velocity =
+                    (fling.y_velocity + impulse_y).clamp(-MAX_VELOCITY, MAX_VELOCITY);
+                fling.last_seen_time = time_ms;
+            }
+            _ => {
+                self.scroll_animation = ScrollAnimationState::Fling(FlingState {
+                    target: anchor,
+                    last_seen_time: time_ms,
+                    x_velocity: impulse_x,
+                    y_velocity: impulse_y,
+                });
+            }
+        }
+        self.shell_provider.request_redraw();
+        true
     }
 
     /// Duration (in milliseconds) of an animated scroll.
@@ -781,7 +820,13 @@ impl BaseDocument {
                 let dx = fling_state.x_velocity * time_diff_ms;
                 let dy = fling_state.y_velocity * time_diff_ms;
 
-                self.scroll_chain_by(Some(fling_state.target), dx, dy, &mut |_| {});
+                let moved = self.scroll_chain_by(Some(fling_state.target), dx, dy, &mut |_| {});
+                // Nothing consumed the motion (the scroller hit an edge), so the fling is
+                // spent: leaving velocity in place would keep animating against a wall.
+                if !moved {
+                    self.scroll_animation = ScrollAnimationState::None;
+                    return;
+                }
                 if fling_state.x_velocity.abs() < 0.1 && fling_state.y_velocity.abs() < 0.1 {
                     self.scroll_animation = ScrollAnimationState::None;
                 }
