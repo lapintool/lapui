@@ -5530,6 +5530,13 @@ mod tests {
         // A notch is an impulse, so the offset only moves once the frame loop integrates it.
         doc.handle_ui_event(UiEvent::Wheel(wheel.clone()));
         assert_eq!(doc.inner().get_node(id).unwrap().scroll_offset().y, 0.0);
+        // The frame immediately after the event has a near-zero delta: it must not be read
+        // as hitting an edge and cancel the fling before it can move anything.
+        doc.inner_mut().resolve(0.5);
+        assert!(
+            doc.inner().get_node(id).unwrap().scroll_offset().y < 1.0,
+            "the first frame must not swallow the notch"
+        );
         std::thread::sleep(Duration::from_millis(40));
         doc.inner_mut().resolve(1.0);
         let after_first = doc.inner().get_node(id).unwrap().scroll_offset().y;

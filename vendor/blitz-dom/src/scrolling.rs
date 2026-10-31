@@ -807,7 +807,7 @@ impl BaseDocument {
                     .unwrap()
                     .as_millis() as u64 as f64;
 
-                let time_diff_ms = time_ms - fling_state.last_seen_time;
+                let time_diff_ms = (time_ms - fling_state.last_seen_time).max(0.0);
 
                 // 0.95 @ 60fps normalized to actual frame times
                 let deceleration = 1.0 - ((0.05 / 16.66666) * time_diff_ms);
@@ -821,9 +821,12 @@ impl BaseDocument {
                 let dy = fling_state.y_velocity * time_diff_ms;
 
                 let moved = self.scroll_chain_by(Some(fling_state.target), dx, dy, &mut |_| {});
-                // Nothing consumed the motion (the scroller hit an edge), so the fling is
-                // spent: leaving velocity in place would keep animating against a wall.
-                if !moved {
+                // Only a frame that actually had motion to deliver and still consumed none
+                // means the scroller hit an edge. A near-zero-delta frame (the frame right
+                // after the wheel event, where `dt` is still ~0) must not end the fling, or
+                // the very first notch dies before it can move anything.
+                let had_motion = dx.abs() > 0.5 || dy.abs() > 0.5;
+                if !moved && had_motion {
                     self.scroll_animation = ScrollAnimationState::None;
                     return;
                 }
