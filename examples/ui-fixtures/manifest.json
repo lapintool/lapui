@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "scenarios": ["form", "list", "scroll", "cjk", "popover", "resize", "async"],
+  "frameworkScenarios": [
+    {"name": "vue", "page": "examples/vue-demo/index.html"},
+    {"name": "react", "page": "examples/react-demo/index.html"},
+    {"name": "floating-center", "page": "examples/floating-demo/index.html"},
+    {"name": "floating-edge", "page": "examples/floating-demo/index.html"},
+    {"name": "floating-shift", "page": "examples/floating-demo/index.html"},
+    {"name": "floating-resize", "page": "examples/floating-demo/index.html"}
+  ],
+  "viewports": [{"width": 960, "height": 640}, {"width": 640, "height": 480}],
+  "geometryToleranceCssPx": 1
+}

@@ -25,7 +25,7 @@ const App = {
       status.value = `已删除任务：${task.title}`;
     };
 
-    return () => h('main', { class: 'board' }, [
+    return () => [h('main', { class: 'board' }, [
       h('div', { class: 'eyebrow' }, 'Local UI · Vue 3'),
       h('h1', '任务面板'),
       h('p', { class: 'subtitle' }, '用熟悉的前端方式编写本地桌面界面。'),
@@ -77,15 +77,16 @@ const App = {
           onClick: () => { tasks.value = []; status.value = '列表已清空'; }
         }, '清空列表')
       ]),
-      h('p', { class: 'status', role: 'status', 'aria-live': 'polite' }, status.value),
-      detailsOpen.value ? h('div', { class: 'dialog-backdrop' }, [
+      h('p', { class: 'status', role: 'status', 'aria-live': 'polite' }, status.value)
+    ]),
+    detailsOpen.value ? h('div', { class: 'dialog-backdrop' }, [
         h('section', { class: 'dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Lapui 说明' }, [
           h('h2', '一个本地界面'),
           h('p', '此示例使用 Vue 3 的响应式状态、列表 diff、事件监听器和弹层节点插入。'),
           h('button', { id: 'close-details', type: 'button', onClick: () => { detailsOpen.value = false; } }, '完成')
         ])
       ]) : null
-    ]);
+    ];
   }
 };
 

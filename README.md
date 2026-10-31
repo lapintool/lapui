@@ -10,6 +10,8 @@ Current work targets real Lapstyle UI failures: omitted Vue static content, repe
 
 The commands and examples below are for developers evaluating the prototype. They demonstrate selected runtime paths only; they do not imply production readiness or broad frontend compatibility.
 
+This branch preserves a local development snapshot for migration on 2026-10-23. It has not been merged with the separate work on `master`. Development is paused for the handoff; the local [Windows packaging tools](guide/packaging.md) are experimental, and clean-machine acceptance remains incomplete.
+
 ## Try the prototype
 
 For the complete Lapstyle UI desktop application, run these commands from the repository root:
@@ -59,6 +61,8 @@ The [animation example](guide/getting-started.md#run-the-animation-and-measureme
 The [Floating UI example](examples/floating-demo/README.md) runs the actual DOM positioning library with native computed styles and geometry: `cargo run --release --locked -- --html examples/floating-demo/index.html`. Selected offset, flip and shift cases pass; the library’s autoUpdate follows viewport and anchor-size changes while open. See [computed styles](guide/computed-styles.md) for the supported subset.
 
 The [Vue 3 example](examples/vue-demo/README.md) and [React DOM example](examples/react-demo/README.md) exercise the live DOM bridge, reactive lists, and conditional content. React also tests controlled input, delegated capture/bubble events, effects and the asynchronous Rust action.
+
+The [UI comparison fixtures](examples/ui-fixtures/README.md) compare seven selected scenarios against a real headless browser at two CSS viewport sizes. They retain paired PNGs, behavior results and geometry differences; Python and Node.js are required only for the development comparison tools.
 
 Use `--watch` with a local page to reload edits and rebuilt bundles. `lapui client <address> reload` performs a manual replacement; `reload-status` reports the latest attempt. Application state survives while frontend drafts and document references reset. See [development](guide/development.md).
 

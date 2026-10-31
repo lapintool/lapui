@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "lapui-files-preview": {
+      "command": "C:/path/to/extracted-preview/lapui.exe",
+      "args": ["--demo", "files", "--mcp-stdio"]
+    }
+  }
+}

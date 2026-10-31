@@ -10,6 +10,8 @@ Lapui 是一个使用 Rust 编写的桌面 UI 运行时实验。它用 Blitz 渲
 
 下文的运行命令和示例仅供开发者评估原型中的特定路径，不表示本项目已适合生产使用或已广泛兼容前端应用。
 
+本分支保留 2026-10-23 用于换机的本地开发快照，尚未与 `master` 上另一条开发线合并。开发暂停以便交接；[Windows 打包工具](guide/packaging.md)仍属实验性实现，干净机器验收尚未完成。
+
 ## 运行原型
 
 在本项目根目录可以直接使用以下命令运行完整的 lapstyle-ui 桌面界面：
@@ -55,6 +57,8 @@ RGBA、编码或保存 PNG；结果包含文档 epoch、物理尺寸和 DPI。�
 本地 ES module 已支持静态/动态导入、重导出和顶层 await，模块限定在应用目录内。无须 Node 或构建步骤的[模块示例](examples/modules-demo/README.md)：`cargo run --release --locked -- --html examples/modules-demo/index.html`。包名导入仍需构建工具处理，详见[模块指南](guide/modules.md)。
 
 [React DOM 示例](examples/react-demo/README.md)已验证受控输入、捕获/冒泡事件委托、effect、列表与条件内容，以及异步 Rust 动作。启动命令：`cargo run --release --locked -- --html examples/react-demo/index.html`。
+
+[界面对照 fixture](examples/ui-fixtures/README.md)在两种 CSS 视口下，将七类场景与真实无头浏览器比较，保留成对 PNG、行为结果和几何差异。Python 和 Node.js 仅用于开发对照工具，运行应用无需安装。
 
 本地页面加 `--watch` 可在编辑或重新构建 bundle 后完整重载。`lapui client <地址> reload` 手动重载，`reload-status` 查询最近一次尝试。Rust 应用状态保留，前端草稿与文档引用重置，见[开发及重载指南](guide/development.md)。
 

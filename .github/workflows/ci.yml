@@ -58,6 +58,10 @@ jobs:
         run: cargo +${{ matrix.rust }} build --locked --bins
       - name: Paint embedded tool without a window
         run: cargo +${{ matrix.rust }} run --locked -- --demo files --snapshot target/ci-files.png
+      - name: Exercise representative UI fixtures without a window
+        run: |
+          cargo +${{ matrix.rust }} run --locked --example fixture_runner -- --suite all --out target/ci-fixtures/960x640
+          cargo +${{ matrix.rust }} run --locked --example fixture_runner -- --suite all --width 640 --height 480 --out target/ci-fixtures/640x480
   documentation:
     runs-on: ubuntu-24.04
     steps:

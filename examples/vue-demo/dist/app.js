@@ -8214,71 +8214,73 @@ Expected function or array of functions, received type ${typeof value}.`
         tasks.value = tasks.value.filter((item) => item.id !== task.id);
         status.value = `\u5DF2\u5220\u9664\u4EFB\u52A1\uFF1A${task.title}`;
       };
-      return () => h("main", { class: "board" }, [
-        h("div", { class: "eyebrow" }, "Local UI \xB7 Vue 3"),
-        h("h1", "\u4EFB\u52A1\u9762\u677F"),
-        h("p", { class: "subtitle" }, "\u7528\u719F\u6089\u7684\u524D\u7AEF\u65B9\u5F0F\u7F16\u5199\u672C\u5730\u684C\u9762\u754C\u9762\u3002"),
-        h("form", {
-          class: "entry",
-          onSubmit: (event) => {
-            event.preventDefault();
-            addTask();
-          }
-        }, [
-          h("label", { for: "task-input" }, "\u65B0\u4EFB\u52A1"),
-          h("input", {
-            id: "task-input",
-            placeholder: "\u8F93\u5165\u4EFB\u52A1\u540D\u79F0\u2026",
-            value: draft.value,
-            onInput: (event) => {
-              draft.value = event.target.value;
+      return () => [
+        h("main", { class: "board" }, [
+          h("div", { class: "eyebrow" }, "Local UI \xB7 Vue 3"),
+          h("h1", "\u4EFB\u52A1\u9762\u677F"),
+          h("p", { class: "subtitle" }, "\u7528\u719F\u6089\u7684\u524D\u7AEF\u65B9\u5F0F\u7F16\u5199\u672C\u5730\u684C\u9762\u754C\u9762\u3002"),
+          h("form", {
+            class: "entry",
+            onSubmit: (event) => {
+              event.preventDefault();
+              addTask();
             }
-          }),
-          h("button", { id: "add-task", type: "button", disabled: !draft.value.trim(), onClick: addTask }, "\u6DFB\u52A0\u4EFB\u52A1")
-        ]),
-        h("ul", { class: "items", "aria-label": "\u4EFB\u52A1\u5217\u8868" }, tasks.value.map(
-          (task) => h("li", { class: "item", key: task.id }, [
+          }, [
+            h("label", { for: "task-input" }, "\u65B0\u4EFB\u52A1"),
             h("input", {
-              id: `task-done-${task.id}`,
-              class: "task-check",
-              type: "checkbox",
-              checked: task.done,
-              "aria-label": `\u5B8C\u6210 ${task.title}`,
-              onChange: () => {
-                task.done = !task.done;
+              id: "task-input",
+              placeholder: "\u8F93\u5165\u4EFB\u52A1\u540D\u79F0\u2026",
+              value: draft.value,
+              onInput: (event) => {
+                draft.value = event.target.value;
               }
             }),
-            h("span", { class: task.done ? "item-name done" : "item-name" }, task.title),
+            h("button", { id: "add-task", type: "button", disabled: !draft.value.trim(), onClick: addTask }, "\u6DFB\u52A0\u4EFB\u52A1")
+          ]),
+          h("ul", { class: "items", "aria-label": "\u4EFB\u52A1\u5217\u8868" }, tasks.value.map(
+            (task) => h("li", { class: "item", key: task.id }, [
+              h("input", {
+                id: `task-done-${task.id}`,
+                class: "task-check",
+                type: "checkbox",
+                checked: task.done,
+                "aria-label": `\u5B8C\u6210 ${task.title}`,
+                onChange: () => {
+                  task.done = !task.done;
+                }
+              }),
+              h("span", { class: task.done ? "item-name done" : "item-name" }, task.title),
+              h("button", {
+                class: "remove",
+                id: `remove-task-${task.id}`,
+                type: "button",
+                "aria-label": `\u5220\u9664 ${task.title}`,
+                onClick: () => removeTask(task)
+              }, "\u5220\u9664")
+            ])
+          )),
+          h("div", { class: "actions" }, [
             h("button", {
-              class: "remove",
-              id: `remove-task-${task.id}`,
+              id: "toggle-details",
+              class: "secondary",
               type: "button",
-              "aria-label": `\u5220\u9664 ${task.title}`,
-              onClick: () => removeTask(task)
-            }, "\u5220\u9664")
-          ])
-        )),
-        h("div", { class: "actions" }, [
-          h("button", {
-            id: "toggle-details",
-            class: "secondary",
-            type: "button",
-            "aria-expanded": String(detailsOpen.value),
-            onClick: () => {
-              detailsOpen.value = !detailsOpen.value;
-            }
-          }, detailsOpen.value ? "\u5173\u95ED\u8BF4\u660E" : "\u6253\u5F00\u8BF4\u660E"),
-          h("button", {
-            id: "clear-tasks",
-            class: "secondary",
-            type: "button",
-            onClick: () => {
-              tasks.value = [];
-              status.value = "\u5217\u8868\u5DF2\u6E05\u7A7A";
-            }
-          }, "\u6E05\u7A7A\u5217\u8868")
+              "aria-expanded": String(detailsOpen.value),
+              onClick: () => {
+                detailsOpen.value = !detailsOpen.value;
+              }
+            }, detailsOpen.value ? "\u5173\u95ED\u8BF4\u660E" : "\u6253\u5F00\u8BF4\u660E"),
+            h("button", {
+              id: "clear-tasks",
+              class: "secondary",
+              type: "button",
+              onClick: () => {
+                tasks.value = [];
+                status.value = "\u5217\u8868\u5DF2\u6E05\u7A7A";
+              }
+            }, "\u6E05\u7A7A\u5217\u8868")
+          ]),
+          h("p", { class: "status", role: "status", "aria-live": "polite" }, status.value)
         ]),
-        h("p", { class: "status", role: "status", "aria-live": "polite" }, status.value),
         detailsOpen.value ? h("div", { class: "dialog-backdrop" }, [
           h("section", { class: "dialog", role: "dialog", "aria-modal": "true", "aria-label": "Lapui \u8BF4\u660E" }, [
             h("h2", "\u4E00\u4E2A\u672C\u5730\u754C\u9762"),
@@ -8288,7 +8290,7 @@ Expected function or array of functions, received type ${typeof value}.`
             } }, "\u5B8C\u6210")
           ])
         ]) : null
-      ]);
+      ];
     }
   };
   createApp(App).mount("#app");

@@ -2227,20 +2227,12 @@ impl LapuiDocument {
                     "__lapui_set_value",
                     Func::from({
                         let dom = dom.clone();
-                        move |reference: String, value: String| -> i32 {
+                        move |reference: String, value: String| -> bool {
                             let mut doc = dom.borrow_mut();
                             let Some(id) = resolve_node_ref(&doc, &reference) else {
-                                return -1;
+                                return false;
                             };
-                            let before = crate::forms::value(&doc, id);
-                            if !crate::forms::set_value(&mut doc, id, &value) {
-                                return -1;
-                            }
-                            if crate::forms::value(&doc, id) != before {
-                                1
-                            } else {
-                                0
-                            }
+                            crate::forms::set_value(&mut doc, id, &value)
                         }
                     }),
                 )?;
@@ -4381,6 +4373,110 @@ mod tests {
     }
 
     #[test]
+    fn semantic_fill_normalizes_native_values_and_journals_public_value_changes() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body><input id='text' value='initial'><input id='email' type='email'><input id='url' type='url'><textarea id='area'></textarea><input id='number' type='number'><input id='password' type='password'></body></html>",
+            "",
+        )
+        .unwrap();
+        let controls = control_request(&mut doc, json!({"method":"controls"})).unwrap();
+        let epoch = controls["documentEpoch"].clone();
+        let reference = |id: &str| {
+            controls["controls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|control| control["id"] == id)
+                .unwrap()["ref"]
+                .clone()
+        };
+        for (id, supplied, expected) in [
+            ("text", "a\r\nb\rc", "abc"),
+            ("email", "\t dev@example.test \r\n", "dev@example.test"),
+            (
+                "url",
+                " https://example.test/ \r\n",
+                "https://example.test/",
+            ),
+            ("area", "first\r\nsecond\rthird", "first\nsecond\nthird"),
+        ] {
+            control_request(
+                &mut doc,
+                json!({"method":"fill","documentEpoch":epoch,"ref":reference(id),"value":supplied}),
+            )
+            .unwrap();
+            let raw: String = doc
+                .js_context
+                .with(|ctx| {
+                    ctx.eval(format!(
+                        "__lapui_get_value(document.getElementById('{id}').__ref)"
+                    ))
+                })
+                .unwrap();
+            assert_eq!(raw, expected, "native editor for {id}");
+        }
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(
+            "(()=>{const text=document.getElementById('text');text.defaultValue='new default';return text.value==='abc';})()"
+        )).unwrap());
+
+        let baseline = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"limit":64}),
+        )
+        .unwrap();
+        control_request(
+            &mut doc,
+            json!({"method":"fill","documentEpoch":epoch,"ref":reference("text"),"value":"a\r\nb\rc"}),
+        )
+        .unwrap();
+        control_request(
+            &mut doc,
+            json!({"method":"fill","documentEpoch":epoch,"ref":reference("number"),"value":"not-a-number"}),
+        ).unwrap();
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(
+            "(()=>{const number=document.getElementById('number');return number.value===''&&number.validity.badInput;})()"
+        )).unwrap());
+        let changes = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"cursor":baseline["cursor"],"limit":64}),
+        ).unwrap();
+        assert!(changes["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| { record["type"] == "control" && record["controlEvent"] == "input" }));
+        assert!(
+            !changes["records"].as_array().unwrap().iter().any(|record| {
+                record["type"] == "property" && record["propertyName"] == "value"
+            }),
+            "empty public numeric value did not change: {changes}"
+        );
+
+        let filled = control_request(
+            &mut doc,
+            json!({"method":"fill","documentEpoch":epoch,"ref":reference("password"),"value":"private-fill-sentinel"}),
+        ).unwrap();
+        let secret_changes = control_request(
+            &mut doc,
+            json!({"method":"pageChanges","documentEpoch":epoch,"cursor":changes["cursor"],"limit":64}),
+        ).unwrap();
+        assert!(secret_changes["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| {
+                record["type"] == "property"
+                    && record["propertyName"] == "value"
+                    && record["target"] == reference("password")
+            }));
+        assert!(!filled.to_string().contains("private-fill-sentinel"));
+        assert!(!secret_changes.to_string().contains("private-fill-sentinel"));
+        assert!(doc.script_diagnostics.borrow().is_empty());
+    }
+
+    #[test]
     fn local_forms_separate_native_current_values_defaults_dirty_flags_reset_and_cloning() {
         let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,
             "<html><body><form id='form'><input id='text' name='text' value='initial'><textarea id='area' name='area'>Initial\ntext</textarea><input id='check' type='checkbox' checked><input id='first' type='radio' name='choice' checked><input id='second' type='radio' name='choice'></form></body></html>","").unwrap();
@@ -5861,6 +5957,8 @@ mod tests {
             if (scroller.scrollTop !== 60 || scroller.scrollLeft !== 20 || scrollY !== 0 || events.length !== 0) return false;
             const rect = content.getBoundingClientRect();
             if (rect.x !== 32 || rect.y !== 2) return false;
+            const border = scroller.getBoundingClientRect(), fragment = scroller.getClientRects()[0];
+            if (border.x !== 40 || border.y !== 50 || fragment.x !== 40 || fragment.y !== 50) return false;
             scroller.scrollBy({top:15});
             return scroller.scrollTop === 75 && scroller.scrollLeft === 20;
         })()"#)).unwrap_or_else(|error| panic!("{}",javascript_error(&doc.js_context,&error,&doc.script_budget))));
@@ -5877,6 +5975,16 @@ mod tests {
                 .unwrap(),
             0
         );
+        let page = control_request(&mut doc, json!({"method":"pageSnapshot","limit":64})).unwrap();
+        let scroller = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == "scroller")
+            .unwrap();
+        assert_eq!(scroller["bounds"]["x"], 40.0);
+        assert_eq!(scroller["bounds"]["y"], 50.0);
+        assert_eq!(scroller["onScreen"], true);
         assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(r#"(() => {
             scroller.scrollTo(1e9,1e9);
             if (scroller.scrollLeft !== 280 || scroller.scrollTop !== 220 || scrollY !== 0) return false;
@@ -10360,6 +10468,16 @@ mod tests {
             .unwrap();
         drain_jobs(&doc.js_runtime, &doc.script_budget).unwrap();
         assert!(text(&doc, "app").contains("一个本地界面"));
+        for (width, height) in [(960, 640), (640, 480)] {
+            doc.inner_mut()
+                .set_viewport(Viewport::new(width, height, 1.0, ColorScheme::Light));
+            assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(r#"(()=>{
+              const backdrop=document.querySelector('.dialog-backdrop').getBoundingClientRect();
+              const dialog=document.querySelector('.dialog').getBoundingClientRect();
+              return backdrop.x===0 && backdrop.y===0 && backdrop.width===innerWidth && backdrop.height===innerHeight
+                && Math.abs(dialog.y+dialog.height/2-innerHeight/2)<=1;
+            })()"#)).unwrap(), "Vue dialog must cover and center in {width}x{height}");
+        }
         doc.js_context
             .with(|ctx| ctx.eval::<(), _>("lapui.activate('close-details');"))
             .unwrap();

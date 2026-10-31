@@ -1345,11 +1345,7 @@
         if (target.multiple) return false;
         target.value = String(value);
       }
-      else {
-        const result = __lapui_set_value(reference, String(value));
-        if (result < 0) return false;
-        if (result > 0) __lapui_record_page_change?.(target, 'value');
-      }
+      else if (!__lapui_fill_value(target, String(value))) return false;
       const path = __lapui_event_path(reference);
       __lapui_dispatch('input', reference, path);
       __lapui_dispatch('change', reference, path);

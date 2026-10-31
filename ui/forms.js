@@ -42,6 +42,17 @@
     if(target.type==='number'&&Number.isNaN(number(value)))return '';
     return value;
   };
+  globalThis.__lapui_fill_value=(target,value)=>{
+    if(!valueMode(target))return false;
+    const previous=String(target.value??''), supplied=String(value);
+    // Preserve an invalid numeric edit for badInput while its public value is empty.
+    const current=target.type==='number'?supplied.replace(/[\r\n]/g,''):sanitize(target,supplied);
+    // Bypass framework value setters; mark dirty before any read can restore defaults.
+    if(!__lapui_set_value(target.__ref,current))return false;
+    const own=state(target);own.dirty=true;own.user=true;
+    reportControlProperty(target,'value',previous);
+    return true;
+  };
   Object.defineProperty(proto,'type',{configurable:true,get(){
     const raw=(this.getAttribute('type')||'').toLowerCase();
     if(this.tagName==='INPUT')return knownTypes.has(raw)?raw:'text';
