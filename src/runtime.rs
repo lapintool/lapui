@@ -5565,6 +5565,41 @@ mod tests {
     }
 
     #[test]
+    fn component_bordered_auto_overflow_does_not_gain_a_phantom_scroll_range() {
+        // A 1px border must not turn an `overflow: auto` box whose child fills it exactly
+        // into a scroller: that is the "scrollbar you cannot drag" artifact.
+        let html = "<html><head><style>html,body{margin:0}.box{width:200px;height:100px;overflow:auto;border:1px solid black;border-radius:6px;box-sizing:border-box}#fit{width:100%;height:100%}#over{width:150%;height:300px}</style></head><body><div class='box' id='fitbox'><div id='fit'></div></div><div class='box' id='overbox'><div id='over'></div></div></body></html>";
+        let (mut doc, _) =
+            LapuiDocument::new_with_source(ActionRegistry::default(), None, html, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        doc.inner_mut().resolve(0.0);
+        let result: String = doc
+            .js_context
+            .with(|ctx| {
+                ctx.eval(
+                    r#"(() => {
+                        const fit = document.getElementById('fitbox');
+                        const over = document.getElementById('overbox');
+                        fit.scrollLeft = 9;
+                        fit.scrollTop = 9;
+                        over.scrollLeft = 1000;
+                        over.scrollTop = 1000;
+                        return JSON.stringify([
+                            fit.scrollLeft, fit.scrollTop,
+                            over.scrollLeft > 0, over.scrollTop > 0,
+                        ]);
+                    })()"#,
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            result, "[0,0,true,true]",
+            "a bordered auto-overflow box whose child fits must not scroll, while real overflow must"
+        );
+    }
+
+    #[test]
     fn component_shrinking_content_clamps_offsets_and_border_only_tables_do_not_scroll() {
         let (mut doc,_)=LapuiDocument::new_with_source(ActionRegistry::default(),None,
             "<html><style>html,body{margin:0}#scroller{width:200px;height:100px;overflow:auto}#content{height:700px}.table{width:150px;overflow:auto;border:1px solid black;border-radius:6px}table{width:100%;border-collapse:collapse}td{padding:4px}</style><body><div id='scroller'><div id='content'></div></div><div class='table' id='wrapper'><table><tr><td>A</td><td>B</td></tr></table></div></body></html>","").unwrap();
