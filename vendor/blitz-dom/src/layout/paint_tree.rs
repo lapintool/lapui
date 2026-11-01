@@ -65,6 +65,32 @@ pub fn hoisted_child_position(tree: &NodeTree, sc_root_id: NodeId, child_id: Nod
     position
 }
 
+/// Clipping ancestors skipped when a positioned descendant is hoisted to a
+/// stacking context. Coordinates are relative to the context's content.
+pub fn hoisted_clip_rects(tree: &NodeTree, root: NodeId, child: NodeId) -> Vec<Rect<f32>> {
+    use style::values::computed::Overflow;
+    let mut result = Vec::new();
+    let mut current = tree.get(child).and_then(|node| node.layout_parent.get());
+    while let Some(id) = current {
+        if id == root { break; }
+        let Some(node) = tree.get(id) else { break; };
+        if let Some(style) = node.primary_styles() {
+            let b = style.get_box();
+            if !matches!(b.overflow_x, Overflow::Visible) || !matches!(b.overflow_y, Overflow::Visible) {
+                let offset = hoisted_child_position(tree, root, id);
+                let layout = node.final_layout();
+                let x = offset.x + layout.location.x;
+                let y = offset.y + layout.location.y;
+                result.push(Rect { left:x + layout.border.left, top:y + layout.border.top,
+                    right:x + layout.size.width - layout.border.right,
+                    bottom:y + layout.size.height - layout.border.bottom });
+            }
+        }
+        current = node.layout_parent.get();
+    }
+    result
+}
+
 /// A child with a z_index that is hoisted up to it's containing Stacking Context for paint purposes
 #[derive(Debug, Clone)]
 pub struct HoistedPaintChild {

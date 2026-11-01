@@ -35,6 +35,22 @@ use blitz_traits::node_id::NodeId;
 use crate::BaseDocument;
 use crate::net::StylesheetLoader;
 
+impl BaseDocument {
+    /// Evaluate JS media queries with the same parser/device as CSS @media.
+    /// Unknown features must not silently match (notably reduced motion).
+    pub fn matches_media(&mut self, query: &str) -> bool {
+        use style::media_queries::MediaList;
+        use style::stylesheets::CustomMediaEvaluator;
+        let url = self.url.url_extra_data();
+        let mut context = ParserContext::new(
+            Origin::Author, &url, None, ParsingMode::DEFAULT,
+            QuirksMode::NoQuirks, Default::default(), None, None, Default::default(),
+        );
+        let list = MediaList::parse(&mut context, &mut Parser::new(query));
+        list.evaluate(self.stylist_device(), QuirksMode::NoQuirks, &mut CustomMediaEvaluator::none())
+    }
+}
+
 /// Errors from CSSOM mutation operations, mirroring the `DOMException` names
 /// which the corresponding JavaScript APIs throw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

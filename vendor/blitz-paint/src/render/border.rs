@@ -1,6 +1,6 @@
 use anyrender::PaintScene;
 use blitz_dom::node::SpecialElementData;
-use kurbo::{BezPath, Cap, Circle, Insets, Join, PathEl, Point, Rect, Shape as _, Stroke, Vec2};
+use kurbo::{BezPath, Cap, Circle, Insets, Join, PathEl, Point, Shape as _, Stroke, Vec2};
 use peniko::{Color, Fill};
 use smallvec::SmallVec;
 use style::{
@@ -521,69 +521,108 @@ impl ElementCx<'_, '_> {
         let Some(grid_info) = &mut *table.computed_grid_info.borrow_mut() else {
             return;
         };
-        let Some(border_style) = table.border_style.as_deref() else {
-            return;
-        };
-
-        let outer_border_style = self.style.get_border();
-
         let cols = PhysicalTracks::from_tracks(&grid_info.columns);
         let rows = PhysicalTracks::from_tracks(&grid_info.rows);
-
-        // TODO: support different colors for different borders
-        let current_color = self.style.clone_color();
-        let border_color = border_style
-            .border_top_color
-            .resolve_to_absolute(&current_color)
-            .as_srgb_color();
-
-        // No need to draw transparent borders (as they won't be visible anyway)
-        if border_color == Color::TRANSPARENT {
+        let rtl = cols.reversed;
+        let cols: Vec<_> = cols.iter().collect();
+        let rows: Vec<_> = rows.iter().collect();
+        let (nc, nr) = (cols.len(), rows.len());
+        if nc == 0 || nr == 0 {
             return;
         }
-
-        // Border widths are not adjusted for border-style in computed styles,
-        // so a border with `none`/`hidden` style must be treated as zero-width.
-        if border_style.border_top_style.none_or_hidden() {
-            return;
-        }
-
-        // The borders are laid out as the gutters between the tracks, and as the border
-        // of the table around them. Track positions are relative to the table's border box.
-        let border_width = table.style.gap.map(|gap| gap.into_raw().value() as f64);
-        let left = cols.origin() as f64 - border_width.width;
-        let right = (cols.origin() + cols.span()) as f64 + border_width.width;
-        let top = rows.origin() as f64 - border_width.height;
-        let bottom = (rows.origin() + rows.span()) as f64 + border_width.height;
-
-        let mut fill = |x0: f64, y0: f64, x1: f64, y1: f64| {
-            let shape = Rect::new(x0, y0, x1, y1).scale_from_origin(self.scale);
-            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
+        // Resolve each shared cell edge independently. A missing first-cell top
+        // border says nothing about vertical lines or borders in later rows.
+        // Spanning cells contribute only their perimeter, never internal lines.
+        let mut horizontal = vec![None; (nr + 1) * nc];
+        let mut vertical = vec![None; nr * (nc + 1)];
+        let rank = |style| match style {
+            BorderStyle::Hidden => 10, BorderStyle::Double => 9,
+            BorderStyle::Solid => 8, BorderStyle::Dashed => 7,
+            BorderStyle::Dotted => 6, BorderStyle::Ridge => 5,
+            BorderStyle::Outset => 4, BorderStyle::Groove => 3,
+            BorderStyle::Inset => 2, BorderStyle::None => 0,
         };
-
-        // Horizontal borders: the outer edges, then the gutters between adjacent row tracks.
-        // The vertical borders are drawn between them so that no corner is painted twice.
-        if outer_border_style.border_top_style != BorderStyle::Hidden {
-            fill(left, top, right, top + border_width.height);
-        }
-        if outer_border_style.border_bottom_style != BorderStyle::Hidden {
-            fill(left, bottom - border_width.height, right, bottom);
-        }
-        for (prev, next) in rows.iter().zip(rows.iter().skip(1)) {
-            fill(left, prev.end as f64, right, next.start as f64);
-        }
-
-        // Vertical borders, one segment per row
-        for row in rows.iter() {
-            let (y0, y1) = (row.start as f64, row.end as f64);
-            if outer_border_style.border_left_style != BorderStyle::Hidden {
-                fill(left, y0, left + border_width.width, y1);
+        let merge = |slot: &mut Option<(f64, BorderStyle, Color)>, width, style, color| {
+            let candidate = (width, style, color);
+            if slot.is_none_or(|old| {
+                if old.1 == BorderStyle::Hidden { return false; }
+                style == BorderStyle::Hidden || width > old.0
+                    || (width == old.0 && rank(style) > rank(old.1))
+            }) {
+                *slot = Some(candidate);
             }
-            if outer_border_style.border_right_style != BorderStyle::Hidden {
-                fill(right - border_width.width, y0, right, y1);
+        };
+        for cell in &table.cells {
+            let Some(node) = self.context.dom.get_node(cell.node_id) else { continue; };
+            let Some(style) = node.primary_styles() else { continue; };
+            let border = style.get_border();
+            let current = style.clone_color();
+            let span = |name| node.attr(name).and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1);
+            let (r0, mut c0) = (cell.row as usize, cell.column as usize);
+            let (r1, mut c1) = ((r0 + span(blitz_dom::local_name!("rowspan"))).min(nr),
+                (c0 + span(blitz_dom::local_name!("colspan"))).min(nc));
+            if r0 >= nr || c0 >= nc { continue; }
+            if rtl { (c0, c1) = (nc - c1, nc - c0); }
+            for (index, width, edge, color) in [
+                (r0, &border.border_top_width, border.border_top_style, &border.border_top_color),
+                (r1, &border.border_bottom_width, border.border_bottom_style, &border.border_bottom_color),
+            ] {
+                let width = if edge == BorderStyle::None { 0.0 } else { width.0.to_f32_px() as f64 };
+                for col in c0..c1 {
+                    merge(&mut horizontal[index * nc + col], width, edge,
+                        color.resolve_to_absolute(&current).as_srgb_color());
+                }
             }
-            for (prev, next) in cols.iter().zip(cols.iter().skip(1)) {
-                fill(prev.end as f64, y0, next.start as f64, y1);
+            for (index, width, edge, color) in [
+                (c0, &border.border_left_width, border.border_left_style, &border.border_left_color),
+                (c1, &border.border_right_width, border.border_right_style, &border.border_right_color),
+            ] {
+                let width = if edge == BorderStyle::None { 0.0 } else { width.0.to_f32_px() as f64 };
+                for row in r0..r1 {
+                    merge(&mut vertical[row * (nc + 1) + index], width, edge,
+                        color.resolve_to_absolute(&current).as_srgb_color());
+                }
+            }
+        }
+        let gap = table.style.gap.map(|v| v.into_raw().value() as f64);
+        let boundaries = |tracks: &[taffy::Line<f32>], gap: f64| {
+            let mut result = vec![tracks[0].start as f64 - gap / 2.0];
+            result.extend(tracks.windows(2).map(|pair| (pair[0].end + pair[1].start) as f64 / 2.0));
+            result.push(tracks.last().unwrap().end as f64 + gap / 2.0);
+            result
+        };
+        let xs = boundaries(&cols, gap.width);
+        let ys = boundaries(&rows, gap.height);
+        let mut draw = |edge: Option<(f64, BorderStyle, Color)>, a: Point, b: Point| {
+            let Some((width, style, color)) = edge else { return; };
+            if width <= 0.0 || style.none_or_hidden() || color.components[3] <= 0.0 { return; }
+            let width = width * self.scale;
+            let stroke = Stroke::new(width);
+            let (mut a, mut b) = (Point::new(a.x * self.scale, a.y * self.scale),
+                Point::new(b.x * self.scale, b.y * self.scale));
+            let [xx, xy, yx, yy, tx, ty] = self.transform.as_coeffs();
+            if xx == 1.0 && xy == 0.0 && yx == 0.0 && yy == 1.0 {
+                // Align the outside of a thin stroke, not its center. Otherwise
+                // a 1px separator becomes two half-alpha pixels on opaque cells.
+                if a.x == b.x {
+                    a.x = (a.x + tx - width / 2.0).round() - tx + width / 2.0;
+                    b.x = a.x;
+                } else {
+                    a.y = (a.y + ty - width / 2.0).round() - ty + width / 2.0;
+                    b.y = a.y;
+                }
+            }
+            scene.stroke(&stroke, self.transform, color, None,
+                &kurbo::Line::new(a, b));
+        };
+        for r in 0..=nr {
+            for c in 0..nc {
+                draw(horizontal[r * nc + c], Point::new(xs[c], ys[r]), Point::new(xs[c+1], ys[r]));
+            }
+        }
+        for r in 0..nr {
+            for c in 0..=nc {
+                draw(vertical[r * (nc+1) + c], Point::new(xs[c], ys[r]), Point::new(xs[c], ys[r+1]));
             }
         }
     }

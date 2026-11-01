@@ -67,6 +67,18 @@ impl WindowStateStore {
                 sane_dimension(self.saved.height, DEFAULT_HEIGHT, MIN_HEIGHT),
             ))
             .with_maximized(self.saved.maximized);
+        // Keep custom title-bar contents, but let DWM own the native outline,
+        // shadow and corner clipping (including square snapped/maximized edges).
+        #[cfg(target_os = "windows")]
+        {
+            use winit::platform::windows::{Color, CornerPreference, WindowAttributesWindows};
+            attributes = attributes.with_platform_attributes(Box::new(
+                WindowAttributesWindows::default()
+                    .with_undecorated_shadow(true)
+                    .with_border_color(Some(Color::SYSTEM_DEFAULT))
+                    .with_corner_preference(CornerPreference::Round),
+            ));
+        }
         if let (Some(x), Some(y)) = (self.saved.x, self.saved.y) {
             attributes = attributes.with_position(PhysicalPosition::new(x, y));
         }

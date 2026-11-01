@@ -34,3 +34,36 @@ image positioning and broader table conformance remain separate work.
 Retain cyan-header pixel scans at five scales, real-page captures, and existing
 fixed/auto/span geometry regressions. Remove these patches when a compatible
 upstream group passes these checks without them.
+
+## P-TABLE-BORDER-001
+
+`src/render/border.rs` resolves shared cell perimeter segments independently
+instead of using the first cell's top border for every edge. Honor zero/hidden
+edges, cell colors, width/style precedence and row/column spans; draw above cell
+backgrounds inside the scrolled content clip. This preserves plain/no-frame
+tables and restores internal lines when the first top border is zero. The DOM
+patch reserves gutters using all cells. This is still bounded cell-border
+support, not full CSS table conflict resolution (row/column/group borders and
+non-solid collapsed border rendering remain incomplete). Retain fractional-DPI
+pixel tests with opaque backgrounds, removed outside edges and colspan.
+
+## P-HOISTED-CLIP-001
+
+Apply intermediate overflow ancestor clips when painting z-index-hoisted boxes;
+the matching DOM hit test rejects points outside those clips. Retain scrolled
+slider-thumb and pointer regressions. Axis-aligned rectangular clips are covered;
+transformed/rounded intermediate clip chains are not yet fully implemented.
+
+## P-STALE-STACKING-001
+
+Skip removed child IDs left in an unresolved stacking tree, matching the DOM
+hit-test guard. Retain the remove-before-layout hit-test and paint regression;
+remove this guard when upstream invalidation makes stale IDs impossible.
+
+## P-SHADOW-SPREAD-001
+
+Outset box-shadow spread expands the corner radius as well as the box; apply
+the CSS small-radius correction so a spread circular switch thumb keeps a
+circular hover halo. This remains limited by upstream's averaged corner radii.
+Retain the fractional-scale circle and square-corner pixel regression until an
+upstream implementation handles spread correctly.

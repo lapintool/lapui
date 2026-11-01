@@ -82,23 +82,6 @@ impl<'a> PhysicalTracks<'a> {
         (0..self.positions.len()).map(move |index| self.get(index))
     }
 
-    /// The physical start position of the first track
-    pub(crate) fn origin(self) -> f32 {
-        if self.positions.is_empty() {
-            0.0
-        } else {
-            self.get(0).start
-        }
-    }
-
-    /// Total distance from the start of the first track to the end of the last track
-    pub(crate) fn span(self) -> f32 {
-        if self.positions.is_empty() {
-            0.0
-        } else {
-            self.get(self.positions.len() - 1).end - self.get(0).start
-        }
-    }
 }
 
 /// A short-lived struct which holds a bunch of parameters for rendering a scene so
@@ -529,7 +512,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                         cx.draw_background(scene);
                         cx.draw_inset_box_shadow(scene);
                         cx.draw_table_row_backgrounds(scene);
-                        cx.draw_table_borders(scene);
                         cx.draw_border(scene);
                         cx.stroke_devtools(scene);
 
@@ -571,6 +553,10 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                                 cx.draw_inline_layout(scene, content_position);
                                 cx.draw_marker(scene, content_position);
                                 cx.draw_children(scene, cx.transform, child_clip_rect);
+                                // Collapsed cell backgrounds extend to shared edges.
+                                // Paint their resolved borders above those backgrounds,
+                                // using the same scrolled content transform.
+                                cx.draw_table_borders(scene);
                             },
                         );
 
@@ -1019,6 +1005,12 @@ impl ElementCx<'_, '_> {
 
         if let Some(hoisted) = &self.node.stacking_context {
             for hoisted_child in hoisted.neg_z_hoisted_children() {
+                if self.node.tree().get(hoisted_child.node_id).is_none() { continue; }
+                let clips = blitz_dom::hoisted_clip_rects(self.node.tree(), self.node.id, hoisted_child.node_id);
+                for clip in &clips {
+                    let rect = Rect::new(clip.left as f64, clip.top as f64, clip.right as f64, clip.bottom as f64).scale_from_origin(self.scale);
+                    scene.push_clip_layer(Fill::NonZero, parent_style_transform, &rect);
+                }
                 let position = hoisted_child.position(self.node.tree(), self.node.id);
                 let pos = kurbo::Vec2 {
                     x: position.x as f64 * self.scale,
@@ -1030,6 +1022,7 @@ impl ElementCx<'_, '_> {
                     parent_style_transform.pre_translate(pos),
                     clip_rect,
                 );
+                for _ in &clips { scene.pop_layer(); }
             }
         }
 
@@ -1040,7 +1033,7 @@ impl ElementCx<'_, '_> {
                 // the viewport and do not scroll with it, so cancel out the viewport
                 // scroll (applied in `paint_scene`). A fixed box contained by a
                 // transformed ancestor scrolls with it like any out-of-flow box.
-                let child = &self.context.dom.as_ref().tree()[*child_id];
+                let Some(child) = self.context.dom.as_ref().tree().get(*child_id) else { continue; };
                 let child_transform = if child.taffy_position() == taffy::Position::Fixed
                     && Some(self.node.id) == self.context.root_element_id
                 {
@@ -1059,6 +1052,12 @@ impl ElementCx<'_, '_> {
         // Positive z_index hoisted nodes
         if let Some(hoisted) = &self.node.stacking_context {
             for hoisted_child in hoisted.pos_z_hoisted_children() {
+                if self.node.tree().get(hoisted_child.node_id).is_none() { continue; }
+                let clips = blitz_dom::hoisted_clip_rects(self.node.tree(), self.node.id, hoisted_child.node_id);
+                for clip in &clips {
+                    let rect = Rect::new(clip.left as f64, clip.top as f64, clip.right as f64, clip.bottom as f64).scale_from_origin(self.scale);
+                    scene.push_clip_layer(Fill::NonZero, parent_style_transform, &rect);
+                }
                 let position = hoisted_child.position(self.node.tree(), self.node.id);
                 let pos = kurbo::Vec2 {
                     x: position.x as f64 * self.scale,
@@ -1070,6 +1069,7 @@ impl ElementCx<'_, '_> {
                     parent_style_transform.pre_translate(pos),
                     clip_rect,
                 );
+                for _ in &clips { scene.pop_layer(); }
             }
         }
     }

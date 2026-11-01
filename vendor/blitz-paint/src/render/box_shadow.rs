@@ -76,6 +76,14 @@ impl ElementCx<'_, '_> {
 
                         // TODO draw shadows with matching individual radii instead of averaging
                         let radius = self.frame.border_radii.average();
+                        // CSS expands the shadow's corner radii with positive
+                        // spread, otherwise a circular source becomes a rounded
+                        // square. Very small radii use the CSS corner correction.
+                        let radius = if spread > 0.0 && radius < spread {
+                            radius + spread * (1.0 + (radius / spread - 1.0).powi(3))
+                        } else {
+                            (radius + spread).max(0.0)
+                        };
                         let rect = self.frame.border_box.inflate(spread, spread);
 
                         // Fill the color

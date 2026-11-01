@@ -750,6 +750,22 @@ impl LapuiDocument {
         self.frames.borrow_mut().rendering_pending = true;
     }
 
+    #[cfg(feature = "software-renderer")]
+    pub(crate) fn has_window_host(&self) -> bool {
+        self.proxy.is_some()
+    }
+
+    #[cfg(feature = "software-renderer")]
+    pub(crate) fn request_window_redraw_after_capture(&mut self) {
+        if let Some(proxy) = &self.proxy {
+            // Offscreen painting never satisfies a native redraw opportunity.
+            self.frames.borrow_mut().rendering_pending = true;
+            proxy.send_event(BlitzShellEvent::RequestRedraw {
+                doc_id: self.dom.borrow().id(),
+            });
+        }
+    }
+
     pub fn has_pending_rendering_update(&self) -> bool {
         self.frames.borrow().rendering_pending
     }
@@ -1860,6 +1876,10 @@ impl LapuiDocument {
                     resolve_node_ref(&doc,&reference).map_or_else(Vec::new, |id| crate::computed_style::names(&doc,id))
                 }))?;
                 let metrics_dom = dom.clone();
+                let media_dom = dom.clone();
+                globals.set("__lapui_match_media", Func::from(move |query: String| -> bool {
+                    media_dom.borrow_mut().matches_media(&query)
+                }))?;
                 let metrics_frames = frames.clone();
                 let metrics_batch = mutation_batch.clone();
                 globals.set("__lapui_layout_metrics", Func::from(move |reference: String| -> Vec<f64> {
@@ -2320,6 +2340,21 @@ impl LapuiDocument {
                         .unwrap_or_default().into_iter().map(|id|canonical_node_ref(doc.id(),id)).collect()
                 }}))?;
                 globals.set("__lapui_url_valid",Func::from(move |value:String| -> bool {Url::parse(&value).is_ok()}))?;
+                globals.set("__lapui_parse_url", Func::from(move |value: String, base: Option<String>| -> String {
+                    let parsed = match base {
+                        Some(base) => Url::parse(&base).and_then(|base| base.join(&value)),
+                        None => Url::parse(&value),
+                    };
+                    let Ok(url) = parsed else { return String::new(); };
+                    let hostname = url.host_str().unwrap_or("");
+                    let port = url.port().map(|p| p.to_string()).unwrap_or_default();
+                    json!({"href":url.as_str(),"origin":url.origin().ascii_serialization(),
+                        "protocol":format!("{}:",url.scheme()),"username":url.username(),
+                        "password":url.password().unwrap_or(""),"hostname":hostname,"port":port,
+                        "host":if port.is_empty(){hostname.to_string()}else{format!("{hostname}:{port}")},
+                        "pathname":url.path(),"search":url.query().filter(|q|!q.is_empty()).map(|q|format!("?{q}")).unwrap_or_default(),
+                        "hash":url.fragment().filter(|f|!f.is_empty()).map(|f|format!("#{f}")).unwrap_or_default()}).to_string()
+                }))?;
                 globals.set("__lapui_label_control", Func::from({
                     let dom = dom.clone();
                     move |reference: String| -> String {
@@ -10712,6 +10747,158 @@ mod tests {
     }
 
     #[test]
+    fn rapid_hover_transitions_clear_every_button_pseudo_background() {
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None,
+            r#"<html><style>html,body{margin:0}section{display:flex;gap:10px}button{position:relative;width:80px;height:40px;border:0;background:transparent;isolation:isolate;transform:translate3d(0,0,1px);color:blue}button::after{content:'';position:absolute;inset:0;z-index:-1;pointer-events:none;background:currentColor;opacity:0;transition:opacity .2s linear}button:hover::after{opacity:.3}</style><body><section><button id='b0'><span>A</span></button><button id='b1'><span>B</span></button><button id='b2'><span>C</span></button><button id='b3'><span>D</span></button><button id='b4'><span>E</span></button></section></body></html>"#, "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(600, 150, 1.0, ColorScheme::Light));
+        doc.inner_mut().resolve(0.0);
+        for round in 0..3 {
+            let start = 1.0 + round as f64;
+            for i in 0..5 {
+                let mut dom = doc.inner_mut();
+                dom.set_hover_to(20.0 + i as f32 * 90.0, 20.0);
+                dom.resolve(start + i as f64 * 0.035);
+                dom.resolve(start + i as f64 * 0.035 + 0.02);
+            }
+            let mut dom = doc.inner_mut();
+            dom.clear_hover();
+            dom.resolve(start + 0.18);
+            dom.resolve(start + 0.25);
+            dom.resolve(start + 0.5);
+            for i in 0..5 {
+                let button = dom
+                    .get_node(dom.get_element_by_id(&format!("b{i}")).unwrap())
+                    .unwrap();
+                assert!(!button.is_hovered());
+                let opacity = dom
+                    .get_node(button.after().unwrap())
+                    .unwrap()
+                    .primary_styles()
+                    .unwrap()
+                    .clone_opacity();
+                assert_eq!(
+                    opacity, 0.0,
+                    "button {i} retained a transition frame in round {round}"
+                );
+            }
+            assert!(
+                !dom.is_animating(),
+                "finished hover transitions must return to idle"
+            );
+        }
+    }
+
+    #[test]
+    fn asset_urls_resolve_relative_to_modules_without_a_browser_global() {
+        let (doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><head></head><body></body></html>",
+            "",
+        )
+        .unwrap();
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(r#"
+            (() => {
+              const asset = new URL('./icons.css', 'file:///C:/app/assets/main.js');
+              if (asset.href !== 'file:///C:/app/assets/icons.css' || String(asset) !== asset.href || asset.origin !== 'null') return false;
+              const web = new URL('../icons?q=hello%20world#preview', 'https://example.test:8443/ui/main.js');
+              if (web.pathname !== '/icons' || web.host !== 'example.test:8443' || web.search !== '?q=hello%20world' || web.hash !== '#preview') return false;
+              if (URL.canParse('not absolute') || URL.parse('x', 'invalid') !== null) return false;
+              asset.href = 'https://example.test/new.css';
+              return JSON.parse(JSON.stringify(asset)) === asset.href && document.head.tagName === 'HEAD';
+            })()
+        "#)).unwrap());
+    }
+
+    #[test]
+    fn tag_collections_support_vite_preload_and_remain_live() {
+        let (doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None,
+            "<html><head><link id='existing' rel='preload' href='existing.css'></head><body><div id='scope'><span></span></div></body></html>", "").unwrap();
+        let result = doc.js_context.with(|ctx| ctx.eval::<bool, _>(r#"
+            (() => {
+              const links = document.getElementsByTagName('LINK');
+              const old = links[0];
+              if (links.length !== 1 || links.item(0) !== old || links.namedItem('existing') !== old || links.namedItem('') !== null) return false;
+              const added = document.createElement('link');
+              document.head.appendChild(added);
+              if (links.length !== 2 || links[1] !== added || [...links].length !== 2) return false;
+              added.remove();
+              if (links.length !== 1 || links[1] !== undefined || links.item(1) !== null) return false;
+              old.setAttribute('data-ready', 'keep');
+              if (!old.toggleAttribute('data-ready', true) || old.getAttribute('data-ready') !== 'keep') return false;
+              if (old.toggleAttribute('data-ready') || old.hasAttribute('data-ready')) return false;
+              if (!old.toggleAttribute('data-ready') || old.getAttribute('data-ready') !== '') return false;
+              const scope = document.getElementById('scope'), spans = scope.getElementsByTagName('span');
+              const span = document.createElement('span');
+              scope.appendChild(span);
+              if (spans.length !== 2 || scope.getElementsByTagName('div').length !== 0) return false;
+              return document.getElementsByTagName('not[a selector').length === 0;
+            })()
+        "#)).unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn media_queries_do_not_disable_aperture_animations() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><body><div id='aperture' style='width:216px;height:208px'></div></body></html>",
+            "",
+        )
+        .unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        let mismatches = doc.js_context.with(|ctx| ctx.eval::<String, _>(r#"
+            const mediaChecks = {
+              '(prefers-reduced-motion: reduce)': false,
+              // The pinned Stylo device does not expose reduced-motion yet;
+              // both keyword queries are unsupported, just as in CSS @media.
+              '(prefers-reduced-motion: no-preference)': false,
+              '(unknown-feature: enabled)': false,
+              'print': false,
+              'screen and (min-width: 700px)': true,
+              '(max-width: 700px)': false,
+              '(max-width: 700px), (min-width: 750px)': true,
+              'not all': false,
+              '(prefers-color-scheme: dark)': false,
+            };
+            JSON.stringify(Object.entries(mediaChecks).filter(([query, expected]) => matchMedia(query).matches !== expected))
+        "#)).unwrap();
+        assert_eq!(mismatches, "[]");
+        doc.js_context
+            .with(|ctx| {
+                ctx.eval::<(), _>(
+                    r#"
+            globalThis.aperture = document.getElementById('aperture');
+            globalThis.apertureAnimation = aperture.animate([
+              {width:'28px',height:'28px'}, {width:'216px',height:'208px'}
+            ], {
+              duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 500,
+              easing: 'cubic-bezier(0.165, 0.84, 0.44, 1)', fill:'none'
+            });
+            apertureAnimation.startTime = performance.now() - 100;
+        "#,
+                )
+            })
+            .unwrap();
+        doc.animation_frame();
+        assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(
+            "apertureAnimation.playState === 'running' && parseFloat(aperture.style.width) > 28 && parseFloat(aperture.style.width) < 216"
+        )).unwrap());
+        doc.js_context
+            .with(|ctx| ctx.eval::<(), _>("apertureAnimation.finish()"))
+            .unwrap();
+        assert!(doc
+            .js_context
+            .with(|ctx| ctx.eval::<bool, _>(
+                "aperture.style.width === '216px' && aperture.getAnimations().length === 0"
+            ))
+            .unwrap());
+    }
+
+    #[test]
     fn style_animations_interpolate_finish_and_cancel_on_rendering_frames() {
         let (mut doc, _) = LapuiDocument::new_with_source(
             ActionRegistry::default(),
@@ -10761,6 +10948,24 @@ mod tests {
         assert!(doc.script_diagnostics.borrow().is_empty());
     }
 
+    #[test]
+    fn removed_stacking_child_can_be_hit_tested_and_painted_before_next_layout() {
+        let (mut doc,_) = LapuiDocument::new_with_source(ActionRegistry::default(),None,
+            "<html><style>html,body{margin:0}#target{position:absolute;z-index:5;left:10px;top:10px;width:80px;height:80px;background:red}</style><body><div id='target'></div></body></html>", "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(200, 200, 1.0, ColorScheme::Light));
+        doc.inner_mut().resolve(0.0);
+        let id = doc.inner().get_element_by_id("target").unwrap();
+        assert_eq!(doc.inner().hit(30.0, 30.0).unwrap().node_id, id);
+        doc.inner_mut().mutate().remove_and_drop_node(id);
+        let mut dom = doc.inner_mut();
+        assert_ne!(dom.hit(30.0, 30.0).map(|hit| hit.node_id), Some(id));
+        let mut scene = anyrender::Scene::new();
+        crate::paint::paint_scene(&mut scene, &mut dom, 1.0, 200, 200, 0, 0);
+        dom.resolve(1.0);
+        assert_ne!(dom.hit(30.0, 30.0).map(|hit| hit.node_id), Some(id));
+    }
+
     fn native_component_pointer(doc: &mut LapuiDocument, x: f32, y: f32, down: Option<bool>) {
         use blitz::traits::events::{MouseEventButtons, UiEvent};
         let mut pointer = doc
@@ -10802,6 +11007,122 @@ mod tests {
         assert!(doc.inner().node_chain(hit.node_id).contains(&target),"native hit does not reach requested component: {expression} ({x},{y}), hit {:?}, expected {target:?}",hit.node_id);
         native_component_pointer(doc, x, y, Some(true));
         native_component_pointer(doc, x, y, Some(false));
+    }
+
+    #[test]
+    #[ignore = "requires built lapstyle-ui; set LAPUI_LAPSTYLE_HTML"]
+    fn lapstyle_copy_icon_survives_hover_and_leave_pixels() {
+        std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let path = PathBuf::from(std::env::var("LAPUI_LAPSTYLE_HTML").unwrap());
+            let html = std::fs::read_to_string(&path).unwrap();
+            let (mut doc, _) = LapuiDocument::new_with_local_source(ActionRegistry::default(), None,
+                &html, "", path.parent().unwrap()).unwrap();
+            doc.inner_mut().set_viewport(Viewport::new(1440, 1000, 1.0, ColorScheme::Dark));
+            for _ in 0..10 { doc.poll(None); doc.animation_frame(); doc.rendering_update(); }
+            let data = doc.js_context.with(|ctx| ctx.eval::<String, _>(r#"
+                (() => {
+                  document.querySelector('.demo-nav a[href$="/expand"]').click();
+                  return 'ready';
+                })()
+            "#)).unwrap();
+            assert_eq!(data, "ready");
+            for _ in 0..10 { doc.poll(None); doc.animation_frame(); doc.rendering_update(); }
+            let info = doc.js_context.with(|ctx| ctx.eval::<String, _>(r#"
+                (() => {
+                  const el = document.querySelector('.demo-row__tools button'), main = document.querySelector('.demo-main');
+                  main.scrollTop += el.getBoundingClientRect().top - main.getBoundingClientRect().top - 80;
+                  const r = el.getBoundingClientRect();
+                  return JSON.stringify({ref:el.__ref, svg:el.querySelector('svg').__ref, x:r.x, y:r.y, w:r.width, h:r.height});
+                })()
+            "#)).unwrap();
+            let info: Value = serde_json::from_str(&info).unwrap();
+            let (x,y,w,h) = (info["x"].as_f64().unwrap(),info["y"].as_f64().unwrap(),info["w"].as_f64().unwrap(),info["h"].as_f64().unwrap());
+            let mut samples = Vec::new();
+            for stage in 0..4 {
+                if stage > 0 {
+                    let mut pointer = doc.inner().root_element().synthetic_click_event_data(keyboard_types::Modifiers::empty());
+                    pointer.coords.client_x = if stage % 2 == 1 { (x+w/2.0) as f32 } else { 1000.0 };
+                    pointer.coords.client_y = if stage % 2 == 1 { (y+h/2.0) as f32 } else { 10.0 };
+                    pointer.coords.page_x=pointer.coords.client_x;pointer.coords.page_y=pointer.coords.client_y;
+                    pointer.buttons=blitz::traits::events::MouseEventButtons::None;
+                    doc.handle_ui_event(UiEvent::PointerMove(pointer));
+                }
+                for frame in 0..8 {
+                    let shot=crate::snapshot::capture_without_poll(&mut doc).unwrap();
+                    let pixels=shot.rgba();
+                    let cyan=(y.max(0.0) as u32..(y+h).min(1000.0) as u32).flat_map(|py|(x.max(0.0) as u32..(x+w).min(1440.0) as u32).map(move|px|(py*1440+px)as usize*4))
+                        .filter(|&i|pixels[i]<100 && pixels[i+1]>100 && pixels[i+2]>100).count();
+                    let dom=doc.inner();
+                    let id=resolve_node_ref(&dom,info["svg"].as_str().unwrap()).unwrap();
+                    let svg=dom.get_node(id).unwrap();
+                    let parent=dom.get_node(svg.layout_parent.get().unwrap()).unwrap();
+                    let button=dom.get_node(resolve_node_ref(&dom,info["ref"].as_str().unwrap()).unwrap()).unwrap();
+                    samples.push(json!({"stage":stage,"frame":frame,"cyan":cyan,"svgSize":format!("{:?}",svg.final_layout()),"parentSize":format!("{:?}",parent.final_layout()),"svgPaint":format!("{:?}",svg.paint_children.borrow()),"parentPaint":format!("{:?}",parent.paint_children.borrow()),"buttonPaint":format!("{:?}",button.paint_children.borrow()),"buttonSC":format!("{:?}",button.stacking_context),"hovered":button.is_hovered(),"stroke":crate::computed_style::value(&dom,id,"stroke"),"color":crate::computed_style::value(&dom,id,"color")}));
+                    if frame==7 {
+                        if let Some(dir)=std::env::var_os("LAPUI_DIAGNOSTICS_DIR") {
+                            if let blitz::dom::node::SpecialElementData::Image(image)=&svg.element_data().unwrap().special_data {
+                                if let blitz::dom::node::ImageData::Svg(image)=&**image {std::fs::write(PathBuf::from(dir).join(format!("copy-{stage}.svg")),image.tree.to_string(&Default::default())).unwrap();}
+                            }
+                        }
+                    }
+                    drop(dom);
+                    if let Some(dir)=std::env::var_os("LAPUI_DIAGNOSTICS_DIR") { let dir=PathBuf::from(dir);std::fs::create_dir_all(&dir).unwrap();shot.save_png(dir.join(format!("copy-{stage}-{frame}.png"))).unwrap(); }
+                    std::thread::sleep(Duration::from_millis(16));
+                }
+            }
+            if let Some(dir)=std::env::var_os("LAPUI_DIAGNOSTICS_DIR") {std::fs::write(PathBuf::from(dir).join("copy-hover.json"),serde_json::to_string_pretty(&samples).unwrap()).unwrap();}
+            assert!(samples.iter().all(|s|s["cyan"].as_u64().unwrap()>8),"copy icon lost pixels; see copy-hover.json");
+        }).unwrap().join().unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires built lapstyle-ui; set LAPUI_LAPSTYLE_HTML"]
+    fn lapstyle_catalog_hover_backgrounds_finish_after_rapid_pointer_moves() {
+        std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let path = PathBuf::from(std::env::var("LAPUI_LAPSTYLE_HTML").unwrap());
+            let html = std::fs::read_to_string(&path).unwrap();
+            let (mut doc, _) = LapuiDocument::new_with_local_source(ActionRegistry::default(), None,
+                &html, "", path.parent().unwrap()).unwrap();
+            doc.inner_mut().set_viewport(Viewport::new(1440, 1000, 1.0, ColorScheme::Light));
+            for _ in 0..10 { doc.poll(None); doc.animation_frame(); doc.rendering_update(); }
+            let refs = doc.js_context.with(|ctx| ctx.eval::<String, _>(r#"
+                (() => {
+                  const chips = document.querySelector('.demo-start__chips'), main = document.querySelector('.demo-main');
+                  main.scrollTop += chips.getBoundingClientRect().top - main.getBoundingClientRect().top - 40;
+                  return JSON.stringify(Array.from(chips.children).map(el => el.__ref));
+                })()
+            "#)).unwrap();
+            let refs: Vec<String> = serde_json::from_str(&refs).unwrap();
+            for reference in refs.iter().chain(refs.iter().rev()).cycle().take(refs.len() * 8) {
+                let id = resolve_node_ref(&doc.inner(), reference).unwrap();
+                let rect = crate::geometry::bounding_rect(&doc.inner(), id).unwrap();
+                let mut pointer = doc.inner().root_element().synthetic_click_event_data(keyboard_types::Modifiers::empty());
+                pointer.coords.client_x = (rect.x + rect.width / 2.0) as f32;
+                pointer.coords.client_y = (rect.y + rect.height / 2.0) as f32;
+                pointer.coords.page_x = pointer.coords.client_x;
+                pointer.coords.page_y = pointer.coords.client_y;
+                pointer.buttons = blitz::traits::events::MouseEventButtons::None;
+                doc.handle_ui_event(UiEvent::PointerMove(pointer));
+                doc.animation_frame(); doc.rendering_update();
+                let time = doc.layout_animation_time(); doc.inner_mut().resolve(time);
+                std::thread::sleep(Duration::from_millis(3));
+            }
+            doc.inner_mut().clear_hover();
+            let end = Instant::now() + Duration::from_millis(700);
+            while Instant::now() < end {
+                doc.poll(None); doc.animation_frame(); doc.rendering_update();
+                let time = doc.layout_animation_time(); doc.inner_mut().resolve(time);
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            for reference in &refs {
+                let dom = doc.inner();
+                let node = dom.get_node(resolve_node_ref(&dom, reference).unwrap()).unwrap();
+                let opacity = dom.get_node(node.after().unwrap()).unwrap().primary_styles().unwrap().clone_opacity();
+                assert!(!node.is_hovered());
+                assert_eq!(opacity, 0.0, "catalog button retained hover background: {reference}");
+            }
+            assert!(doc.script_diagnostics.borrow().is_empty());
+        }).unwrap().join().unwrap();
     }
 
     #[test]
@@ -10982,6 +11303,13 @@ mod tests {
                     assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>(
                         "document.getElementById('demo-dialog-confirm').hidden"
                     )).unwrap(),"dialog action did not close the panel");
+                    native_component_click(&mut doc,"document.querySelector('.demo-nav a[href$=\"/checkbox\"]')");
+                    for _ in 0..10 {doc.poll(None);doc.animation_frame();doc.rendering_update();}
+                    let state=doc.js_context.with(|ctx|ctx.eval::<String,_>(
+                        "JSON.stringify({heading:document.querySelector('.demo-section-title')?.textContent,errors:lapui.diagnostics()})"
+                    )).unwrap();
+                    assert!(state.contains("Checkbox"),"native Dialog -> Checkbox navigation failed: {state}");
+                    assert!(!doc.script_budget.interrupted(),"script suspended during Dialog -> Checkbox navigation: {state}");
                 }
                 if section == "dropdown" {
                     native_component_click(&mut doc,"document.querySelector('.demo-panel .ls-dropdown .trigger')");
@@ -10990,6 +11318,40 @@ mod tests {
                     native_component_click(&mut doc,"document.querySelector('.demo-section-title')");
                     for _ in 0..5 {doc.poll(None);doc.animation_frame();doc.rendering_update();}
                     assert!(doc.js_context.with(|ctx|ctx.eval::<bool,_>("document.querySelector('.demo-panel .ls-dropdown .ls-menu').hidden")).unwrap(),"native outside pointerdown failed to close dropdown");
+                }
+                if section == "expand" {
+                    let caption = doc.js_context.with(|ctx|ctx.eval::<String,_>(r#"
+                        (()=>{const el=document.querySelector('.demo-expand-caption'),r=el.getBoundingClientRect();return JSON.stringify({ref:el.__ref,height:r.height,width:r.width});})()
+                    "#)).unwrap();
+                    let caption:Value=serde_json::from_str(&caption).unwrap();
+                    let id=resolve_node_ref(&doc.inner(),caption["ref"].as_str().unwrap()).unwrap();
+                    let lines=doc.inner().get_node(id).unwrap().element_data().unwrap().inline_layout_data.as_ref().unwrap().layout.len();
+                    assert_eq!(lines,1,"expand caption unexpectedly wrapped: {caption}");
+                    doc.js_context.with(|ctx| ctx.eval::<(), _>(r#"
+                        globalThis.expandProbe = document.querySelector('.demo-panel .ls-expand');
+                        globalThis.expandWidthBefore = expandProbe.getBoundingClientRect().width;
+                        expandProbe.querySelector('.head').click();
+                        globalThis.expandAnimation = expandProbe.getAnimations().find(a => a.playState === 'running');
+                        if (!expandAnimation || expandAnimation._duration <= 0) throw new Error('Expand skipped its animation');
+                        expandAnimation.startTime = performance.now() - 100;
+                    "#)).unwrap();
+                    doc.animation_frame();
+                    assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(
+                        "expandProbe.getBoundingClientRect().width > expandWidthBefore && expandAnimation.playState === 'running'"
+                    )).unwrap(), "real Expand must pass through an intermediate opening size");
+                    doc.js_context.with(|ctx| ctx.eval::<(), _>(r#"
+                        expandAnimation.finish();
+                        globalThis.expandWidthOpen = expandProbe.getBoundingClientRect().width;
+                        expandProbe.querySelector('.head').click();
+                        globalThis.expandAnimation = expandProbe.getAnimations().find(a => a.playState === 'running');
+                        if (!expandAnimation) throw new Error('Expand skipped closing animation');
+                        expandAnimation.startTime = performance.now() - 100;
+                    "#)).unwrap();
+                    doc.animation_frame();
+                    assert!(doc.js_context.with(|ctx| ctx.eval::<bool, _>(
+                        "expandProbe.getBoundingClientRect().width < expandWidthOpen && expandAnimation.playState === 'running'"
+                    )).unwrap(), "real Expand must pass through an intermediate closing size");
+                    doc.js_context.with(|ctx| ctx.eval::<(), _>("expandAnimation.finish()")).unwrap();
                 }
                 if section == "theme" {
                     native_component_click(&mut doc,"document.querySelector('input[name=\"demo-page-scale\"][value=\"xl\"]')");

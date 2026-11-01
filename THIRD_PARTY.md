@@ -10,6 +10,8 @@ Lapui's `MIT OR Apache-2.0` choice applies to Lapui's original files. It does no
 
 The frame-aware shell uses the already shared AnyRender 0.14.0 (`MIT OR Apache-2.0`) and winit 0.31.0-beta.3 (`Apache-2.0`) APIs directly. It wraps Blitz window handling.
 
+`vendor/anyrender-vello` retains AnyRender Vello 0.15.0 (`MIT OR Apache-2.0`) at upstream commit `cf0f14776102ec775af61bcdcaac2ab345f4fafb`, with a bounded surface presentation diagnostic patch; see its patch ledger. The portable package includes both upstream license texts as `licenses/anyrender-LICENSE-MIT` and `licenses/anyrender-LICENSE-APACHE`.
+
 Native development file notifications use notify 8.2.0 (`CC0-1.0`); its platform adapters and other dependencies retain their own upstream terms.
 
 Windows text editing enables Blitz Shell's text-only clipboard feature. The

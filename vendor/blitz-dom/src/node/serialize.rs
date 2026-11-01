@@ -40,13 +40,13 @@ fn svg_paint_style(node: &Node) -> Option<String> {
     let color = computed.clone_color();
     let paint = |value: style::values::computed::SVGPaint| match &value.kind {
         style::values::computed::SVGPaintKind::Color(value) => {
-            value.resolve_to_absolute(&color).to_css_string()
+            value.resolve_to_absolute(&color).into_srgb_legacy().to_css_string()
         }
         _ => value.to_css_string().replace("about:blank#", "#"),
     };
     let mut css = String::new();
     for (name, value) in [
-        ("color", color.to_css_string()),
+        ("color", color.into_srgb_legacy().to_css_string()),
         ("fill", paint(computed.clone_fill())),
         ("stroke", paint(computed.clone_stroke())),
         (

@@ -70,7 +70,8 @@ impl Screenshot {
 }
 
 /// Capture on the owning document thread without changing viewport size, DPI,
-/// or color scheme. Polls pending work and paints one animation opportunity;
+/// or color scheme. Polls pending work. A window capture uses its current frame
+/// state; a headless capture drives one animation opportunity itself.
 /// callers supply their own application-ready condition. Requires the default
 /// `software-renderer` feature. Captures are limited to 8192 per dimension and
 /// 16 megapixels, independently of the MCP transport's PNG byte budget.
@@ -84,7 +85,11 @@ pub(crate) fn capture_without_poll(document: &mut LapuiDocument) -> Result<Scree
     let (width, height) = viewport.window_size;
     validate_dimensions(width, height, 16 * 1024 * 1024)?;
     let scale_factor = viewport.scale_f64();
-    let rgba = render_current_layout(document, width, height, scale_factor)?;
+    let advance_frame = !document.has_window_host();
+    let result = render_current_layout(document, width, height, scale_factor, advance_frame);
+    // Also preserve a pending native opportunity if CPU rendering fails.
+    document.request_window_redraw_after_capture();
+    let rgba = result?;
     Ok(Screenshot {
         document_epoch: document.inner().id(),
         width,
@@ -106,7 +111,7 @@ pub fn render_rgba(
     document
         .inner_mut()
         .set_viewport(Viewport::new(width, height, 1.0, ColorScheme::Light));
-    render_current_layout(document, width, height, 1.0)
+    render_current_layout(document, width, height, 1.0, true)
 }
 
 /// Paint the current physical viewport without changing its size or scale.
@@ -136,11 +141,14 @@ fn render_current_layout(
     width: u32,
     height: u32,
     scale: f64,
+    advance_frame: bool,
 ) -> Result<Vec<u8>, String> {
     let frame = document.frame_trace("image");
     let measured = frame.sequence().is_some();
-    document.animation_frame();
-    document.rendering_update();
+    if advance_frame {
+        document.animation_frame();
+        document.rendering_update();
+    }
     let layout_time = document.layout_animation_time();
     let layout = document.layout_trace();
     let mut dom = document.inner_mut();
@@ -169,7 +177,7 @@ fn render_current_layout(
             }
         }
     }
-    frame.finish(json!({"outcome":"image_ready","width":width,"height":height,
+    frame.finish(json!({"outcome":"image_ready","width":width,"height":height,"advancesFrameCallbacks":advance_frame,
         "sceneBuildMillis":scene_millis,"rendererCallMillis":renderer_start.map(|start|start.elapsed().as_secs_f64()*1000.0),
         "physicalPresentation":"not_applicable"}),false);
     Ok(pixels)
@@ -197,6 +205,33 @@ pub fn save_png(
 mod tests {
     use super::*;
     use crate::action::ActionRegistry;
+
+    #[test]
+    fn window_capture_keeps_pending_native_frame_callbacks_and_embedding_clock() {
+        let (mut doc, _) = LapuiDocument::new_with_source(
+            ActionRegistry::default(),
+            None,
+            "<html><style>html,body{margin:0}#box{height:40px;background:red}</style><body><div id='box'></div></body></html>",
+            "requestAnimationFrame(() => document.getElementById('box').style.background='blue')",
+        )
+        .unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(80, 80, 1.0, ColorScheme::Light));
+        doc.rendering_update_at(42.0);
+        doc.defer_rendering_update();
+        let before = render_current_layout(&mut doc, 80, 80, 1.0, false).unwrap();
+        let pixel = (10 * 80 + 10) * 4;
+        assert_eq!(&before[pixel..pixel + 4], &[255, 0, 0, 255]);
+        assert!(doc.has_animation_callbacks());
+        assert!(doc.has_pending_rendering_update());
+        assert_eq!(doc.layout_animation_time(), 42.0);
+        doc.animation_frame_at(42.016);
+        doc.rendering_update_at(42.016);
+        let after = render_current_layout(&mut doc, 80, 80, 1.0, false).unwrap();
+        assert_eq!(&after[pixel..pixel + 4], &[0, 0, 255, 255]);
+        assert!(!doc.has_animation_callbacks());
+        assert!(!doc.has_pending_rendering_update());
+    }
 
     #[test]
     fn component_collapsed_table_header_backgrounds_tile_without_outer_or_internal_gaps() {
@@ -515,6 +550,102 @@ mod tests {
     }
 
     #[test]
+    fn hoisted_positioned_content_respects_scroll_clipping_and_hit_testing() {
+        let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None,
+            "<html><style>html,body{margin:0;background:white}#clip{position:relative;overflow:hidden;width:100px;height:50px;background:white}#tall{height:200px}#dot{position:absolute;top:80px;left:20px;width:20px;height:20px;z-index:1;background:red}</style><body><div id='clip'><div id='tall'><div id='dot'></div></div></div></body></html>", "").unwrap();
+        doc.inner_mut()
+            .set_viewport(Viewport::new(160, 160, 1.0, ColorScheme::Light));
+        let shot = capture_without_poll(&mut doc).unwrap();
+        let i = (90 * 160 + 30) * 4;
+        assert_eq!(
+            &shot.rgba[i..i + 4],
+            &[255, 255, 255, 255],
+            "hoisted content painted outside its scroll clip"
+        );
+        let dom = doc.inner();
+        let dot = dom.get_element_by_id("dot").unwrap();
+        assert_ne!(
+            dom.root_element()
+                .hit(30.0, 90.0, 1.0)
+                .map(|hit| hit.node_id),
+            Some(dot),
+            "clipped content must not receive pointer hits"
+        );
+    }
+
+    #[test]
+    fn collapsed_table_borders_survive_cell_backgrounds_and_missing_first_top_edge() {
+        for scale in [1.0_f32, 1.25, 1.5, 1.65, 2.0] {
+            let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(), None,
+                r#"<html><style>
+                html,body{margin:0;background:white}
+                table{position:absolute;left:20px;top:20px;width:180px;border-collapse:collapse;table-layout:fixed}
+                th,td{height:30px;padding:0;border:1px solid blue;background:cyan}
+                tr:first-child>*{border-top:0}tr:last-child>*{border-bottom:0}
+                tr>:first-child{border-left:0}tr>:last-child{border-right:0}
+                .plain{top:100px}.plain td{border:0}
+                .span{top:180px}.span td{background:yellow}
+                </style><body>
+                <table><tbody><tr><th id='first'>A</th><th>B</th></tr><tr><td>C</td><td>D</td></tr></tbody></table>
+                <table class='plain'><tbody><tr><td id='plain'>A</td><td>B</td></tr></tbody></table>
+                <table class='span'><tbody><tr><td id='spanning' colspan='2'>A</td></tr><tr><td id='lower'>B</td><td>C</td></tr></tbody></table>
+                </body></html>"#, "").unwrap();
+            let width = (240.0 * scale) as u32;
+            doc.inner_mut().set_viewport(Viewport::new(
+                width,
+                (280.0 * scale) as u32,
+                scale,
+                ColorScheme::Light,
+            ));
+            let shot = capture_without_poll(&mut doc).unwrap();
+            let rect = |id| {
+                let dom = doc.inner();
+                crate::geometry::bounding_rect(&dom, dom.get_element_by_id(id).unwrap()).unwrap()
+            };
+            let blue_near = |x: f64, y: f64| {
+                let (x, y) = (
+                    (x * scale as f64).round() as i32,
+                    (y * scale as f64).round() as i32,
+                );
+                (x - 2..=x + 2).any(|x| {
+                    (y - 2..=y + 2).any(|y| {
+                        let i = (y as usize * width as usize + x as usize) * 4;
+                        shot.rgba[i] < 100 && shot.rgba[i + 1] < 150 && shot.rgba[i + 2] > 180
+                    })
+                })
+            };
+            let first = rect("first");
+            assert!(
+                blue_near(first.x + first.width, first.y + 15.0),
+                "vertical border missing at {scale}"
+            );
+            assert!(
+                blue_near(first.x + 40.0, first.y + first.height),
+                "horizontal border missing at {scale}"
+            );
+            assert!(
+                !blue_near(first.x + 40.0, first.y),
+                "removed top border repainted at {scale}"
+            );
+            let plain = rect("plain");
+            assert!(
+                !blue_near(plain.x + plain.width, plain.y + 15.0),
+                "plain table acquired lines at {scale}"
+            );
+            let lower = rect("lower");
+            let spanning = rect("spanning");
+            assert!(
+                blue_near(lower.x + lower.width, lower.y + 15.0),
+                "lower border missing at {scale}"
+            );
+            assert!(
+                !blue_near(lower.x + lower.width, spanning.y + 15.0),
+                "border crosses colspan at {scale}"
+            );
+        }
+    }
+
+    #[test]
     fn component_pseudo_borders_keep_all_sides_at_fractional_scales() {
         for scale in [1.0_f32, 1.25, 1.5, 1.75] {
             let (mut doc, _) = LapuiDocument::new_with_source(ActionRegistry::default(),None,
@@ -554,6 +685,38 @@ mod tests {
                     "pseudo {name} border missing at {scale}x ({right},{bottom})"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn spread_shadow_preserves_circular_and_square_corners() {
+        for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+            let (mut doc, _) = LapuiDocument::new_with_source(
+                ActionRegistry::default(), None,
+                "<html><style>html,body{margin:0;background:white}.dot{position:absolute;top:30px;width:20px;height:20px;background:blue;box-shadow:0 0 0 10px blue}#circle{left:30px;border-radius:50%}#square{left:90px}</style><body><div id='circle' class='dot'></div><div id='square' class='dot'></div></body></html>", ""
+            ).unwrap();
+            let width = (140.0 * scale) as u32;
+            let height = (100.0 * scale) as u32;
+            doc.inner_mut()
+                .set_viewport(Viewport::new(width, height, scale, ColorScheme::Light));
+            let shot = capture_without_poll(&mut doc).unwrap();
+            let red = |x: f32, y: f32| {
+                let x = (x * scale).round() as usize;
+                let y = (y * scale).round() as usize;
+                shot.rgba[(y * width as usize + x) * 4]
+            };
+            assert!(
+                red(22.0, 22.0) > 240,
+                "circular shadow corner filled at {scale}x"
+            );
+            assert!(
+                red(40.0, 22.0) < 30,
+                "circular shadow edge missing at {scale}x"
+            );
+            assert!(
+                red(82.0, 22.0) < 30,
+                "square shadow corner rounded at {scale}x"
+            );
         }
     }
 

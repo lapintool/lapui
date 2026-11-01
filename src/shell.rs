@@ -33,7 +33,8 @@ pub(crate) const WINDOW_CHROME_SCRIPT: &str = r#"(() => {
   style.textContent = `
     #lapui-window-chrome { position: fixed !important; z-index: 2147483647 !important; inset: 0 0 auto 0 !important; height: 34px !important; display: flex !important; align-items: center !important; box-sizing: border-box !important; padding-left: 12px !important; background: #202124 !important; color: #e8eaed !important; border-bottom: 1px solid #303134 !important; font: 12px/1.2 "Segoe UI", sans-serif !important; user-select: none !important; }
     #lapui-window-chrome-title { flex: 1 !important; overflow: hidden !important; white-space: nowrap !important; text-overflow: ellipsis !important; opacity: .9 !important; }
-    .lapui-window-button { width: 46px !important; height: 33px !important; display: inline-flex !important; align-items: center !important; justify-content: center !important; border: 0 !important; border-radius: 0 !important; padding: 0 !important; margin: 0 !important; background: transparent !important; color: inherit !important; font: 16px/1 "Segoe UI Symbol", sans-serif !important; cursor: default !important; }
+    .lapui-window-button { flex: 0 0 46px !important; width: 46px !important; height: 33px !important; box-sizing: border-box !important; display: inline-flex !important; align-items: center !important; justify-content: center !important; border: 0 !important; border-radius: 0 !important; padding: 0 !important; margin: 0 !important; background: transparent !important; color: inherit !important; font: 16px/1 "Segoe UI Symbol", sans-serif !important; cursor: default !important; }
+    .lapui-window-button svg { width: 12px !important; height: 12px !important; min-width: 12px !important; flex: none !important; display: block !important; pointer-events: none !important; }
     .lapui-window-button:hover { background: #3a3b3d !important; }
     .lapui-window-button[data-action="close"]:hover { background: #c42b1c !important; color: white !important; }
   `;
@@ -47,18 +48,32 @@ pub(crate) const WINDOW_CHROME_SCRIPT: &str = r#"(() => {
   title.textContent = document.title || 'Lapui';
   bar.appendChild(title);
   const controls = [
-    ['minimize', '−', 'Minimize'],
-    ['toggle-maximize', '□', 'Maximize or restore'],
-    ['close', '×', 'Close'],
+    ['minimize', 'M1 6H11', 'Minimize'],
+    ['toggle-maximize', 'M1.5 1.5H10.5V10.5H1.5Z', 'Maximize'],
+    ['close', 'M1.5 1.5L10.5 10.5M10.5 1.5L1.5 10.5', 'Close'],
   ];
-  for (const [action, glyph, label] of controls) {
+  for (const [action, shape, label] of controls) {
     const button = document.createElement('button');
     button.className = 'lapui-window-button';
     button.type = 'button';
     button.setAttribute('data-action', action);
     button.setAttribute('aria-label', label);
     button.setAttribute('title', label);
-    button.textContent = glyph;
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 12 12');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', shape);
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', 'currentColor');
+    path.setAttribute('stroke-width', '1');
+    if (action === 'toggle-maximize') {
+      button.id = 'lapui-window-maximize';
+      path.id = 'lapui-window-maximize-icon';
+    }
+    svg.appendChild(path);
+    button.appendChild(svg);
     button.addEventListener('click', event => {
       event.stopPropagation();
       window.__lapui_window_command(action);
@@ -66,11 +81,11 @@ pub(crate) const WINDOW_CHROME_SCRIPT: &str = r#"(() => {
     bar.appendChild(button);
   }
   bar.addEventListener('pointerdown', event => {
-    if (event.button !== 0 || event.target.getAttribute('data-action')) return;
+    if (event.button !== 0 || event.target.closest('[data-action]')) return;
     window.__lapui_window_command('drag');
   });
   bar.addEventListener('dblclick', event => {
-    if (!event.target.getAttribute('data-action')) window.__lapui_window_command('toggle-maximize');
+    if (!event.target.closest('[data-action]')) window.__lapui_window_command('toggle-maximize');
   });
   document.body.insertBefore(bar, document.body.firstChild);
   document.body.style.setProperty('box-sizing', 'border-box', 'important');
@@ -129,7 +144,7 @@ impl<R: WindowRenderer> LapuiApplication<R> {
     }
 }
 
-impl<R: WindowRenderer> ApplicationHandler for LapuiApplication<R> {
+impl<R: WindowRenderer + 'static> ApplicationHandler for LapuiApplication<R> {
     fn new_events(&mut self, event_loop: &dyn ActiveEventLoop, cause: StartCause) {
         self.inner.new_events(event_loop, cause);
     }
@@ -201,10 +216,15 @@ impl<R: WindowRenderer> ApplicationHandler for LapuiApplication<R> {
         }
         let mut earliest = self.save_deadline;
         for (id, view) in &mut self.inner.windows {
+            let native_animation = view.doc.inner().is_animating();
             if !view.is_visible
                 || !view.renderer.is_active()
                 || !frame_document(view.doc.as_mut()).is_some_and(|document| {
-                    document.has_animation_callbacks() || document.has_pending_rendering_update()
+                    needs_animation_opportunity(
+                        document.has_animation_callbacks(),
+                        document.has_pending_rendering_update(),
+                        native_animation,
+                    )
                 })
             {
                 continue;
@@ -351,7 +371,24 @@ impl<R: WindowRenderer> ApplicationHandler for LapuiApplication<R> {
                 | WindowEvent::SurfaceResized(_)
                 | WindowEvent::ScaleFactorChanged { .. }
         );
+        let restored = matches!(event, WindowEvent::Occluded(false));
         self.inner.window_event(event_loop, id, event);
+        if restored {
+            // A restore may invalidate the swapchain even if its dimensions did
+            // not change. Reconfigure it and do not coalesce the first repaint.
+            self.frames.remove(&id);
+            if let Some(view) = self.inner.windows.get_mut(&id) {
+                let size = view.window.surface_size();
+                if size.width > 0 && size.height > 0 && view.renderer.is_active() {
+                    eprintln!(
+                        "[lapui] window visible; reconfiguring {}x{} surface",
+                        size.width, size.height
+                    );
+                    view.renderer.set_size(size.width, size.height);
+                    view.request_redraw();
+                }
+            }
+        }
         if restore_cursor {
             if let Some(view) = self.inner.windows.get(&id) {
                 view.window
@@ -504,6 +541,42 @@ fn resize_cursor(direction: ResizeDirection) -> CursorIcon {
     }
 }
 
+/// Sample actual OS state on redraw, including title-bar double clicks,
+/// shortcuts, restored startup state and external maximize/restore operations.
+fn sync_window_chrome(document: &mut blitz::dom::BaseDocument, maximized: bool) -> bool {
+    use blitz::dom::{LocalName, QualName};
+    let Some(bar) = document.get_element_by_id("lapui-window-chrome") else {
+        return false;
+    };
+    let value = if maximized { "true" } else { "false" };
+    if document
+        .get_node(bar)
+        .and_then(|node| node.attr(LocalName::from("data-maximized")))
+        == Some(value)
+    {
+        return false;
+    }
+    let Some(button) = document.get_element_by_id("lapui-window-maximize") else {
+        return false;
+    };
+    let Some(icon) = document.get_element_by_id("lapui-window-maximize-icon") else {
+        return false;
+    };
+    let attribute = |name: &str| QualName::new(None, blitz::dom::ns!(), LocalName::from(name));
+    let label = if maximized { "Restore" } else { "Maximize" };
+    let shape = if maximized {
+        "M3.5 3.5V1.5H10.5V8.5H8.5M1.5 3.5H8.5V10.5H1.5Z"
+    } else {
+        "M1.5 1.5H10.5V10.5H1.5Z"
+    };
+    let mut mutations = document.mutate();
+    mutations.set_attribute(bar, attribute("data-maximized"), value);
+    mutations.set_attribute(button, attribute("aria-label"), label);
+    mutations.set_attribute(button, attribute("title"), label);
+    mutations.set_attribute(icon, attribute("d"), shape);
+    true
+}
+
 fn zoom_shortcut<R: WindowRenderer>(
     application: &BlitzApplication<R>,
     id: WindowId,
@@ -605,7 +678,7 @@ mod window_chrome_tests {
 
 // Native engine resolve/paint through public APIs, retaining Blitz's resource
 // and visibility gates. Renderer return is not a display-server presentation ack.
-fn redraw_document<R: WindowRenderer>(view: &mut View<R>) {
+fn redraw_document<R: WindowRenderer + 'static>(view: &mut View<R>) {
     let layout_time = view.current_animation_time();
     let document = frame_document(view.doc.as_mut()).unwrap();
     let frame = document.frame_trace("window");
@@ -615,7 +688,9 @@ fn redraw_document<R: WindowRenderer>(view: &mut View<R>) {
     document.rendering_update_at(layout_time);
     let callbacks_millis = callbacks_start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
     let layout = document.layout_trace();
+    let maximized = view.window.is_maximized();
     let mut dom = view.doc.inner_mut();
+    sync_window_chrome(&mut dom, maximized);
     dom.resolve(layout_time);
     layout.finish(json!({"outcome":"resolved"}), false);
     let (width, height) = dom.viewport().window_size;
@@ -644,10 +719,20 @@ fn redraw_document<R: WindowRenderer>(view: &mut View<R>) {
     }
     let renderer_millis = renderer_start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
     drop(dom);
+    let gpu_failures = (&view.renderer as &dyn Any)
+        .downcast_ref::<anyrender_vello::VelloWindowRenderer>()
+        .map_or(0, |renderer| renderer.consecutive_present_failures());
+    // Give transient surface failures a bounded set of fresh opportunities.
+    // The normal frame scheduler spaces these retries at the display rate.
+    if (1..=8).contains(&gpu_failures) {
+        frame_document(view.doc.as_mut())
+            .unwrap()
+            .defer_rendering_update();
+    }
     frame_document(view.doc.as_mut())
         .unwrap()
-        .complete_render_revision(!blocked && scene_built);
-    frame.finish(json!({"outcome":if blocked{"blocked_resources"}else if scene_built{"renderer_returned"}else{"renderer_no_scene"},
+        .complete_render_revision(!blocked && scene_built && gpu_failures == 0);
+    frame.finish(json!({"outcome":if blocked{"blocked_resources"}else if gpu_failures != 0{"surface_unavailable"}else if scene_built{"renderer_returned"}else{"renderer_no_scene"},
         "callbackPhaseMillis":callbacks_millis,"callbacksDue":true,"sceneBuildMillis":scene_millis,
         "rendererCallMillis":if blocked{None}else{renderer_millis},"width":width,"height":height,
         "physicalPresentation":"unknown"}),false);
@@ -660,6 +745,12 @@ fn redraw_document<R: WindowRenderer>(view: &mut View<R>) {
 // VSync event arriving microseconds early from being deferred a whole refresh.
 // This remains a soft opportunity limit, not a presentation acknowledgement.
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
+
+fn needs_animation_opportunity(callbacks: bool, deferred: bool, native_animation: bool) -> bool {
+    // CSS/pseudo transitions do not register JS callbacks. Keep a deadline for
+    // them independently of request_redraw coalescing and rendering observers.
+    callbacks || deferred || native_animation
+}
 
 fn frame_interval<R: WindowRenderer>(view: &View<R>) -> Duration {
     let rate = view
@@ -710,6 +801,14 @@ impl AnimationWait {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_css_transitions_keep_frame_deadlines_without_javascript_callbacks() {
+        assert!(needs_animation_opportunity(false, false, true));
+        assert!(needs_animation_opportunity(false, true, false));
+        assert!(needs_animation_opportunity(true, false, false));
+        assert!(!needs_animation_opportunity(false, false, false));
+    }
 
     #[test]
     fn animation_deadlines_restore_idle_and_preserve_embedding_policy() {

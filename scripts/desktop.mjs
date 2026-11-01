@@ -198,7 +198,7 @@ async function dev() {
   try {
     await Promise.all([typecheck(), firstBuild, run(...cargo('build', '--locked'))]);
     if (closing) return;
-    for (const directory of ['src', 'ui', 'vendor/taffy/src', 'vendor/blitz-dom/src', 'vendor/blitz-dom/assets', 'vendor/blitz-paint/src', 'vendor/stylo']) {
+      for (const directory of ['src', 'ui', 'vendor/taffy/src', 'vendor/blitz-dom/src', 'vendor/blitz-dom/assets', 'vendor/blitz-paint/src', 'vendor/anyrender-vello/src', 'vendor/stylo']) {
       watchers.push(watchFiles(join(root, directory), { recursive: true }, changed));
     }
     for (const filename of ['Cargo.toml', 'Cargo.lock', 'build.rs']) {
@@ -266,6 +266,7 @@ async function release() {
   await cp(join(root, 'vendor/taffy/LICENSE'), join(packageDirectory, 'licenses', 'taffy-LICENSE'));
   for (const name of ['LICENSE-MIT', 'LICENSE-APACHE']) {
     await cp(join(root, 'vendor/blitz-dom', name), join(packageDirectory, 'licenses', 'blitz-' + name));
+    await cp(join(root, 'vendor/anyrender-vello', name), join(packageDirectory, 'licenses', 'anyrender-' + name));
   }
   await cp(join(root, 'vendor/stylo/LICENSE-MPL-2.0'), join(packageDirectory, 'licenses', 'stylo-MPL-2.0.txt'));
   await cp(join(root, 'vendor/stylo'), join(packageDirectory, 'sources', 'stylo'), { recursive: true });

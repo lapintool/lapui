@@ -577,6 +577,14 @@
       return __lapui_has_attribute(this.__ref, name) ? __lapui_get_attribute(this.__ref, name) : null;
     }
     hasAttribute(name) { return __lapui_has_attribute(this.__ref, this.attributeName(name)); }
+    toggleAttribute(name, force = undefined) {
+      name = this.attributeName(name);
+      const had = this.hasAttribute(name);
+      const present = force === undefined ? !had : Boolean(force);
+      if (present && !had) this.setAttribute(name, '');
+      else if (!present && had) this.removeAttribute(name);
+      return present;
+    }
     removeAttribute(name) { __lapui_remove_attribute(this.__ref, this.attributeName(name)); }
     querySelector(selector) {
       const reference = __lapui_query(String(selector), this.__ref);
@@ -585,6 +593,7 @@
     querySelectorAll(selector) {
       return JSON.parse(__lapui_query_all(String(selector), this.__ref)).map(getElement);
     }
+    getElementsByTagName(name) { return tagCollection(this, name); }
     matches(selector) { return __lapui_matches(this.__ref, String(selector)); }
     closest(selector) {
       selector = String(selector);
@@ -974,6 +983,29 @@
     toString() { return __lapui_search_params_encode(JSON.stringify(this._pairs)); }
   }
   globalThis.URLSearchParams = URLSearchParams;
+  // URL construction/serialization used by bundler asset preloads. Parsing
+  // and relative resolution use Rust's URL parser rather than string joining.
+  class URL {
+    constructor(value, base = undefined) {
+      const parsed = __lapui_parse_url(String(value), base === undefined ? undefined : String(base));
+      if (!parsed) throw new TypeError('Invalid URL');
+      this._values = JSON.parse(parsed);
+    }
+    get href() { return this._values.href; }
+    set href(value) {
+      const parsed = __lapui_parse_url(String(value), undefined);
+      if (!parsed) throw new TypeError('Invalid URL');
+      this._values = JSON.parse(parsed);
+    }
+    toString() { return this.href; }
+    toJSON() { return this.href; }
+    static canParse(value, base) { try { new URL(value, base); return true; } catch { return false; } }
+    static parse(value, base) { try { return new URL(value, base); } catch { return null; } }
+  }
+  for (const name of ['origin','protocol','username','password','host','hostname','port','pathname','search','hash']) {
+    Object.defineProperty(URL.prototype, name, {get() { return this._values[name]; }, configurable:true});
+  }
+  globalThis.URL = URL;
   class Storage {
     constructor() { this._values = new Map(); }
     get length() { return this._values.size; }
@@ -1005,10 +1037,7 @@
     const media = {
       media: String(query),
       get matches() {
-        const maxWidth = this.media.match(/max-width\s*:\s*(\d+(?:\.\d+)?)px/i);
-        const minWidth = this.media.match(/min-width\s*:\s*(\d+(?:\.\d+)?)px/i);
-        const width = Number(__lapui_layout_metrics(document.documentElement.__ref)[2]);
-        return (!maxWidth || width <= Number(maxWidth[1])) && (!minWidth || width >= Number(minWidth[1]));
+        return __lapui_match_media(this.media);
       },
       onchange: null,
       addEventListener(type, callback) { if (type === 'change' && typeof callback === 'function') listeners.add(callback); },
@@ -1024,6 +1053,29 @@
     };
     return media;
   };
+  // Unlike querySelectorAll's snapshot, getElementsByTagName returns a live
+  // collection. Match tag names directly rather than treating them as CSS.
+  function tagCollection(root, name) {
+    name = String(name);
+    const sample = () => root.querySelectorAll('*').filter(el => name === '*' ||
+      el.localName === (el.namespaceURI === 'http://www.w3.org/1999/xhtml' ? name.toLowerCase() : name));
+    const collection = {
+      get length() { return sample().length; },
+      item(index) { return sample()[Number(index) >>> 0] ?? null; },
+      namedItem(name) { name = String(name); return name ? sample().find(el => el.id === name || el.getAttribute('name') === name) ?? null : null; },
+      [Symbol.iterator]() {
+        let index = 0;
+        return {next() { const values = sample(); return index < values.length ? {value:values[index++],done:false} : {done:true}; }};
+      },
+      [Symbol.toStringTag]: 'HTMLCollection'
+    };
+    return new Proxy(collection, {
+      get(target, key, receiver) {
+        if (typeof key === 'string' && /^(0|[1-9]\d*)$/.test(key)) return sample()[Number(key)];
+        return Reflect.get(target, key, receiver);
+      }
+    });
+  }
   globalThis.SVGElement = class SVGElement {
     static [Symbol.hasInstance](value) { return value instanceof Element && value.namespaceURI === 'http://www.w3.org/2000/svg'; }
   };
@@ -1141,6 +1193,7 @@
       return !result.defaultPrevented;
     },
     get documentElement() { return this.querySelector('html'); },
+    get head() { return this.querySelector('head'); },
     get scrollingElement() { return this.documentElement; },
     get body() { return getElement(__lapui_body()); },
     queryCommandSupported(command) {
@@ -1192,6 +1245,7 @@
     querySelectorAll(selector) {
       return JSON.parse(__lapui_query_all(String(selector), '')).map(getElement);
     },
+    getElementsByTagName(name) { return tagCollection(this, name); },
     getElementById(id) {
       id = String(id);
       if (!__lapui_exists(id)) return null;

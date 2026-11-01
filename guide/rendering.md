@@ -101,11 +101,15 @@ fn debug_image(document: &mut LapuiDocument) -> Result<(), String> {
 ```
 
 `Screenshot` owns its pixels, so encoding and saving remain valid after later
-document mutations or teardown. Capture polls pending work and paints one
-animation opportunity; it does not wait for all asynchronous work. Dimensions
+document mutations or teardown. Capture polls pending work; it does not wait
+for all asynchronous work. A hosted window capture paints current document
+state without running extra animation callbacks or rendering observers, retains
+the embedding CSS clock and pending native opportunity, and requests a window
+redraw afterward. A headless capture drives one animation opportunity itself.
+Dimensions
 are limited to 8192 per axis and 16 megapixels, allowing native 4K window captures. The `document_epoch` identifies
-the document instance, and is not a DOM revision. Capturing advances rendering
-callbacks, so it is not a passive copy of the last presented window frame.
+the document instance, and is not a DOM revision. Capturing still resolves the
+current layout; it is not a passive copy of the last presented window frame.
 
 The image contains Lapui document content. Native title bars, mouse cursors and
 OS IME candidate windows require desktop inspection. The CPU image can be

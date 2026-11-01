@@ -1,5 +1,5 @@
 {
   "frontendDirectory": "../../Web/lapstyle-ui",
   "rustToolchain": "1.99.0",
-  "renderer": "gpu"
+  "renderer": "cpu"
 }

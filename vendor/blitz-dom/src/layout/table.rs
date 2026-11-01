@@ -343,21 +343,20 @@ pub(crate) fn build_table_context(
                 height: style_helpers::length(spacing_y),
             }
         }
-        BorderCollapse::Collapse => first_cell_border
-            .as_ref()
-            .map(|border| {
+        BorderCollapse::Collapse => cells.iter().filter_map(|cell| {
+                let styles = doc.nodes[cell.node_id].primary_styles()?;
+                let border = styles.get_border();
                 let x = side_width(border.border_left_width.0, border.border_left_style).max(
                     side_width(border.border_right_width.0, border.border_right_style),
                 );
                 let y = side_width(border.border_top_width.0, border.border_top_style).max(
                     side_width(border.border_bottom_width.0, border.border_bottom_style),
                 );
-                taffy::Size {
-                    width: style_helpers::length(x),
-                    height: style_helpers::length(y),
-                }
+                Some(taffy::Size { width: x, height: y })
             })
-            .unwrap_or(taffy::Size::ZERO.map(style_helpers::length)),
+            .fold(taffy::Size::ZERO, |a, b| taffy::Size {
+                width: a.width.max(b.width), height: a.height.max(b.height),
+            }).map(style_helpers::length),
     };
 
     if border_collapse == BorderCollapse::Collapse {

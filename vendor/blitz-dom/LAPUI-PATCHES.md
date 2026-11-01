@@ -66,3 +66,23 @@ Follow-up fixes:
   both discrete/precision and continuous-input/descendant-change regressions.
 - Overlay scrollbar thumbs have no extra cross-axis inset from the padding-box
   edge. Geometry remains shared between painting and pointer hit testing.
+- P-MEDIA-001: `cssom.rs` exposes media-list evaluation through the existing
+  Stylo parser/device for JS matchMedia. Unknown features no longer match by
+  default, and reduced-motion, color-scheme, query lists and width ranges agree
+  with CSS. OS reduced-motion preference propagation and automatic JS change
+  events remain separate work. Retain the aperture animation regression.
+- P-TABLE-BORDER-001: collapsed table gutter widths consider all cells, not only
+  the first cell. A borderless first cell must not discard later borders.
+- P-SVG-PAINT-001 extension: serialize resolved paint colors as legacy sRGB;
+  usvg does not parse interpolated `oklab()` values and otherwise drops strokes
+  during hover transitions. Retain real Lucide enter/leave pixel regressions.
+- P-INLINE-MEASURE-001: intrinsic `ComputeSize` passes restore the previously
+  laid-out Parley line state instead of overwriting it with measurement-only
+  line breaks. Retain the real Expand caption and incremental layout tests.
+- P-HOISTED-CLIP-001: expose skipped overflow ancestor clips to the painter and
+  apply the same bounds during hit testing of z-index-hoisted descendants.
+  This handles axis-aligned overflow boxes; transformed and rounded ancestor
+  clipping needs further conformance work.
+- P-STALE-STACKING-001: hit testing skips removed child IDs that are still
+  referenced by an unresolved stacking tree. Keep the remove-before-layout
+  hit-test and paint regression until upstream safely invalidates these IDs.

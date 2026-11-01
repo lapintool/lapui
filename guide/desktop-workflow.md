@@ -27,14 +27,14 @@ The tracked lapui.config.json selects:
 
 - frontendDirectory: ../../Web/lapstyle-ui, relative to this repository.
 - rustToolchain: 1.99.0.
-- renderer: gpu for development. The 4K Lapstyle UI workload is expensive to rasterize on the UI thread with the CPU backend; GPU drawing reduces that part of the frame cost.
+- renderer: cpu for development. On the current Windows test machine, GPU windows can retain an old frame after navigation even though the document updated. CPU rendering has been manually verified to update the displayed page, but large windows can be slower.
 
 On the development machine, this resolves to C:\Dev\Projects\Web\lapstyle-ui. Other checkout locations can use a command-line override:
 
     pnpm dev --frontend C:\Other\lapstyle-ui
-    pnpm dev --renderer cpu
+    pnpm dev --renderer gpu
 
-The corresponding environment variables are LAPUI_FRONTEND_DIR, LAPUI_RUST_TOOLCHAIN, and LAPUI_RENDERER. Command-line arguments take precedence over environment variables, followed by the config file. Use pnpm --dir <frontend-directory> install if the frontend's dependencies are missing. If the GPU backend cannot initialize on a machine, explicitly select cpu; automatic GPU fallback is not implemented. Direct cargo/executable launches still default to CPU when the software-renderer feature is enabled; pass --renderer gpu for the same backend as pnpm dev.
+The corresponding environment variables are LAPUI_FRONTEND_DIR, LAPUI_RUST_TOOLCHAIN, and LAPUI_RENDERER. Command-line arguments take precedence over environment variables, followed by the config file. Use pnpm --dir <frontend-directory> install if the frontend's dependencies are missing. GPU presentation remains under investigation; explicitly select gpu for diagnostics. Automatic fallback is not implemented. Direct cargo/executable launches also default to CPU when the software-renderer feature is enabled.
 
 ## Development
 

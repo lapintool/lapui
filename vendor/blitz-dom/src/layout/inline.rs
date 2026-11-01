@@ -201,6 +201,11 @@ impl BaseDocument {
             .unwrap()
             .take_inline_layout()
             .unwrap();
+        // Intrinsic measurement may re-break the same Parley layout at a
+        // min/max-content width after its actual layout was already cached.
+        // Never publish those measurement-only line breaks for painting.
+        let saved_layout = (inputs.run_mode == taffy::RunMode::ComputeSize)
+            .then(|| inline_layout.clone());
 
         let style = self.nodes[node_id].layout_style();
 
@@ -292,7 +297,7 @@ impl BaseDocument {
                 .data
                 .downcast_element_mut()
                 .unwrap()
-                .inline_layout_data = Some(inline_layout);
+                .inline_layout_data = Some(saved_layout.unwrap_or(inline_layout));
             return LayoutOutput::from_outer_size(
                 Size::ZERO.maybe_max(container_pb.sum_axes().map(Some)),
             );
@@ -575,7 +580,7 @@ impl BaseDocument {
                 .data
                 .downcast_element_mut()
                 .unwrap()
-                .inline_layout_data = Some(inline_layout);
+                .inline_layout_data = Some(saved_layout.unwrap_or(inline_layout));
 
             let measured_size = inputs.known_dimensions.unwrap_or(taffy::Size {
                 width: width.ceil() / scale,
@@ -996,7 +1001,7 @@ impl BaseDocument {
             .data
             .downcast_element_mut()
             .unwrap()
-            .inline_layout_data = Some(inline_layout);
+            .inline_layout_data = Some(saved_layout.unwrap_or(inline_layout));
 
         let oof_position_inset = taffy::Rect {
             left: border.left,
